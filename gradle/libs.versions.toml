@@ -16,6 +16,9 @@ securityCrypto = "1.1.0-alpha06"
 lifecycleRuntimeKtx = "2.8.7"
 activityCompose = "1.9.3"
 richEditor = "1.0.0-rc06"
+okhttp = "4.12.0"
+kotlinxSerializationJson = "1.7.3"
+pdfboxAndroid = "2.0.27.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -54,6 +57,9 @@ security-crypto = { group = "androidx.security", name = "security-crypto", versi
 
 # Rich text editor
 richeditor = { group = "com.mohamedrejeb.richeditor", name = "richeditor-compose", version.ref = "richEditor" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

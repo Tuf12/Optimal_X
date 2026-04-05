@@ -7,11 +7,11 @@ plugins {
 
 android {
     namespace = "com.example.optimalx"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.example.optimalx"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
@@ -46,6 +46,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.activity.compose)
+    implementation(libs.material)
 
     // Compose
     implementation(platform(libs.compose.bom))
@@ -79,6 +80,11 @@ dependencies {
 
     // Rich text editor
     implementation(libs.richeditor)
+
+    // Networking + JSON
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.pdfbox.android)
 
     // Tests
     testImplementation(libs.junit)

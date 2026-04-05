@@ -124,4 +124,24 @@ Built full editor view. Key files: EditorRepository, EditorViewModel (undo/redo 
 **2026-04-05 — Phase 4 complete**
 Built full settings flow and navigation. Key files: SettingsScreen (new), SettingsViewModel (existing, fully consumed by UI), AppNavigation (new settings route and wired three-dot menu action). Implemented: theme segmented control (light/dark/system, instant DataStore write and live app theme update), API key fields for xAI/OpenAI/Anthropic (EncryptedSharedPreferences), provider radio selection (xAI default), wake word + handoff word text fields (DataStore), and read-aloud toggle (DataStore). Added back navigation from Settings to Parent Folder screen.
 
-**Next: Phase 5 — Eidos API Layer.**
+---
+
+**2026-04-05 — Phase 5 complete**
+Built provider-agnostic API layer and model clients. Key files: EidosApiClient, Eidos models (request/response/messages/tool-call types), EidosToolCatalog, provider implementations (XAIProvider/OpenAIProvider/AnthropicProvider), shared ProviderHttp helper, and DefaultToolExecutor placeholder for Phase 6. Implemented: provider selection from EncryptedSharedPreferences, API key routing per provider, OpenAI Responses API with `previous_response_id` + `reasoning.effort = none` + `text.verbosity = low`, Anthropic prompt caching block on system prompt, context assembly (current subfolder, note unless AI-locked, attached files, recent journal entries 1-3 days), history trimming, tool-calling loop with repeated round-trips until final text, confirmation gate hook for destructive tools, automatic write_log_entry calls after modifying actions, and retry-once fallback with provider-switch guidance. Also added OkHttp + kotlinx.serialization dependencies and INTERNET permission.
+
+---
+
+**2026-04-05 — Phase 6 mostly complete (2 open items)**
+Replaced placeholder tool executor with `RoomToolExecutor` and wired it into app startup. Implemented full folder tools, note tools (with AI lock checks), search_system with date filtering, journal and log daily-subfolder append/read behavior, and voice_handoff logging. Implemented file tools with working extraction for docx/odt/ods/xlsx/text/code formats and metadata-based image description, plus summarize_file. Remaining open: `read_file` PDF extraction and true model-vision integration for `describe_image` (currently returns image metadata plus explicit not-yet-integrated status). API-layer auto-log path now safely handles non-JSON tool argument payloads.
+
+---
+
+**2026-04-05 — Phase 6 complete**
+Finished the remaining file-tool gaps. `read_file` now supports PDF text extraction via PDFBox Android (`com.tom-roush:pdfbox-android`) in addition to existing docx/odt/ods/xlsx/txt/md/code/json/xml/html/css paths. `describe_image` now calls provider vision APIs through a new `ImageVisionService` and returns model-generated descriptions with image metadata. Provider routing follows active encrypted provider setting and uses provider-specific request formats (OpenAI Responses vision input, Anthropic image blocks, xAI multimodal chat payload). Restored downloadable Google Fonts with official cert arrays (`font_certs.xml`) and kept full compile green.
+
+---
+
+**2026-04-05 — Phase 7 complete**
+Built and wired the in-app Eidos chat bottom sheet. Key files: `EidosBottomSheet` (new UI), `AppNavigation` (global bottom-sheet state + scope wiring), and `EidosChatViewModel` (used by sheet with message persistence). Implemented: Eidos button wiring from Parent Folder, Subfolder, and Editor top bars; swipe-to-dismiss ModalBottomSheet sized to ~65% of screen; user/right and Eidos/left bubble styling with gradient + `messageBubbleEidosBorder`; input + send controls; voice button placeholder for Phase 10; read-aloud toggle bound to DataStore from inside sheet; scoped chat storage (`__chat_{subfolderId}__` system subfolder) and root chat storage (`Eidos Chats` system folder) with appended transcript format `[HH:MM AM/PM] User/Eidos: ...`. Also fixed a chat persistence bug so successive lines append against latest note content and hardened send flow with error fallback + `isSending` reset in `finally`.
+
+**Next: Phase 8 — Journal and Log System UI.**

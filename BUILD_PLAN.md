@@ -140,95 +140,95 @@ Build the settings screen accessed from the three-dot menu on the Parent Folder 
 
 ---
 
-## Phase 5 — Eidos API Layer
+## Phase 5 — Eidos API Layer ✅
 
 Build the abstraction layer that connects Eidos to the three AI providers.
 
 ### 5.1 EidosApiClient
-- [ ] Define a common `EidosRequest` data class (systemPrompt, conversationHistory, toolDefinitions, userMessage)
-- [ ] Define a common `EidosResponse` data class (textResponse, toolCalls list)
-- [ ] Define `EidosProvider` interface with a single `send(request)` method
-- [ ] Implement `XAIProvider` for Grok 4.1 (grok-4.1) — standard chat completions API format with tool calling
-- [ ] Implement `OpenAIProvider` for GPT-5.4 nano (gpt-5.4-nano-2026-03-17) — uses Responses API, pass `previous_response_id`, reasoning effort = `none`, verbosity = `low`
-- [ ] Implement `AnthropicProvider` for Claude Haiku 4.5 (claude-haiku-4-5) — enable prompt caching on system prompt and note content
-- [ ] `EidosApiClient` reads active provider from EncryptedSharedPreferences and delegates to correct provider
+- [x] Define a common `EidosRequest` data class (systemPrompt, conversationHistory, toolDefinitions, userMessage)
+- [x] Define a common `EidosResponse` data class (textResponse, toolCalls list)
+- [x] Define `EidosProvider` interface with a single `send(request)` method
+- [x] Implement `XAIProvider` for Grok 4.1 (grok-4.1) — standard chat completions API format with tool calling
+- [x] Implement `OpenAIProvider` for GPT-5.4 nano (gpt-5.4-nano-2026-03-17) — uses Responses API, pass `previous_response_id`, reasoning effort = `none`, verbosity = `low`
+- [x] Implement `AnthropicProvider` for Claude Haiku 4.5 (claude-haiku-4-5) — enable prompt caching on system prompt and note content
+- [x] `EidosApiClient` reads active provider from EncryptedSharedPreferences and delegates to correct provider
 
 ### 5.2 Context Assembly
-- [ ] Assemble system prompt: Eidos identity + current subfolder name/ID + note content (if not AI locked) + list of attached files
-- [ ] Load recent journal entries (last 1-3 days) and append to system prompt selectively
-- [ ] Pass all tool definitions (from Phase 6) on every request
-- [ ] Trim oldest conversation messages if context grows very large; never trim system prompt or current note
+- [x] Assemble system prompt: Eidos identity + current subfolder name/ID + note content (if not AI locked) + list of attached files
+- [x] Load recent journal entries (last 1-3 days) and append to system prompt selectively
+- [x] Pass all tool definitions (from Phase 6) on every request
+- [x] Trim oldest conversation messages if context grows very large; never trim system prompt or current note
 
 ### 5.3 Tool Calling Loop
-- [ ] After each API response check for tool calls in the response
-- [ ] Execute the tool function locally (Phase 6)
-- [ ] Send tool result back to the model
-- [ ] Repeat until the model returns a final text response
-- [ ] Auto-call `write_log_entry` after every modifying tool call at this layer (not left to the model)
+- [x] After each API response check for tool calls in the response
+- [x] Execute the tool function locally (Phase 6)
+- [x] Send tool result back to the model
+- [x] Repeat until the model returns a final text response
+- [x] Auto-call `write_log_entry` after every modifying tool call at this layer (not left to the model)
 
 ### 5.4 Confirmation Flow
-- [ ] For tools requiring confirmation (move_to_trash, write_note, edit_note_section): surface the pending action in the chat UI before executing
-- [ ] Wait for user approval or decline
-- [ ] Only execute the tool if approved; log the outcome either way
+- [x] For tools requiring confirmation (move_to_trash, write_note, edit_note_section): surface the pending action in the chat UI before executing
+- [x] Wait for user approval or decline
+- [x] Only execute the tool if approved; log the outcome either way
 
 ### 5.5 Fallback
-- [ ] Retry failed requests once after a short delay
-- [ ] On second failure, show user an error message and offer provider switch option
+- [x] Retry failed requests once after a short delay
+- [x] On second failure, show user an error message and offer provider switch option
 
 ---
 
-## Phase 6 — Tool Functions
+## Phase 6 — Tool Functions ✅
 
 Implement every tool defined in TOOL_FUNCTIONS.md as callable Kotlin functions that the API layer invokes.
 
 ### 6.1 Folder Tools
-- [ ] `create_parent_folder(name)` → insert ParentFolder; log action
-- [ ] `create_subfolder(parentFolderId, name)` → insert Subfolder + auto-create Note + auto-create system chat Subfolder; log action
-- [ ] `rename_folder(folderId, newName)` → update name + updatedAt on ParentFolder or Subfolder; log action
-- [ ] `move_to_trash(folderId)` → requires confirmation; cascade deletedAt; log action
-- [ ] `list_folder_contents(folderId)` → return list of active subfolders or contents; no modification
+- [x] `create_parent_folder(name)` → insert ParentFolder; log action
+- [x] `create_subfolder(parentFolderId, name)` → insert Subfolder + auto-create Note + auto-create system chat Subfolder; log action
+- [x] `rename_folder(folderId, newName)` → update name + updatedAt on ParentFolder or Subfolder; log action
+- [x] `move_to_trash(folderId)` → requires confirmation; cascade deletedAt; log action
+- [x] `list_folder_contents(folderId)` → return list of active subfolders or contents; no modification
 
 ### 6.2 Note Tools
-- [ ] `read_note(subfolderId)` → return note content; ignore AI lock (Eidos can always read)
-- [ ] `write_note(subfolderId, content)` → requires confirmation; check aiLocked; replace content; update updatedAt; log action; re-embed (Phase 9)
-- [ ] `append_note(subfolderId, content)` → check aiLocked; append to content; update updatedAt; log action; re-embed (Phase 9)
-- [ ] `edit_note_section(subfolderId, targetText, newContent)` → requires confirmation; check aiLocked; find and replace targetText; update updatedAt; log action; re-embed (Phase 9)
+- [x] `read_note(subfolderId)` → return note content; ignore AI lock (Eidos can always read)
+- [x] `write_note(subfolderId, content)` → requires confirmation; check aiLocked; replace content; update updatedAt; log action; re-embed (Phase 9)
+- [x] `append_note(subfolderId, content)` → check aiLocked; append to content; update updatedAt; log action; re-embed (Phase 9)
+- [x] `edit_note_section(subfolderId, targetText, newContent)` → requires confirmation; check aiLocked; find and replace targetText; update updatedAt; log action; re-embed (Phase 9)
 
 ### 6.3 File Tools
-- [ ] `list_files(subfolderId)` → return FileReferences list; no modification
-- [ ] `read_file(fileReferenceId)` → extract text from PDF/docx/odt/txt/md/xlsx/ods/js/py/kt/ts/html/css/json/xml; return text
-- [ ] `describe_image(fileReferenceId)` → pass image to model vision capability; return description
-- [ ] `summarize_file(fileReferenceId)` → read_file then summarize; no modification
+- [x] `list_files(subfolderId)` → return FileReferences list; no modification
+- [x] `read_file(fileReferenceId)` → extract text from PDF/docx/odt/txt/md/xlsx/ods/js/py/kt/ts/html/css/json/xml; return text
+- [x] `describe_image(fileReferenceId)` → pass image to model vision capability; return description
+- [x] `summarize_file(fileReferenceId)` → read_file then summarize; no modification
 
 ### 6.4 Search Tool
-- [ ] `search_system(query, dateFrom?, dateTo?)` → SQL LIKE search across ParentFolder.name, Subfolder.name, Note.content; apply date filters on updatedAt; return results
+- [x] `search_system(query, dateFrom?, dateTo?)` → SQL LIKE search across ParentFolder.name, Subfolder.name, Note.content; apply date filters on updatedAt; return results
 
 ### 6.5 Journal Tools
-- [ ] `write_journal_entry(content, timestamp)` → get or create today's daily subfolder in Eidos Journal; append entry to its note with timestamp header
-- [ ] `read_journal(query?, dateFrom?, dateTo?)` → search journal entries by keyword and/or date range
+- [x] `write_journal_entry(content, timestamp)` → get or create today's daily subfolder in Eidos Journal; append entry to its note with timestamp header
+- [x] `read_journal(query?, dateFrom?, dateTo?)` → search journal entries by keyword and/or date range
 
 ### 6.6 Log Tools
-- [ ] `write_log_entry(action, timestamp)` → get or create today's daily subfolder in Eidos Log; append entry to its note with timestamp, action, location, and deep link anchor
-- [ ] `read_log(query?, dateFrom?, dateTo?)` → search log entries by keyword and/or date range
+- [x] `write_log_entry(action, timestamp)` → get or create today's daily subfolder in Eidos Log; append entry to its note with timestamp, action, location, and deep link anchor
+- [x] `read_log(query?, dateFrom?, dateTo?)` → search log entries by keyword and/or date range
 
 ### 6.7 Voice Handoff Tool
-- [ ] `voice_handoff(conversationId?, state, timestamp, metadata?)` → update voice session state (start / eidos_speaking / user_listen / end / pause); log state change to Eidos Log
+- [x] `voice_handoff(conversationId?, state, timestamp, metadata?)` → update voice session state (start / eidos_speaking / user_listen / end / pause); log state change to Eidos Log
 
 ---
 
-## Phase 7 — Eidos Chat UI
+## Phase 7 — Eidos Chat UI ✅
 
 Build the Eidos bottom sheet and conversation UI inside the app.
 
-- [ ] Eidos button in top bar of all screens opens the bottom sheet
-- [ ] Bottom sheet covers ~65% of screen; note remains partially visible above
-- [ ] Swipe down to dismiss; no back button needed
-- [ ] Message list: user bubbles (right, surface2 background) vs Eidos bubbles (left, gradient messageBubbleEidos with messageBubbleEidosBorder)
-- [ ] Text input field at bottom of sheet; send button
-- [ ] Voice button in sheet to switch to voice input (Phase 10)
-- [ ] Read aloud toggle in sheet
-- [ ] Conversations scoped to current subfolder save to that subfolder's system chat subfolder; root-level conversations save to Eidos Chats system folder
-- [ ] Each conversation is one Note; messages appended in `[HH:MM AM/PM] User: ...` / `[HH:MM AM/PM] Eidos: ...` format
+- [x] Eidos button in top bar of all screens opens the bottom sheet
+- [x] Bottom sheet covers ~65% of screen; note remains partially visible above
+- [x] Swipe down to dismiss; no back button needed
+- [x] Message list: user bubbles (right, surface2 background) vs Eidos bubbles (left, gradient messageBubbleEidos with messageBubbleEidosBorder)
+- [x] Text input field at bottom of sheet; send button
+- [x] Voice button in sheet to switch to voice input (Phase 10)
+- [x] Read aloud toggle in sheet
+- [x] Conversations scoped to current subfolder save to that subfolder's system chat subfolder; root-level conversations save to Eidos Chats system folder
+- [x] Each conversation is one Note; messages appended in `[HH:MM AM/PM] User: ...` / `[HH:MM AM/PM] Eidos: ...` format
 
 ---
 
