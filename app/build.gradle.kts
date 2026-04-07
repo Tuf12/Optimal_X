@@ -32,6 +32,10 @@ android {
         compose = true
     }
 
+    aaptOptions {
+        noCompress("tflite")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -85,6 +89,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.pdfbox.android)
+    implementation(libs.tflite)
+    implementation(libs.mediapipe.tasks.text)
 
     // Tests
     testImplementation(libs.junit)

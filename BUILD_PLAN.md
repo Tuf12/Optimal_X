@@ -232,32 +232,32 @@ Build the Eidos bottom sheet and conversation UI inside the app.
 
 ---
 
-## Phase 8 — Journal and Log System UI
+## Phase 8 — Journal and Log System UI ✅
 
 Build the UI for the user to read the Eidos Journal, Eidos Log, and Eidos Chats.
 
-- [ ] Dedicated Eidos section accessible from the app (button in Parent Folder Page top bar area or within three-dot menu)
-- [ ] Three entries: Eidos Journal, Eidos Log, Eidos Chats (system folders — not shown in regular folder list)
-- [ ] Each opens like a folder page showing daily subfolders (or conversation subfolders for Chats)
-- [ ] Tapping a daily subfolder opens the note (read only for user in Journal and Log)
-- [ ] Checkbox selection for individual entries → delete selected entries
-- [ ] Deep links in Log entries: tapping a log entry navigates to the referenced folder/subfolder/note and scrolls to the text anchor
+- [x] Dedicated Eidos section accessible from the app (button in Parent Folder Page top bar area or within three-dot menu)
+- [x] Three entries: Eidos Journal, Eidos Log, Eidos Chats (system folders — not shown in regular folder list)
+- [x] Each opens like a folder page showing daily subfolders (or conversation subfolders for Chats)
+- [x] Tapping a daily subfolder opens the note (read only for user in Journal and Log)
+- [x] Checkbox selection for individual entries → delete selected entries
+- [x] Deep links in Log entries: tapping a log entry navigates to the referenced folder/subfolder/note and scrolls to the text anchor
 
 ---
 
-## Phase 9 — Semantic Search (On-Device)
+## Phase 9 — Semantic Search (On-Device) ✅
 
 Build the on-device vector search system for Eidos.
 
-- [ ] Integrate TensorFlow Lite with the Universal Sentence Encoder model (bundled in assets)
-- [ ] Define a local vector store: a simple SQLite table (or separate Room entity) storing (id, sourceType, sourceId, vector BLOB)
-- [ ] Write `EmbeddingEngine`: takes a text string, runs it through USE, returns a float array
-- [ ] Write `VectorStore`: insert vector, search by cosine similarity, delete by sourceId
-- [ ] Embedding pipeline: when a Note is created or updated → embed Note.content → upsert vector in VectorStore
-- [ ] Embedding pipeline: when Eidos reads a file (read_file tool) → embed extracted text → upsert vector
-- [ ] Embed ParentFolder and Subfolder names on creation/rename
-- [ ] Add `search_semantic(query, limit)` tool function: embed query → find top-N closest vectors → return matching notes/folders
-- [ ] Eidos search priority: semantic first, keyword fallback if semantic confidence is low, date filtering applied on top
+- [x] Integrate TensorFlow Lite with the Universal Sentence Encoder model (bundled in assets)
+- [x] Define a local vector store: a simple SQLite table (or separate Room entity) storing (id, sourceType, sourceId, vector BLOB)
+- [x] Write `EmbeddingEngine`: takes a text string, runs it through USE, returns a float array
+- [x] Write `VectorStore`: insert vector, search by cosine similarity, delete by sourceId
+- [x] Embedding pipeline: when a Note is created or updated → embed Note.content → upsert vector in VectorStore
+- [x] Embedding pipeline: when Eidos reads a file (read_file tool) → embed extracted text → upsert vector
+- [x] Embed ParentFolder and Subfolder names on creation/rename
+- [x] Add `search_semantic(query, limit)` tool function: embed query → find top-N closest vectors → return matching notes/folders
+- [x] Eidos search priority: semantic first, keyword fallback if semantic confidence is low, date filtering applied on top
 
 ---
 
@@ -265,14 +265,14 @@ Build the on-device vector search system for Eidos.
 
 Build the voice interaction layer used by both the Eidos bottom sheet and the widget.
 
-- [ ] Implement `SpeechToText` wrapper around Android SpeechRecognizer: real-time text display as user speaks
-- [ ] Implement `TextToSpeech` wrapper around Android TextToSpeech engine
-- [ ] Implement wake word detection: lightweight always-on listener for "Hey Eidos" (only active when widget is enabled)
-- [ ] Walkie-talkie handoff: detect handoff word ("Over and out") in speech stream to trigger send; Eidos says handoff word at end of TTS response
-- [ ] Wire STT → message send → Eidos API call → TTS response loop
-- [ ] Read aloud toggle: persists via DataStore; when off, TTS skipped but text still shown
-- [ ] Warn user in settings if they set a very common wake/handoff word
-- [ ] Voice processing happens on device; no external voice API calls
+- [x] Implement `SpeechToText` wrapper around Android SpeechRecognizer: real-time text display as user speaks
+- [x] Implement `TextToSpeech` wrapper around Android TextToSpeech engine
+- [x] Implement wake word detection: lightweight always-on listener for "Hey Eidos" (only active when widget is enabled)
+- [x] Walkie-talkie handoff: detect handoff word ("Over and out") in speech stream to trigger send; Eidos says handoff word at end of TTS response
+- [x] Wire STT → message send → Eidos API call → TTS response loop
+- [x] Read aloud toggle: persists via DataStore; when off, TTS skipped but text still shown
+- [x] Warn user in settings if they set a very common wake/handoff word
+- [x] Voice processing happens on device; no external voice API calls
 
 ---
 
@@ -280,14 +280,14 @@ Build the voice interaction layer used by both the Eidos bottom sheet and the wi
 
 Build the Android home screen widget.
 
-- [ ] Widget layout: Talk button, End button, Conversation picker dropdown (last 10 conversations), Text chat button
-- [ ] Widget is minimal — no notes, no folder content, no previews
-- [ ] Talk button → start STT session → walkie-talkie loop with Eidos
-- [ ] End button → finalize and save conversation note to Eidos Chats system folder
-- [ ] Conversation picker: shows last 10 conversations from entire system (query by most recent updatedAt on chat notes); tap to continue selected conversation
-- [ ] Text chat button → opens a full text chat screen (standard Eidos chat UI, not voice)
-- [ ] All widget conversations saved to Eidos Chats system folder (one subfolder per conversation, named YYYY-MM-DD — HH:MM AM/PM)
-- [ ] Wake word detection runs only while widget is active and enabled
+- [x] Widget layout: Talk button, End button, Conversation picker dropdown (last 10 conversations), Text chat button
+- [x] Widget is minimal — no notes, no folder content, no previews
+- [x] Talk button → start STT session → walkie-talkie loop with Eidos
+- [x] End button → finalize and save conversation note to Eidos Chats system folder
+- [x] Conversation picker: shows last 10 conversations from entire system (query by most recent updatedAt on chat notes); tap to continue selected conversation
+- [x] Text chat button → opens a full text chat screen (standard Eidos chat UI, not voice)
+- [x] All widget conversations saved to Eidos Chats system folder (one subfolder per conversation, named YYYY-MM-DD — HH:MM AM/PM)
+- [x] Wake word detection runs only while widget is active and enabled
 
 ---
 

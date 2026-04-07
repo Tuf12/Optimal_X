@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:name=".OptimalXApplication"
@@ -25,6 +28,40 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Widget Activities — taskAffinity="" isolates them from the main app task
+             so finishing returns to the home screen instead of the app. -->
+        <activity
+            android:name=".widget.WidgetChatActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.OptimalX" />
+
+        <activity
+            android:name=".widget.ConversationPickerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Widget Voice Service -->
+        <service
+            android:name=".widget.WidgetVoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Home Screen Widget -->
+        <receiver
+            android:name=".widget.OptimalXWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
 
     </application>
 
