@@ -1,3 +1,36 @@
+All projects
+Optimal X
+OptimalX is a **simple, structured note system designed for both humans and AI agents to use directly**. It is not a traditional note app. It is a **hierarchical knowledge environment** where: - users store information in folders and notes - AI agents (Eidos) can read, write, organize, and operate inside the same system
+
+
+How can I help you today?
+
+    Market viability of custom note-taking app
+    Last message 7 hours ago
+
+Speech to text timeout issues
+Last message 14 hours ago
+Optimal X app architecture documentation
+Last message 1 day ago
+MD files prepared for coding agent project
+Last message 2 days ago
+GitHub repository description
+Last message 2 days ago
+Memory
+Only you
+
+Purpose & context Jesse is a solo developer building OptimalX v2, a Kotlin/Jetpack Compose Android note-taking and AI agent app. A previous version was built with ChatGPT; v2 is a more mature, fully architected rebuild. Jesse uses AI coding agents (Claude Code and Cursor) as the primary development mechanism, with Claude serving as architecture partner. A separate app, Stockzilla, also exists with its own Eidos AI agent implementation. Jesse's longer-term vision includes inter-agent API communication across multiple apps. Current state A full suite of architecture documentation (14 MD files) has been produced and refined, covering the complete system: UI principles, app structure, data model, editor/panels, files/media, the Eidos agent, tool functions, journal system, search/retrieval, API layer, widget system, and voice system. HTML mockups of the main app screens and widget states have also been completed. Key architectural decisions locked in: Database: Room with unique Long IDs; soft-delete via deletedAt timestamps Navigation: Swipe-based panel system in the editor; bottom sheet for Eidos AI assistant Search: Dual keyword + semantic search via TensorFlow Lite Universal Sentence Encoder API layer: Multi-provider (Grok 4.1, GPT-5.4 nano with 1M context window, Claude Haiku 4.5); GPT-5.4 nano supports tool functions but not tool search or computer use Voice: Walkie-talkie style with customizable wake word ("Hey Eidos") and handoff phrase ("Over and out") AI agent: Named Eidos (chosen for its philosophical meaning relating to essence); three-tier system folder structure (Eidos Journal, Eidos Log, Eidos Chats) mirroring the app's regular folder hierarchy UI: Dark theme, acid green (#c8fb5e) accents, Syne/DM Sans/DM Mono fonts; animated waveforms confirmed achievable in-app but not in Android home screen widgets Key learnings & principles Documentation files are machine-readable blueprints for coding agents, not human narratives — conciseness and clarity are essential Coding agents should have room to think; over-constraining prompts is counterproductive "What Does Not Exist" sections and similar explanatory bloat are unwanted and should be cut Journal.md functions as working memory for the Cursor coding agent (context across sessions); README.md is for GitHub/human readers — these serve distinct purposes Approach & patterns Jesse has strong product instincts and actively corrects errors (factual, structural, or stylistic) during collaboration — Claude should expect pushback and treat it as signal, not noise Claude Code runs with auto-accept enabled during straightforward build phases Builds are tested on a physical Android device via Android Studio before changes are accepted Large single-file outputs can fail to preview in-app; splitting into smaller files is the reliable workaround Preference for concise, direct outputs — no redundant explanations or padding Tools & resources Development: Kotlin, Jetpack Compose, Android Studio, Room database, TensorFlow Lite AI coding agents: Claude Code, Cursor APIs: Grok 4.1, GPT-5.4 nano, Claude Haiku 4.5 Testing: Physical Android device
+
+Last updated 23 hours ago
+Instructions
+
+Add instructions to tailor Claude’s responses
+Files
+2% of project capacity used
+
+Data model
+
+10.79 KB •281 linesFormatting may be inconsistent from source
 # DATA_MODEL.md
 
 ## Purpose
@@ -55,14 +88,18 @@ A top-level container. Holds subfolders.
 | createdAt | Long | Unix timestamp of creation |
 | updatedAt | Long | Unix timestamp of last modification |
 | sortOrder | Int | User-defined sort position |
+| isSystemFolder | Boolean | If true, cannot be renamed, moved to trash, or deleted. Default false. |
 | deletedAt | Long? | Unix timestamp of when item was moved to trash. Null means active. |
-| isSystemFolder | Boolean | If true, parent folder is a protected system folder (cannot be renamed, moved to trash, or deleted). Default is false. |
 
 Rules:
 - A parent folder contains zero or more subfolders
 - A parent folder does not contain notes directly
 - Deleting a parent folder moves it and all its subfolders and contents to trash (sets deletedAt)
 - Permanently deleting removes the row from the database
+- System folders (isSystemFolder = true) cannot be trashed, deleted, or renamed
+- The "Eidos Chats" system folder is visible in the main folder list alongside user folders — it is not hidden
+- The "Eidos Journal" and "Eidos Log" system folders are not shown in the main folder list — they are only accessible via the Eidos menu
+- When a user creates a new parent folder, a "Chats" system subfolder is automatically created inside it (see Subfolder rules below)
 
 ---
 
@@ -78,8 +115,8 @@ A working space inside a parent folder. Each subfolder has exactly one note.
 | createdAt | Long | Unix timestamp of creation |
 | updatedAt | Long | Unix timestamp of last modification |
 | sortOrder | Int | User-defined sort position |
+| isSystemSubfolder | Boolean | If true, cannot be renamed, moved to trash, or deleted. Default false. |
 | deletedAt | Long? | Unix timestamp of when item was moved to trash. Null means active. |
-| isSystemSubfolder | Boolean | If true, subfolder is a protected system subfolder (cannot be renamed, moved to trash, or deleted). Default is false. |
 
 Rules:
 - A subfolder belongs to exactly one parent folder (via parentFolderId)
@@ -87,6 +124,10 @@ Rules:
 - A subfolder can have zero or more file attachments
 - Deleting a subfolder moves it and its note and file references to trash (sets deletedAt)
 - Permanently deleting removes the row from the database
+- System subfolders (isSystemSubfolder = true) cannot be trashed, deleted, or renamed
+- When a user creates a new parent folder, a "Chats" system subfolder (isSystemSubfolder = true) is automatically inserted into that parent folder
+- The "Chats" system subfolder is visible in the subfolder list but cannot be edited by the user — its note content is managed only by the Eidos chat system
+- Tapping the "Chats" subfolder opens the Conversation List screen for that parent folder scope, not the note editor
 
 ---
 
@@ -121,51 +162,98 @@ A pointer to a file stored in device storage (or cloud storage in the future).
 | id | Long (auto) | Unique identifier, auto-generated |
 | subfolderId | Long | ID of the subfolder this file belongs to |
 | fileName | String | Display name of the file |
-| fileType | String | Type of file. Supported types include: pdf, docx, odt, image (jpg/png/gif/webp/heic), txt, md, xlsx, ods, pptx, odp, code (js/py/kt/ts/html/css/json/xml) |
+| fileType | String | Type of file: pdf / docx / image |
 | filePath | String | Path to the file in device storage (or cloud URL in future) |
 | createdAt | Long | Unix timestamp when file was attached |
 
 Rules:
 - A file reference belongs to exactly one subfolder (via subfolderId)
 - The actual file content lives in device storage, not in the database
-- `filePath` points to the location of the file on the device
-- When cloud storage is added, `filePath` becomes a cloud URL — no schema change required
-- Supported file types in v2: pdf, docx, odt, jpg, png, gif, webp, heic, txt, md, xlsx, ods, pptx, odp, js, py, kt, ts, html, css, json, xml
+- filePath points to the location of the file on the device
+- When cloud storage is added, filePath becomes a cloud URL — no schema change required
+- Supported file types in v2: pdf, docx, image
 - Deleting a subfolder deletes all associated file references
 - Deleting a file reference does not automatically delete the file from device storage (handle separately)
 
- - Deleting a file reference does not automatically delete the file from device storage (handle separately)
+---
+
+### Conversation
+
+A single chat session between the user and Eidos.
+Every conversation is scoped to exactly one context level.
+
+| Field | Type | Description |
+|---|---|---|
+| id | Long (auto) | Unique identifier, auto-generated |
+| scopeType | String | The level this conversation belongs to: "general", "parent", or "subfolder" |
+| parentFolderId | Long? | Set when scopeType is "parent". ID of the parent folder. Null otherwise. |
+| subfolderId | Long? | Set when scopeType is "subfolder". ID of the subfolder. Null otherwise. |
+| title | String | Auto-generated title — date and time of creation (e.g. April 6, 2026 — 2:34 PM) |
+| createdAt | Long | Unix timestamp of creation |
+| updatedAt | Long | Unix timestamp of last message |
+
+Scope rules:
+- scopeType "general" — conversation started from widget or parent folder page. Both parentFolderId and subfolderId are null.
+- scopeType "parent" — conversation started from a subfolder page. parentFolderId is set. subfolderId is null.
+- scopeType "subfolder" — conversation started from inside the editor (any panel). subfolderId is set. parentFolderId may be set for reference but subfolderId is the primary key.
+
+Rules:
+- A conversation is created automatically when the user opens Eidos in any context
+- A conversation is never reused across sessions — each time Eidos is opened a new conversation starts unless the user explicitly continues a previous one
+- Conversations are never moved to trash — the user deletes them directly from the history browser
+- Deleting a parent folder deletes all conversations scoped to it
+- Deleting a subfolder deletes all conversations scoped to it
 
 ---
 
-## System Parent Folders (created on first install)
+### ChatMessage
 
-On first install the app creates three protected system-level parent folders. These are real ParentFolder objects with `isSystemFolder = true` and must be present so coding agents and migration scripts can rely on them:
+A single message inside a conversation.
 
-| Folder | Purpose |
-|---|---|
-| Eidos Journal | Eidos private working memory — daily subfolders with journal notes for Eidos to rebuild context |
-| Eidos Log | Append-only activity record — daily subfolders with log notes recording every system modification Eidos makes |
-| Eidos Chats | Conversation archive — stores widget and app-level conversations (one subfolder/note per conversation) |
+| Field | Type | Description |
+|---|---|---|
+| id | Long (auto) | Unique identifier, auto-generated |
+| conversationId | Long | ID of the conversation this message belongs to |
+| role | String | Who sent the message: "user" or "eidos" |
+| content | String | Full text content of the message |
+| createdAt | Long | Unix timestamp of the message |
 
-Rules for system parent folders:
-- Created automatically on first app install
-- Have `isSystemFolder = true` set on the ParentFolder record
-- Cannot be renamed, moved to trash, or deleted as a whole (individual entries/conversations may be deleted)
-- They do not appear in the regular folder list and are accessible from the dedicated Eidos section in the app
+Rules:
+- A message belongs to exactly one conversation (via conversationId)
+- Messages are append only — they are never edited after being written
+- Deleting a conversation deletes all its messages
+
+---
 
 ## Object Relationships
 
 ```
-ParentFolder (1)
-    └── Subfolder (many)
-            ├── Note (exactly 1, auto-created)
-            └── FileReference (0 or many)
+Main folder list
+    ├── Eidos Chats (system ParentFolder, visible to user)
+    │       └── Conversation (0 or many, scopeType "general") ← widget + root-level chats
+    ├── Eidos Journal (system ParentFolder, menu-only)
+    ├── Eidos Log (system ParentFolder, menu-only)
+    └── UserParentFolder (many)
+            ├── Chats (system Subfolder, auto-created, visible to user)
+            │       └── Conversation (0 or many, scopeType "parent")
+            └── UserSubfolder (many)
+                    ├── Note (exactly 1, auto-created)
+                    ├── FileReference (0 or many)
+                    └── Conversation (0 or many, scopeType "subfolder")
+
+Conversation (1)
+    └── ChatMessage (many)
 ```
 
-- ParentFolder → Subfolder: one to many
+- ParentFolder → Subfolder: one to many (includes the auto-created "Chats" system subfolder)
 - Subfolder → Note: one to one
 - Subfolder → FileReference: one to many
+- Conversation → ChatMessage: one to many
+
+Chat scope to folder mapping:
+- `scopeType "general"` → stored under Eidos Chats system parent folder; accessible from main list or Eidos menu on any top-level page
+- `scopeType "parent"` → linked to a user ParentFolder via parentFolderId; accessible via the "Chats" system subfolder within that parent folder or via the Eidos menu on the parent folder page
+- `scopeType "subfolder"` → linked to a user Subfolder via subfolderId; accessible only via the Eidos menu on the editor/panel page for that subfolder
 
 ---
 
@@ -208,8 +296,8 @@ OptimalX uses a soft delete system. Nothing is permanently deleted immediately.
 - Items where `deletedAt` has a value are in the trash
 
 ### Cascade behavior
-- Deleting a parent folder → sets deletedAt on the parent folder, all its subfolders, their notes, and their file references
-- Deleting a subfolder → sets deletedAt on the subfolder, its note, and its file references
+- Deleting a parent folder → sets deletedAt on the parent folder, all its subfolders, their notes, file references, and all scoped conversations and messages
+- Deleting a subfolder → sets deletedAt on the subfolder, its note, file references, and all scoped conversations and messages
 - Everything moves together
 
 ### Restoring

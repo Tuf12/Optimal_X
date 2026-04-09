@@ -144,7 +144,8 @@ Full tool definitions are in TOOL_FUNCTIONS.md.
 
 - Eidos cannot write to a note that has AI lock enabled
 - Eidos can always read a note regardless of lock status
-- Eidos cannot permanently delete anything — it can move to trash but not permanently remove
+- Eidos cannot permanently delete anything — it can move items to trash but cannot empty trash or permanently remove items
+- Any deletion action (trash move or note-text deletion/replacement) requires explicit user approval
 - Eidos always logs its actions — it cannot act silently
 
 ---

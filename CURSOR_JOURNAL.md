@@ -291,6 +291,102 @@ Files changed: `SpeechToTextEngine.kt` (silence timeout values), `VoiceControlle
 
 ---
 
+**2026-04-08 — Phase 3 addendum 2: input field unlocked + mic/send separation**
+
+Input field always editable: removed `!isListening` from `enabled` in both `EidosBottomSheet` and `WidgetChatActivity`. Field gains focus → `onFocusChanged` pauses mic → user edits → tap mic to resume or tap Send to send. `onValueChange` still guards `!isListening` so typing while live transcript is showing doesn't corrupt the buffer; the focus event pauses first.
+
+Mic button no longer sends: LISTENING → `pauseListening()` only. Send button is the only send path for in-app chat.
+
+Widget home screen: `btn_end` renamed to `btn_send` in `widget_layout.xml` (icon ➤ accent green, label "Send"). `OptimalXWidget` wires `btn_send` → `ACTION_SEND`. `WidgetVoiceService`: `ACTION_END_SESSION` removed and replaced by `ACTION_SEND`; mic tap while LISTENING now calls `endSession()` (cancel, no send); `handleSend()` does the old commit-and-send logic. Notification action changed from "End" to "Send". Notification text updated: "Listening… tap Send to send, Mic to cancel". Build passing.
+
+**Next:** Phase 4 — History + New Chat buttons, ConversationHistorySheet, ConversationListScreen.
+
+---
+
+**2026-04-08 — Phase 3 addendum: edit auto-resend + mic PAUSED state**
+
+Edit message now auto-resends to Eidos. Extracted `callApiAndInsertReply(conversation, userText)` from `sendMessage()` — shared by both send and edit paths. `editMessage()` now: updates content, deletes messages after, reloads trimmed history, calls `callApiAndInsertReply()`, sets `_isSending` guard. `appendErrorMessage()` helper extracted for both paths.
+
+Mic PAUSED state added to `VoiceSessionState`. `VoiceController` gets `pauseListening()` — stops STT, commits accumulated text to input via callback, keeps `activeOnResult` alive; and `resumeListening(currentInputText)` — restarts STT with edited text as new base. Both UIs: `TextField.onFocusChanged` pauses mic when focused while LISTENING. Mic button handles PAUSED → resume. Placeholder shows "Paused — tap mic to resume". Indicator underline stays accent during PAUSED. Send button enabled while PAUSED (text already in input). Build passing.
+
+**Next:** Phase 4 — History + New Chat buttons, ConversationHistorySheet, ConversationListScreen.
+
+---
+
+**2026-04-07 — CHAT_UI_BUILD.md Phase 4 complete**
+All Phase 4 code implemented and compiling green.
+
+4.1–4.3 (EidosChatViewModel): `newChat()`, `switchConversation()`, `conversationSummaries` flow, `refreshSummaries()`, scope restore on `applyScope()` — all implemented in Phase 0 session.
+
+4.4–4.6 (EidosBottomSheet): History (`Icons.Default.History`) and New Chat (`Icons.Default.AddComment`) top bar buttons; `ConversationHistorySheet` modal bottom sheet; `showHistorySheet` state wired.
+
+4.7 (WidgetChatActivity): Same History + New Chat buttons wired with `WidgetPrefs.clearActiveConversationId()` / `setActiveConversationId()`.
+
+4.8 (ConversationListScreen): Full-page conversation list with per-scope ViewModel, multi-select delete, empty state. `onOpenConversation` routes to editor.
+
+4.9 (Chats subfolder routing): `FolderDisplayItem.isSystem`, `FolderPage.onSystemFolderClick`, `SubfolderScreen.onSystemSubfolderClick` → `conversationList("parent", parentFolderId, "Chats")`.
+
+4.10 (Eidos Chats routing): `ParentFolderDao.getActiveParentFoldersWithChats()` exposes "Eidos Chats" in main list; `ParentFolderScreen.onSystemFolderClick` → `conversationList("general", 0L, "Eidos Chats")`.
+
+4.11 (Eidos menu scope routing): `EIDOS_SECTION` route now has `{scopeType}/{scopeId}` args; NavGraph passes scope to `EidosSectionScreen`; CHATS tap routes to `conversationList(scopeType, scopeId, ...)` instead of EidosSystemFolderScreen. EditorTopBar gains optional `onEidosSectionClick` button ("Section") so Editor can navigate into the scoped Eidos menu.
+
+Navigation: `CONVERSATION_LIST = "conversation_list/{scopeType}/{scopeId}/{title}"` added to NavHost. All phases complete. No regressions in build (`:app:compileDebugKotlin`).
+
+**Next:** Device validation for Phase 4 flows, then mark remaining validation items done.
+
+---
+
+**2026-04-08 — CHAT_UI_BUILD.md Phase 3 complete**
+Bubble action row + long press copy in `EidosBottomSheet` and `WidgetChatActivity`.
+
+Added to `ChatMessageDao`: `getById()`, `updateContent()`, `deleteAfter(conversationId, afterTimestamp)`.
+
+Added to `EidosChatViewModel`: `editMessage(messageId, newText)` — updates message content in DB, hard-deletes all messages in the conversation with `createdAt > edited.createdAt`, reloads trimmed history, resets `previousResponseId`.
+
+Added `onDone: (() -> Unit)?` parameter to `VoiceController.speakResponse()` — fires after TTS completes (used by reread to clear highlight).
+
+Both surfaces now have per-bubble action rows (below timestamp):
+- Eidos bubbles: VolumeUp (reread, accent when playing), ContentCopy
+- User bubbles: ContentCopy, Edit (opens AlertDialog pre-filled with message text)
+
+`SelectionContainer` wraps message body Text on all bubbles for long-press text selection.
+
+Edit flow: Save → `editMessage()` → DB update + deleteAfter + reload. Cancel → dismiss. Build passing.
+
+**Next:** Phase 4 — History + New Chat top bar buttons, ConversationHistorySheet, ConversationListScreen, directory routing.
+
+---
+
+**2026-04-08 — CHAT_UI_BUILD.md Phase 2 complete**
+Scroll-to-bottom button in `EidosBottomSheet`. Wrapped the `LazyColumn` in a `Box`; added `isAtBottom` derived state from `listState.layoutInfo` (true when last visible item index == totalItemsCount - 1). Auto-scroll on new message now only fires when `isAtBottom`. When scrolled up, an `IconButton` with `KeyboardArrowDown` appears bottom-right of the message list, tinted `accent`, with `surface2` background + `border` circle. Tap animates scroll to last item via `rememberCoroutineScope`. Build passing. Pending device validation.
+
+**Next:** Phase 3 — reread button on Eidos bubbles.
+
+---
+
+**2026-04-07 — CHAT_UI_BUILD.md Phase 0 + Phase 1 complete**
+Implemented the full data layer migration from note-based chat storage to dedicated Room entities.
+
+Phase 0 — Data layer:
+- Created `data/model/Conversation.kt` and `data/model/ChatMessage.kt` Room entities (no @Index annotations)
+- Created `data/dao/ConversationDao.kt` (getRecentGeneral, getRecentByParentFolder, getRecentBySubfolder, search variants, delete methods) and `data/dao/ChatMessageDao.kt`
+- Updated `AppDatabase` to v3 with MIGRATION_2_3: creates both tables, inserts "Chats" system subfolder for every existing user parent folder. **Critical note:** migration does NOT create any indices — entity classes have no @Index and Room schema validation requires them to match exactly.
+- Rewrote `EidosChatViewModel` with `ConversationScope` sealed class (General/ParentFolder/Subfolder), `applyScope()` restores last conversation for scope from DB, lazy `ensureConversation()` on first send, `loadConversation()`, `newChat()`, `switchConversation()`, `refreshSummaries()`. Conversation persists on scope change — only `newChat()` resets it.
+- Updated `AppNavigation` scope wiring: Main→General, SubfolderScreen→ParentFolder, EditorScreen→Subfolder
+- Updated `FolderRepository.createParentFolder()` to atomically insert "Chats" system subfolder
+- Rewrote `WidgetVoiceService` to use `ConversationDao`/`ChatMessageDao`, `ensureConversation()` creates Conversation row
+- Updated `WidgetPrefs` key `active_subfolder_id`→`active_conversation_id`, all accessors renamed
+- Updated `OptimalXWidget`, `WidgetChatActivity`, `ConversationPickerActivity` to use `EXTRA_CONVERSATION_ID`
+- Updated `EidosBottomSheet` to use `items(messages, key = { it.id })`
+
+Phase 1 — Timestamp font: changed from `DmSansFamily` → `DmMonoFamily` in both `EidosBottomSheet` and `WidgetChatActivity` bubble columns.
+
+Runtime crash fix: MIGRATION_2_3 originally contained `CREATE INDEX` statements that Room's schema validator rejected (entity declares `indices=[]`, migration created indices). Removed both `CREATE INDEX` blocks. Build now passes.
+
+**Next:** Phase 2 (scroll-to-bottom button in EidosBottomSheet), then Phase 3 (reread button), then Phase 4 (top bar History + New Chat buttons, ConversationHistorySheet, ConversationListScreen, directory routing). First validate Phase 0/1 on device.
+
+---
+
 **2026-04-06 — Debug build plan Batch 13 (voice handoff + settings scroll)**
 Removed the walkie-talkie auto-restart loop from the voice system. The old loop caused ERROR_RECOGNIZER_BUSY (11) and ERROR_NO_MATCH (7) errors to cascade into an infinite restart cycle that the user could not stop without force-closing the app.
 

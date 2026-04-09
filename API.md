@@ -132,11 +132,20 @@ Tool calling is the mechanism by which Eidos takes action inside the app.
 7. This loop repeats until the model produces a final text response
 
 ### Confirmation flow
-For tools that require confirmation (move_to_trash, write_note, edit_note_section):
+For tools that require confirmation (deletion actions):
 1. Eidos presents the action to the user in the chat
 2. User approves or declines
 3. If approved, the tool executes and the result is logged
 4. If declined, nothing happens and Eidos acknowledges the decline
+
+Current deletion-confirmed tools:
+- `move_to_trash`
+- `write_note` (replace/overwrite existing text)
+- `edit_note_section` (replace/remove existing text)
+
+Non-deleting actions (create, append, read, search, journal/log writes) execute without confirmation.
+
+Eidos is not allowed to permanently delete items from trash.
 
 ### Tool call logging
 Every tool call that modifies the system triggers a write_log_entry call automatically.

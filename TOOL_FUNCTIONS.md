@@ -12,26 +12,35 @@ Coding agents should use this file to build the tool calling layer between Eidos
 ## Tool Rules
 
 ### Confirmation required
-Any action that is destructive or cannot be easily undone must be confirmed by the user before Eidos executes it.
+Any action that deletes existing user data must be confirmed by the user before Eidos executes it.
 Eidos presents the action clearly and waits for approval or decline.
 If the user declines, nothing happens.
 
 Actions that require confirmation:
 - Moving anything to trash
-- Overwriting or erasing existing note content
-- Any action the user cannot immediately undo
+- Any note operation that removes or replaces existing text (for now: `write_note` and `edit_note_section`)
 
 ### No confirmation required
-Non-destructive actions do not require confirmation.
+Non-deleting actions do not require confirmation.
 Eidos executes them and logs them immediately.
 
 Actions that do not require confirmation:
 - Creating folders or subfolders
 - Appending content to a note
+- Writing brand-new note content where no user text is being removed
 - Reading any content
-- Writing new notes
 - Searching the system
 - Writing journal or log entries
+
+### Deletion approval UX
+- Deletion approvals are a simple Accept / Decline prompt surfaced to the user.
+- Eidos proposes the deletion action and waits for the user's choice.
+- If declined, no data is changed.
+
+### Trash permanence rule
+- Eidos can move items to trash.
+- Eidos cannot permanently delete items from trash.
+- There is no "empty trash" tool for Eidos.
 
 ### Logging
 Every action Eidos takes that modifies the system must be written to the Eidos Log.

@@ -1,10 +1,11 @@
+
 # VOICE_SYSTEM.md
 
 ## Purpose
 
 This file defines the voice interaction system for OptimalX v2.
 
-This covers wake word activation, speech to text input, text to speech output, the walkie talkie handoff system, and where voice is available across the app.
+This covers speech to text input, text to speech output, the push-to-talk interaction model, and where voice is available across the app.
 
 Coding agents should use this file alongside WIDGET_SYSTEM.md and EIDOS_AGENT.md to build the full voice layer.
 
@@ -16,50 +17,74 @@ Voice interaction is available in three places:
 
 | Location | Access method |
 |---|---|
-| Home screen widget | Talk button on the widget |
-| Eidos bottom sheet (inside the app) | Voice button in the chat interface |
-| Any chat screen | Voice button in the chat interface |
+| Home screen widget | Mic button on the widget |
+| Eidos bottom sheet (inside the app) | Mic button in the chat interface |
+| Any chat screen | Mic button in the chat interface |
 
 Voice is not a separate mode — it is an input and output option available wherever Eidos chat exists.
 
 ---
 
-## Wake Word
+## Speech to Text — Core Model
 
-The wake word activates Eidos voice mode without touching the screen.
+### Push-to-talk
 
-- **Default wake word:** "Hey Eidos"
-- The wake word is chosen to be unusual enough that it will not trigger accidentally in normal conversation
-- The wake word is customizable in app settings
-- Wake word detection runs in the background when the widget is active
+Voice input uses a push-to-talk model.
 
-### Wake word behavior
-- User says "Hey Eidos"
-- The widget activates and begins listening
-- A visual indicator shows that Eidos is listening
-- The user begins speaking their message
+- User taps the mic button → recording starts
+- User speaks freely, pausing as needed
+- User taps the send button (or taps mic again) → captured text is sent to Eidos
+
+The user controls when recording starts and when the message is sent.
+There is no auto-send on silence.
+There is no timeout that ends the conversation.
+
+### Persistent text buffer
+
+All captured speech is accumulated in a persistent text buffer.
+
+Rules:
+- The buffer holds everything the user has said since tapping the mic button
+- The buffer is displayed in the input bar in real time as speech is captured
+- The buffer is never cleared by a SpeechRecognizer restart — new results are always appended
+- The buffer is only cleared after the message is successfully sent
+- Tapping the mic button to start recording never clears the buffer
+- If the user taps mic again to resume after a pause, new speech appends to what is already there
+
+### SpeechRecognizer restart behavior
+
+Android's `SpeechRecognizer` has a built-in silence timeout that cannot be disabled.
+When it times out it stops itself. The app must restart it silently.
+
+Implementation rules:
+- When `onError` or `onEndOfSpeech` fires and the mic button is still active, restart `SpeechRecognizer` immediately
+- The restart must be silent — no beeps, no system audio feedback, no UI change visible to the user
+- Disable all system audio feedback on the recognizer intent:
+    - Set `RecognizerIntent.EXTRA_HIDE_PARTIAL_TRAILING_SILENCE` to true
+    - Set audio stream to silent or suppress default recognizer sounds
+- `onResults` and `onPartialResults` always append to the buffer — never replace it
+- The mic icon stays active (lit, animated) through the restart — it must never flicker or reset
+- The user must not be able to tell that a restart happened
+
+### What the input bar shows
+
+- While mic is active: accumulated text updates in real time as speech comes in
+- Text already in the buffer is preserved and new speech appends after it
+- After sending: input bar clears and returns to empty state
+- While Eidos is responding: input bar is inactive
 
 ---
 
-## Speaking to Eidos
+## Sending a Message
 
-### How input works
-- User speaks their message
-- Speech is converted to text in real time via Android speech to text
-- Text is displayed on screen as the user speaks so they can see what is being captured
-- The message is held until the user signals end of thought
-
-### Signaling end of thought
-The user has two options to send their message and pass control to Eidos:
+The user has two ways to send while the mic is active:
 
 | Method | Action |
 |---|---|
-| Voice command | Say the handoff word — default is "Over and out" |
-| Button | Tap the send/pass button on screen |
+| Tap send button | Finalizes the buffer and sends to Eidos |
+| Tap mic button (while active) | Stops recording and sends to Eidos |
 
-Both methods do the same thing — send the captured text to Eidos and signal that it is Eidos turn to respond.
-
-The handoff word is customizable in app settings.
+Both methods do the same thing: stop recording, send the full buffer content to Eidos, clear the buffer.
 
 ---
 
@@ -67,66 +92,55 @@ The handoff word is customizable in app settings.
 
 ### Text to speech
 - Eidos generates its response as text
-- The response is read aloud via text to speech
+- If read-aloud is on, the response is read aloud via Android TTS immediately after it is received
 - The response is also written into the active conversation note simultaneously
-- Text to speech can be toggled on or off by the user — it does not have to always be active
+- Text to speech can be toggled on or off by the user at any time
 
-### Passing back to the user
-When Eidos finishes its response it signals that it is the user's turn:
+### After Eidos finishes responding
+- If read-aloud is on: mic button reactivates automatically when TTS finishes — the user can speak immediately without tapping anything
+- If read-aloud is off: mic button is available to tap — the user initiates the next input manually
 
-| Method | Action |
-|---|---|
-| Voice signal | Eidos says the handoff word — "Over and out" |
-| Visual indicator | Screen shows it is the user's turn |
-
-This is the walkie talkie loop — explicit handoff in both directions so neither side is left waiting or guessing.
-
----
-
-## Walkie Talkie Loop
-
-The full conversation flow:
-
-```
-User says "Hey Eidos" → Eidos activates and listens
-User speaks message → text captured in real time
-User says "Over and out" or taps send → message sent to Eidos
-Eidos generates response → reads it aloud
-Eidos says "Over and out" → user knows it is their turn
-User speaks next message → loop continues
-User taps End button → conversation closes and is saved
-```
-
-This loop works hands free from start to finish.
-The user never has to touch the screen once the wake word has activated the session.
+There is no handoff phrase. The flow is controlled by buttons and TTS completion, not voice commands.
 
 ---
 
 ## Read Aloud Toggle
 
-Text to speech is not always on. The user controls it.
-
 | State | Behavior |
 |---|---|
-| Read aloud on | Eidos reads every response aloud |
-| Read aloud off | Eidos responds in text only — no audio |
+| Read aloud on | Eidos reads every response aloud. Mic reactivates automatically after TTS finishes. |
+| Read aloud off | Eidos responds in text only. User taps mic to speak next message. |
 
-The toggle is available in the chat interface.
+The toggle is a button in the chat interface.
 The setting persists until the user changes it — it does not reset between sessions.
+
+---
+
+## Wake Word
+
+The wake word activates Eidos voice mode without touching the screen.
+
+- Default wake word: "Hey Eidos"
+- Customizable in app settings
+- Wake word detection only runs when the widget is active and enabled
+- Does not run in the background if the widget has not been set up by the user
+
+### Wake word behavior
+- User says "Hey Eidos"
+- The widget activates and the mic goes active — same state as tapping the mic button
+- A visual indicator shows that Eidos is listening
+- User speaks their message, then taps send
 
 ---
 
 ## Voice Settings
 
-Both trigger phrases are customizable in app settings.
-
 | Setting | Default | Description |
 |---|---|---|
-| Wake word | "Hey Eidos" | Phrase that activates voice mode |
-| Handoff word | "Over and out" | Phrase that signals end of thought and passes control |
+| Wake word | "Hey Eidos" | Phrase that activates voice mode from the widget |
+| Read aloud | On | Whether Eidos reads responses aloud |
 
-Both words should be set to phrases that are unlikely to appear in normal conversation.
-The app should warn the user if they set a very common word or phrase.
+The handoff phrase ("Over and out") has been removed. Sending is controlled by the send button or mic button only.
 
 ---
 
@@ -145,28 +159,26 @@ Full detail on conversation storage is defined in WIDGET_SYSTEM.md and JOURNAL_S
 
 ---
 
-## Text Chat Option
+## Text and Voice Together
 
-Not every interaction needs to be voice.
+Every chat interface supports both text and voice input in the same conversation.
 
-Every chat interface — widget and in-app — supports both voice and text input.
-
-### Widget text option
-- The widget has a button to open a text chat screen directly
-- The chat screen supports both typing and voice
-- The user switches between them freely within the same conversation
-
-### In-app text option
-- The Eidos bottom sheet and all chat screens default to text input
-- A voice button is always available to switch to voice at any point
-- Switching between text and voice mid conversation is supported
+- The input bar always accepts typed text
+- The mic button is always available alongside the input bar
+- The user switches between typing and speaking freely within the same conversation
+- Voice input appends to whatever is already in the input bar — including text the user typed
 
 ---
 
 ## Technical Notes
 
-- Speech to text uses Android's built in speech recognition system
-- Text to speech uses Android's built in text to speech engine
-- Wake word detection requires a lightweight always-on listener — this should be implemented carefully to minimize battery impact
-- Wake word detection only runs when the widget is active and enabled — it does not run in the background if the user has not set up the widget
-- Voice processing happens on device where possible to protect privacy
+- Speech to text uses Android's built-in `SpeechRecognizer`
+- Text to speech uses Android's built-in `TextToSpeech` engine
+- `SpeechRecognizer` will time out on silence — this is an Android limitation that cannot be removed
+- The app must restart `SpeechRecognizer` silently on every timeout while the mic is active
+- All restarts must be inaudible — suppress all system audio feedback on the recognizer intent
+- The persistent buffer in the ViewModel (not in the recognizer) is the source of truth for accumulated text
+- Never rely on the recognizer's own state to hold the full message — always write results to the buffer immediately
+- Voice processing happens on device — no audio is sent to external servers
+- Wake word detection requires a lightweight always-on listener — implement carefully to minimize battery impact
+- Wake word detection only runs when the widget is active and enabled
