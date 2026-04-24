@@ -1,223 +1,109 @@
-
 # WIDGET_SYSTEM.md
 
 ## Purpose
 
-This file defines the home screen widget and quick AI entry system for OptimalX v2.
+Defines the behavior contract for the home screen widget as a voice-first entry point to Eidos.
 
-The widget allows the user to interact with Eidos from outside the app — hands free, voice first — without needing to open OptimalX.
+Use this file with `VOICE_SYSTEM.md`, `CHAT_UI.md`, and `DATA_MODEL.md`.
 
-Coding agents should use this file alongside EIDOS_AGENT.md, JOURNAL_SYSTEM.md, DATA_MODEL.md, and VOICE_SYSTEM.md to understand how the widget connects to the rest of the system.
+## Core Rule
 
----
+The widget mic button **does not** open chat UI.
 
-## What the Widget Is
+The mic is for hands-busy, app-independent conversation while the user navigates their device. Voice capture and responses run in the background flow.
 
-The widget is a home screen component that gives the user direct voice access to Eidos from anywhere on their phone.
+## Interaction Model
 
-It is not a mini version of the app.
-It is a voice entry point with a persistent conversation — speak to Eidos hands-free, and optionally open the chat UI to read or type.
+### Idle Widget
+- User sees minimal controls: mic, conversation picker, new chat, Quick Chat (not implemented yet).
+- Widget remains a launcher/control surface, not a mini app UI.
 
----
+### Mic State Model
 
-## Widget Layout
+- `Mic OFF` (idle): no active listening.
+- `Mic ON` (recording): active capture/transcription.
+- `Mic PAUSED` (yellow): listening paused, current draft preserved.
+- `Mic PROCESSING` (red): send in progress (STT finalize -> LLM -> optional TTS).
 
-The widget sits on the Android home screen.
+### Primary Conversation Loop
 
-### Controls
+1. User taps mic -> `Mic ON`.
+2. User speaks; STT accumulates into a persistent pre-send draft buffer.
+3. User taps send -> `Mic PROCESSING`.
+4. STT finalizes the full utterance before send commit.
+5. Message sends to Eidos; response is generated.
+6. Optional TTS reads response.
+7. Mic is handed back to user -> `Mic ON` again for continuous turn-taking.
 
-| Button | Action |
-|---|---|
-| Mic | Push-to-talk. Tap to start recording, tap again to send. Color indicates current state (see below). |
-| End | Ends and saves the current conversation. Widget returns to idle. |
-| Chat | Opens the widget chat UI showing the currently active conversation. |
-| New Chat | Closes the current conversation (saves it) and starts a fresh one. |
-| Conversations | Shows the 5 most recent general conversations. Tap one to open it in the chat UI. |
+### Pause / Resume / Cancel Rules
 
-### What the widget does NOT show
-- Notes or folder content
-- File previews
-- Chat messages inline on the widget surface
+- Mic tap while `Mic ON` pauses listening -> `Mic PAUSED` (yellow).
+- Pause must preserve the full draft (including late/segment-final text) before returning control.
+- Mic tap while `Mic PAUSED` resumes listening and continues appending to the same draft.
+- Long-press mic is explicit cancel: discard current unsent draft and turn mic off.
+- Timeout must not discard a non-empty draft.
 
-Keep it minimal. The widget is an entry point, not a display surface.
+## Voice-to-Chat Continuity
 
----
+Even though mic does not open chat UI, the same conversation must stay continuous:
 
-## Mic Button Color States
+- While voice is active, transcript and messages are written to the conversation record.
+- Widget chat UI reads that same conversation record.
+- If the user opens widget chat after speaking, they land in the same thread with full history already present.
 
-The mic button communicates voice session state through color.
+This allows seamless transition from voice-first interaction to typed chat without branching into a second conversation.
 
-| State | Color | Tappable |
-|---|---|---|
-| Idle — no active recording | Grey | Yes — starts recording |
-| Recording — mic is active, accumulating speech | Green | Yes — stops recording and sends |
-| Eidos responding — API call or TTS in progress | Red | No — locked until response is complete |
+## Active Conversation Targeting
 
-When the mic is red the user cannot accidentally interrupt an in-progress response.
-When TTS finishes (or read-aloud is off and the response is saved), the mic returns to grey.
+- Chat button opens the current active widget conversation.
+- Mic input appends to that same active conversation (no separate voice-only thread).
+- `New chat` creates a new conversation and makes it active; subsequent mic turns append there.
+- Selecting a conversation from the widget conversation list makes that thread active; subsequent mic turns append there.
+- Users can change active conversation before mic or during an ongoing voice session; send commits to whichever conversation is currently active.
 
----
+## Send From Anywhere (Current Scope)
 
-## Conversation Persistence
+To keep implementation small and reliable, "send from anywhere" is implemented with a foreground notification action:
 
-The widget maintains a single active conversation across interactions.
+- When widget mic starts a voice session, show an ongoing voice notification.
+- Notification includes a `Send` action available from any screen/app.
+- Notification `Send` and widget `Send` must call the same service action and commit the same active draft.
 
-### What keeps a conversation open
-- Each mic session (record + send + response) appends to the same active conversation
-- The user can leave the home screen, return, and continue the same conversation
-- Opening the chat UI (Chat button) does not close or reset the conversation
+## Draft Buffer Contract (Pre-Send)
 
-### What closes a conversation
-| Action | Result |
-|---|---|
-| Tap End | Conversation saved, widget returns to idle |
-| Tap New Chat | Current conversation saved, new blank conversation started |
-| Select a conversation from history | Current conversation saved, selected conversation becomes active |
-| 10-minute idle timeout | If no mic activity for 10 minutes, conversation is automatically saved and closed |
+- Widget voice keeps an unsent draft buffer separate from committed chat messages.
+- STT partials/finals append into this draft until send is tapped.
+- Send commits the finalized draft as the user message.
+- Pause/resume operates on this same draft buffer.
+- Cancel (long-press mic) clears this draft buffer.
 
-After closing, the next mic tap starts a new conversation automatically.
 
----
+## Conversation Scope
 
-## How Voice Works in the Widget
+Conversations created from `New chat` in the widget default to **general scope**:
 
-The widget mic runs voice interaction without opening any UI.
-The full conversation is written to a note in the background.
-The user can tap Chat at any time to view what was said.
+- `scopeType = "general"`
+- `parentFolderId = null`
+- `subfolderId = null`
+- Stored under `Eidos Chats` logical root
 
-### Mic push-to-talk flow
+Widget can also resume an existing conversation from any scope when that conversation is selected as active.
+Once selected, mic/send continue appending to that conversation instead of creating a new general thread.
 
-1. User taps mic (grey → green) — recording starts via WidgetVoiceService foreground service
-2. User speaks freely — speech is accumulated in a persistent buffer, mic stays open via auto-restart on silence timeout
-3. User taps mic again (green → red) — recording stops, transcript is sent to Eidos
-4. Eidos generates a response — mic stays red (locked) while processing
-5. If read-aloud is on, response is spoken via TTS — mic stays red during playback
-6. Response is written to the active conversation note
-7. Mic returns to grey — ready for next input
 
-There is no handoff phrase. There is no silence auto-send. The user always controls when to send.
 
-### Chat button behavior
 
-- Opens WidgetChatActivity showing the **currently active** widget conversation
-- If no conversation is active, opens a blank new conversation
-- The user can read what was said, type a message, or use the in-chat mic
-- The in-chat mic follows the standard voice system rules defined in VOICE_SYSTEM.md
 
-### New Chat button behavior
+## System Folder Context
 
-- Saves and closes the current conversation
-- Starts a fresh blank conversation as the new active conversation
-- The next mic tap will record into this new conversation
+`Eidos Journal`, `Eidos Log`, and `Eidos Chats` remain system folders. Widget chat history belongs in `Eidos Chats` when scope is general.
 
-### Selecting a conversation from the picker
+## Voice Engine Contract
 
-- Saves and closes the current conversation
-- The selected conversation becomes the active conversation
-- Opens WidgetChatActivity with that conversation loaded
-- Future mic taps append to the selected conversation
+Widget uses the same voice runtime contract as in-app chat:
 
----
-
-## 10-Minute Idle Timeout
-
-If no mic activity occurs for 10 minutes while a conversation is active, the conversation is automatically saved and closed.
-
-- The timeout resets each time the user taps the mic (either tap — start or send)
-- The timeout does not apply while the mic is recording or while Eidos is responding
-- When the timeout fires, the widget returns to idle state exactly as if the user had tapped End
-- The conversation is still accessible in the conversation history
-
----
-
-## Widget Voice vs In-Chat Voice
-
-These are two different interaction modes. Both save to the same conversation note.
-
-| Mode | How triggered | UI shown | Mic behavior |
-|---|---|---|---|
-| Widget voice | Tap Mic on widget | None — background only | Push-to-talk: tap to start, tap to send |
-| In-chat voice | Tap mic inside WidgetChatActivity | Full chat UI | Per VOICE_SYSTEM.md: continuous, send on mic tap or send button |
-
----
-
-## Chat Scoping
-
-Every conversation is scoped to the context where it was started.
-
-| Where Eidos is opened | Scope | Conversation saves to |
-|---|---|---|
-| Widget | General | Eidos Chats root system folder |
-| Parent folder page | General | Eidos Chats root system folder |
-| Subfolder page (inside Johnson) | Parent folder | Johnson parent folder's conversation list |
-| Editor — any panel (inside Johnson → Landscaping) | Subfolder | Landscaping subfolder's conversation list |
-
-### Rules
-- Widget conversations are always general scope — they save to the Eidos Chats root
-- Eidos knows its location context in every scope and uses it when responding
-- The conversation picker in the widget shows only general scope conversations
-- Inside the app, each screen shows conversations scoped to that level
-
----
-
-## Conversation Picker
-
-The widget shows the 5 most recent general conversations by default.
-
-### How it works
-- Tap Conversations on the widget to open the picker
-- Lists the 5 most recent general conversations by date and time
-- Tap one to make it the active conversation and open it in the chat UI
-- Selecting a conversation saves and closes the current active conversation first
-
-### Search
-- A search field is available inside the picker for finding older conversations
-- Search is keyword-based — shows all matching conversations with no limit
-- When the search field is empty, only the 5 most recent are shown
-
----
-
-## Three System Level Folders
-
-When OptimalX is first installed three system level parent folders are created automatically at the app root:
-
-| Folder | Purpose |
-|---|---|
-| Eidos Journal | Eidos working memory — private context log |
-| Eidos Log | Activity record — every system modification Eidos makes |
-| Eidos Chats | General conversation history — widget and parent folder page conversations |
-
-All three are system locked. They cannot be renamed, moved to trash, or deleted.
-They do not appear in the regular user folder list.
-They are accessible from a dedicated Eidos section in the app.
-
----
-
-## Data Model Notes
-
-Conversations and messages use the Conversation and ChatMessage objects defined in DATA_MODEL.md.
-
-### General conversations (widget and parent folder page)
-- scopeType = "general"
-- parentFolderId = null
-- subfolderId = null
-- Stored under the Eidos Chats system folder logically — queryable by scopeType = "general"
-
-### Parent folder conversations (subfolder page)
-- scopeType = "parent"
-- parentFolderId = ID of the parent folder the user is browsing
-- subfolderId = null
-
-### Subfolder conversations (editor — any panel)
-- scopeType = "subfolder"
-- subfolderId = ID of the subfolder the user is inside
-- parentFolderId set for reference
-
----
-
-## What Does Not Exist in v2
-
-- No visual display of notes or folders in the widget
-- No file previews in the widget
-- No ability to create folders or notes directly from the widget — that goes through Eidos in conversation
-- No multi-account or multi-user support
+- Shared engine factory and transcript assembler behavior
+- Append-only transcript buffer until send/cancel
+- Engine internals (segment boundaries/restarts) are hidden from user-facing widget behavior
+
+See `VOICE_SYSTEM.md` for implementation details and runtime wiring.

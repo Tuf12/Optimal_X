@@ -399,3 +399,198 @@ New behavior:
 - Widget Talk button (WidgetVoiceService): one round trip only — listen → send to Eidos → optionally speak reply → end foreground service.
 
 Files changed: `VoiceController.kt` (complete rewrite, removed PROCESSING state and all loop/handoff-word machinery), `EidosBottomSheet.kt` (updated mic handler and TTS trigger), `WidgetChatActivity.kt` (same), `WidgetVoiceService.kt` (removed loop, now single round trip).
+
+---
+
+**2026-04-20 — Voice system v3: continuous local STT pipeline**
+Implemented the continuous local voice system plan. Replaced the `VoiceController` / `WidgetVoiceService` direct dependency on `SpeechToTextEngine` with a new shared pipeline under `voice/pipeline/`.
+
+New files:
+- `VoicePipelineConfig.kt` — sample rate, frame size, VAD thresholds, segment limits, UI update throttle
+- `AudioCaptureSource.kt` — `AudioRecord` 16 kHz mono PCM capture on a `THREAD_PRIORITY_URGENT_AUDIO` thread, emits per-frame RMS
+- `VadSegmenter.kt` — frame-level energy VAD with start/end hysteresis, adaptive noise floor, max-segment guard, `onSpeechStart` / `onSpeechEnd(reason)` / `onLevel` callbacks
+- `TranscriptAssembler.kt` — persistent draft buffer, `setBase` / `setPartial` / `commitFinal` / `flushPartialAsFinal` / `takeAndReset` semantics
+- `OnDeviceTranscriber.kt` — pluggable transcriber interface with `ownsMicrophone` flag + `TranscriberListener`
+- `RecognizerOnDeviceTranscriber.kt` — v1 concrete backend wrapping the stability-improved `SpeechToTextEngine` (Android on-device recognizer)
+- `ContinuousSpeechToTextEngine.kt` — orchestrator: owns the assembler, runs capture+VAD for PCM-consuming backends, exposes `onDraftChanged` / `onSessionEnded(reason, finalText)` / `onTransientError` / `onAudioLevel`
+- `VoiceRuntime.kt` — central `transcriberFactory`; swapping backends (future Whisper adapter) is one assignment and affects in-app + widget simultaneously
+
+Integration:
+- `VoiceController` now constructs its engine via `VoiceRuntime.newEngine(app)` and observes the engine's draft / session-ended callbacks. Push-to-talk, pause/resume, commit/send, and read-aloud auto-relisten semantics preserved.
+- `WidgetVoiceService` uses the same factory. Send path waits for `onSessionEnded(USER_STOP, finalText)` so late partials aren't dropped; mic-tap-while-listening still cancels without committing.
+
+Tests (`app/src/test/java/com/example/optimalx/voice/pipeline/`):
+- `TranscriptAssemblerTest` — 6 cases covering partial/final merge, base seed, empty-final guard, snapshot vs takeAndReset
+- `VadSegmenterTest` — 5 cases covering start gate, silence hangover, max-segment force-close, reset, and below-threshold rejection
+
+All 11 unit tests pass; `:app:assembleDebug` green.
+
+Docs updated: `VOICE_SYSTEM.md` (added "Implementation Map (v3 shipped)" section with class table, backend families, threading rules), `WIDGET_SYSTEM.md` (added "Shipped wiring" under STT Engine Notes), `CHAT_UI.md` (expanded STT Engine Integration v3 with controller callback wiring).
+
+---
+
+**2026-04-20 — Voice system v3.1: Whisper backend wiring (flavor A — segment-based)**
+Added the full Whisper-class local STT path on top of the v3 pipeline. Goal: eliminate the Android recognizer's session cut-in/cut-out by running a continuous AudioRecord stream into a local Whisper model, with VAD-bounded segments fed to the model on a background worker.
+
+New files:
+- `voice/pipeline/WhisperEngine.kt` — `WhisperEngine` interface (`transcribe(FloatArray) → String`, `release()`) + process-wide `WhisperEngineRegistry` singleton
+- `voice/pipeline/WhisperLocalTranscriber.kt` — `OnDeviceTranscriber` with `ownsMicrophone = false`. Buffers PCM per VAD segment with a 300 ms pre-roll ring so first phonemes aren't clipped. Serializes inference through a single background worker thread; bounded queue with drop-oldest backpressure. Uses internal `FloatRingBuffer` for pre-roll.
+
+Modified:
+- `voice/pipeline/VoiceRuntime.kt` — replaced single-factory with backend-aware selector. `Backend` enum (`AUTO` / `LOCAL_WHISPER` / `ANDROID_RECOGNIZER`). AUTO picks Whisper if registered, else the Android recognizer. `activeBackendLabel()` for diagnostics.
+- `OptimalXApplication.kt` — added `initWhisperEngine()` init hook + `onLowMemory`/`onTerminate` registry release. Ships as a no-op; concrete engine registration happens when a whisper.cpp or TFLite backend is added (documented in `assets/models/README.txt` and `VOICE_SYSTEM.md`).
+- `data/preferences/SettingsPreferences.kt` — new `STT_BACKEND` key, default `"auto"`.
+- `ui/settings/SettingsViewModel.kt` — exposes `sttBackend` StateFlow, writes preference back to `VoiceRuntime.backendPreference` via collector.
+- `ui/settings/SettingsScreen.kt` — Voice section gains STT backend picker (Auto / Local Whisper / Android recognizer) using existing `ProviderOption` radio row pattern.
+
+Tests (`voice/pipeline/WhisperLocalTranscriberTest.kt`):
+- `FloatRingBufferTest` — 3 cases covering fill, wraparound, clear.
+- `WhisperLocalTranscriberTest` — 2 cases covering engine call with normalized PCM + pre-roll inclusion, and minimum-segment drop behavior.
+
+All 16 voice pipeline unit tests pass; `:app:assembleDebug` green. The Android recognizer backend remains default/fallback until a concrete `WhisperEngine` is registered.
+
+What's needed to flip to Whisper for real:
+1. Drop a Whisper-class model (e.g. distil-whisper-small.en-q8_0, ~165 MB) into `app/src/main/assets/models/`.
+2. Either vendor the whisper.cpp Android AAR into `app/libs/` or implement a TFLite Whisper backend.
+3. Implement `WhisperEngine` wrapping the chosen runtime.
+4. Call `WhisperEngineRegistry.register(engine)` from `OptimalXApplication.initWhisperEngine()`.
+
+See `VOICE_SYSTEM.md § Integrating a Whisper backend` and `app/src/main/assets/models/README.txt` for the full recipe.
+
+---
+
+**2026-04-20 — Whisper model one-tap installer in Settings**
+Implemented an in-app Whisper model installer so users do not need to manually place model files.
+
+Added `voice/pipeline/WhisperModelInstaller.kt`:
+- `WhisperModelCatalog.SmallEnglishQ51` (recommended `ggml-small.en-q5_1.bin`)
+- `download(...)` with progress callback, temp `.part` file, atomic replace, and cleanup on cancel/failure
+- `installedFile(...)`, `isInstalled(...)`, `removeInstalled(...)`
+
+Updated `SettingsViewModel`:
+- Added `WhisperInstallUiState` state flow (installed/downloading/progress/error)
+- Added actions: `installRecommendedWhisperModel()`, `cancelWhisperModelDownload()`, `removeInstalledWhisperModel()`, `refreshWhisperInstallState()`
+- Installer writes to private app path `filesDir/models/`
+
+Updated `SettingsScreen` Voice/STT section:
+- Added install status text (not installed / downloading with bytes / installed / error)
+- Added one-tap action link: "Install recommended model now"
+- Added cancel/remove actions depending on current install state
+- Kept direct external model links for advanced users
+
+Docs/comments updated for storage path alignment:
+- `VOICE_SYSTEM.md`: Whisper model can be loaded from `filesDir/models/` (installer path) or `assets/models/` (manual/dev path)
+- `app/src/main/assets/models/README.txt`: clarifies one-tap installer path vs manual assets path
+- `OptimalXApplication.kt`: example comment now references `filesDir/models/ggml-small.en-q5_1.bin`
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-20 — Installer default switched to 252 MB model**
+Adjusted the one-tap Whisper installer to match user preference for higher quality (`ggml-small.en-q8_0.bin`, ~252 MB).
+
+Changes:
+- `WhisperModelCatalog` now includes `SmallEnglishQ80` and uses exact upstream file size from HuggingFace API.
+- `SettingsViewModel` installer target switched from q5_1 to q8_0 (status label now reflects higher-quality model).
+- Settings action text updated to "Install higher quality model now (small.en-q8_0, 252 MB)".
+
+Critical bug fix:
+- Corrected expected file size for q5_1 in installer metadata (was slightly too high), which could trigger false "download incomplete" failures near 100%.
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-20 — Whisper runtime hook wired (executes local model)**
+Implemented the final runtime bridge so installed Whisper models are actually used by the voice pipeline.
+
+Changes:
+- Added concrete `WhisperAndroidEngine` (`voice/pipeline/WhisperAndroidEngine.kt`) backed by `mx.valdora:whisper-android`. It converts each VAD segment float PCM buffer into a temporary 16 kHz mono WAV and calls Whisper inference.
+- Added `WhisperRuntimeSync` (`voice/pipeline/WhisperRuntimeSync.kt`) to detect installed model files in `filesDir/models/`, load/register the engine, and clear registry when no model exists.
+- Replaced `OptimalXApplication.initWhisperEngine()` no-op with `WhisperRuntimeSync.sync(this)` so app startup now attempts real Whisper registration automatically.
+- Updated `SettingsViewModel` to call `WhisperRuntimeSync.sync(ctx)` after model install/remove/refresh so backend availability updates without requiring process restart.
+- Added dependency wiring in Gradle (`mx.valdora:whisper-android:1.0.0`).
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-20 — Whisper send/stop flush fix**
+Investigated missing/late transcript commits with local Whisper and found a stop-path race: user stop/send could finalize the session before queued Whisper segments were flushed, dropping recent speech text.
+
+Changes:
+- Added `OnDeviceTranscriber.flushOnStop()` optional hook.
+- Implemented synchronous flush in `WhisperLocalTranscriber.flushOnStop()` to transcribe any in-progress and queued segments before teardown.
+- Updated `ContinuousSpeechToTextEngine.stop()` to call `flushOnStop()`, commit any returned text into `TranscriptAssembler`, then finalize the session.
+- Kept cancel semantics drop-safe (`WhisperLocalTranscriber.cancel()` now clears queue explicitly).
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-20 — Chat UI no-text fix (VoiceController stop handling + VAD sensitivity)**
+Follow-up debug for "Whisper active but no transcript in chat UI." Root cause was controller/session stop ordering: `VoiceController.stopListeningAndCommit()` captured draft text *before* `ContinuousSpeechToTextEngine.stop()` finished stop-time flush, so flushed Whisper text never reached the input callback.
+
+Changes:
+- `VoiceController` now waits for `onSessionEnded(USER_STOP, finalText)` and routes by explicit `StopIntent` (`COMMIT` / `PAUSE`) before delivering text.
+- `pauseListening()` now also uses the finalized `finalText` from the engine stop callback (preserves edit flow and avoids stale draft capture).
+- `VAD_SPEECH_RMS_THRESHOLD` reduced from `0.035f` to `0.015f` to avoid missed speech starts on lower mic gain devices.
+- `WhisperLocalTranscriber` now keeps a bounded fallback capture ring and uses it in `flushOnStop()` when no VAD segments were queued, so stop/send can still produce text even if VAD boundaries were missed.
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-20 — Native crash guard for second Whisper run**
+User reported app force-close on second Whisper attempt with SIGSEGV inside `libwhisper_android.so` (`quantize_row_q8_0`). Most likely cause is concurrent native context usage during stop/flush/worker overlap.
+
+Changes:
+- Hardened `WhisperAndroidEngine` with strict synchronization around `writeWav + whisper.transcribe(...)`.
+- Added `closed` guard (`AtomicBoolean`) so release/transcribe cannot race.
+- `release()` now executes under the same lock and becomes idempotent.
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-22 — Whisper model selection dropdown in Settings**
+Added a persisted Whisper model picker so users with multiple locally downloaded GGML files can choose which one the runtime uses.
+
+Changes:
+- Added `SettingsKeys.WHISPER_MODEL_FILE_NAME` in DataStore.
+- Extended `WhisperModelInstaller` with `installedModels(...)` discovery and `removeInstalledByFileName(...)` for selected-model removal.
+- Extended `WhisperModelCatalog` with `BaseEnglishQ80`, `allModels`, and `labelForFileName(...)` for friendly display labels.
+- Updated `WhisperRuntimeSync.sync(...)` to accept an optional preferred model file name and load that first when available.
+- Updated `SettingsViewModel` Whisper state to expose installed model options + selected model, persist selection, sync runtime with selected model, and auto-fallback selection when chosen model is removed.
+- Updated `SettingsScreen` Whisper section with a dropdown that appears when multiple installed models exist and saves selection immediately.
+- Updated `OptimalXApplication.initWhisperEngine()` to read the saved preferred model at startup and sync Whisper runtime accordingly.
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.
+
+---
+
+**2026-04-22 — Whisper links now install in-app for all 3 models**
+Updated Whisper install UX so all three model rows in Settings perform direct in-app installs (to `filesDir/models`) instead of opening external download links.
+
+Changes:
+- `SettingsScreen`: replaced the three `↓ ...` external URL actions with direct calls to `viewModel.installWhisperModel(...)` for:
+  - `small.en-q5_1`
+  - `small.en-q8_0`
+  - `base.en-q8_0`
+- Removed the redundant single "Install higher quality model now" link since model choice is now explicit in the three install actions.
+- `SettingsViewModel`: added generic `installWhisperModel(spec: WhisperModelSpec)` and made `installRecommendedWhisperModel()` delegate to it.
+
+Impact:
+- Users can install multiple models without leaving the app.
+- Once 2+ models are installed, the existing dropdown ("Active local model") appears and allows selecting the runtime model.
+
+Validation:
+- `./gradlew :app:compileDebugKotlin` passes.

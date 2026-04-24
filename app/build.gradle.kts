@@ -91,6 +91,7 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.tflite)
     implementation(libs.mediapipe.tasks.text)
+    implementation(libs.whisper.android)
 
     // Tests
     testImplementation(libs.junit)

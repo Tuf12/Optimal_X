@@ -195,6 +195,19 @@ Every Eidos message bubble has a small speaker icon below it.
 - The speaker icon on the currently playing message is highlighted with the accent color
 - All other speaker icons are in `textDim` color
 
+## Copy Button
+- next to Reread button attached to message bubbles
+purpose: allow user to quickly copy the text in a message bubble
+
+## Edit Message button
+- Next to Reread and Copy button attached to message bubbles
+purpose: allow user to edit a message that has already been sent to Eidos, giving user ability to fix errors in messages
+- If edit message is selected and executed by user all messages that are in the chat after the editted message will be removed and replaced by the next message sent. 
+
+# Long Press Text Copy
+- allows user to long press on a message to select text to copy. 
+
+
 ---
 
 ## Input Bar
@@ -212,6 +225,44 @@ The input bar sits at the bottom of the chat UI above the keyboard.
 - Send button is active whenever the input bar contains text
 - Send button is inactive when the input bar is empty
 - After sending: input bar clears and returns to empty state
+
+Voice internals are defined in `VOICE_SYSTEM.md`. The chat UI should treat voice as a continuous transcript stream and remain agnostic to segment/model boundaries.
+
+## Mic states
+Idle — mic off
+Listening — STT active
+Paused — STT temporarily stopped because user interacted with text input
+Suggested rules
+Mic button starts STT
+STT appends text into the current draft
+If user taps input while STT is active → STT pauses
+User can edit text normally
+Mic shows paused state visually
+User taps mic again to resume listening
+Send sends the full current draft exactly as shown in the input field
+After sending, clear draft and reset mic to idle
+
+---
+
+## STT Engine Integration (v3)
+
+- Primary STT path is local continuous ASR (`AudioRecord` + VAD + on-device transcription).
+- UI consumes partial/final transcript updates from a persistent buffer in controller/viewmodel state.
+- UI must not flicker or reset during internal speech segment transitions.
+- During rollout, recognizer-based fallback is allowed, but user-facing chat behavior must stay identical.
+
+Shipped wiring:
+
+- `VoiceController` observes `ContinuousSpeechToTextEngine.onDraftChanged` and publishes it to
+  `liveTranscript` — the input bar binds to that flow directly.
+- The mic button calls `startListening(existingText = inputText)` so spoken words append to any
+  typed draft without clobbering it.
+- Tapping the send button or mic-stop calls `stopListeningAndCommit`, which reads the final
+  assembled transcript from the engine and delivers it to the `onResult` callback.
+- Tapping the input field calls `pauseListening`, which commits the current draft into the input
+  field for editing and puts the session in `PAUSED` until `resumeListening(currentInputText)`.
+
+See `VOICE_SYSTEM.md § Implementation Map (v3 shipped)` for the pipeline class layout.
 
 ---
 
