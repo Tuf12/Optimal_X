@@ -72,19 +72,14 @@ Each provider requires its own API key.
 
 ## Request Structure
 
-Every request to the API includes:
+Every request to the API includes four components assembled in this order:
 
 ### 1. System prompt
-Describes who Eidos is, what it can do, and how it should behave.
-The system prompt is assembled fresh each session and includes:
-- Eidos identity and role
-- Current app context (which subfolder the user is in, note content, attached files)
-- Recent journal entries (selective — most relevant to current session)
-- Available tool definitions
+The system prompt is assembled fresh on every request. It contains everything Eidos needs to operate with full context. See Context Assembly below for exact contents.
 
 ### 2. Conversation history
 The full message history for the current session.
-Oldest messages are trimmed if the context window limit approaches.
+Oldest messages are trimmed first if the context window limit approaches.
 
 ### 3. Tool definitions
 All tool functions defined in TOOL_FUNCTIONS.md are passed to the model on every request.
@@ -97,24 +92,55 @@ The current message from the user.
 
 ## Context Assembly
 
-Context is assembled before every request. The goal is to give Eidos the most relevant information without wasting tokens.
+The system prompt is assembled before every request from the following layers, in order.
+The goal is to give Eidos the most relevant information at the lowest token cost.
 
-### What always goes in context
-- Eidos system prompt
-- Current subfolder name and ID
-- Current note content (if AI lock is off)
-- List of files attached to current subfolder
-- Conversation history for current session
+### Always included — no trigger required
 
-### What goes in context selectively
-- Recent journal entries (last 1-3 days by default, more if relevant)
-- Search results if Eidos has run a search during the session
-- File content (only files Eidos has been asked to read — not all files at once)
+These components are included on every request regardless of context:
 
-### What never goes in context
-- Full journal history (too large — Eidos searches it instead)
-- Full Eidos Log history (too large — Eidos searches it instead)
-- Notes from other subfolders unless Eidos explicitly searches for them
+| Component | Source | Notes |
+|---|---|---|
+| Eidos base prompt | Hardcoded | Identity, role, behavior instructions |
+| Current subfolder name and ID | App state | Only when user is inside a subfolder |
+| Current note content | Room database | Omitted if AI lock is enabled on the note |
+| Subfolder memory cache | Subfolder.memoryCache field | Omitted if null — included alongside note when present |
+| List of attached files | FileReference records | Names and types only — not file content |
+| Daily Memory | Eidos Daily system folder | Full content, always included |
+| Long-Term Memory | Eidos Memory system folder | Full content, always included |
+| Journal summary index | Eidos Journal system folder | One-line summaries only — full entries never auto-load |
+| Conversation history | Current session messages | Trimmed from oldest if context grows large |
+
+### Included when triggered
+
+These components are fetched by Eidos via tool calls during the session — not pre-loaded:
+
+| Component | Trigger |
+|---|---|
+| Full journal entries | A journal summary index line matches the current topic |
+| Other subfolder notes | User references content outside current location |
+| File content | Eidos is asked to read or summarize a specific file |
+| Log entries | Eidos needs to verify a past action |
+| Chat history | User asks to find a past conversation |
+
+### Never pre-loaded
+
+| Component | Reason |
+|---|---|
+| Full journal history | Too large — fetched selectively via summary index trigger |
+| Full Eidos Log history | Too large — searched via two-pass system on demand |
+| All file content | Loaded only when Eidos is explicitly asked to read a file |
+| Notes from other subfolders | Fetched only when Eidos searches for them |
+
+---
+
+## Rollover Context — Different System Prompt
+
+The midnight rollover (`EidosMidnightWorker`) uses a separate, dedicated system prompt.
+It does not use the standard chat system prompt above.
+
+The rollover prompt is scoped only to the memory task — no subfolder context, no conversation history, no file lists.
+Full rollover detail is defined in JOURNAL_SYSTEM.md.
 
 ---
 
@@ -132,30 +158,21 @@ Tool calling is the mechanism by which Eidos takes action inside the app.
 7. This loop repeats until the model produces a final text response
 
 ### Confirmation flow
-For tools that require confirmation (deletion actions):
+For tools that require confirmation (move_to_trash, write_note, edit_note_section, prune_long_term_memory):
 1. Eidos presents the action to the user in the chat
 2. User approves or declines
 3. If approved, the tool executes and the result is logged
 4. If declined, nothing happens and Eidos acknowledges the decline
 
-Current deletion-confirmed tools:
-- `move_to_trash`
-- `write_note` (replace/overwrite existing text)
-- `edit_note_section` (replace/remove existing text)
-
-Non-deleting actions (create, append, read, search, journal/log writes) execute without confirmation.
-
-Eidos is not allowed to permanently delete items from trash.
-
 ### Tool call logging
-Every tool call that modifies the system triggers a write_log_entry call automatically.
+Every tool call that modifies the system triggers a `write_log_entry` call automatically.
 This is handled at the API layer — the model does not need to remember to log.
 
 ---
 
 ## Context Window Management
 
-Each model has a context window limit. OptimalX manages this to avoid hitting the limit.
+Each model has a context window limit. OptimalX manages this to stay well within it.
 
 | Model | Context Window |
 |---|---|
@@ -163,13 +180,21 @@ Each model has a context window limit. OptimalX manages this to avoid hitting th
 | GPT-5.4 nano | 1M tokens (standard pricing up to 272K, long context pricing above that) |
 | Claude Haiku 4.5 | 200,000 tokens |
 
-All three models have large enough context windows that aggressive trimming is rarely needed in normal use.
+All three models have large enough context windows that trimming is rarely needed in normal use.
 
-### General trimming strategy
-- Trim oldest conversation messages first if context grows very large
-- Keep system prompt intact — never trim it
-- Keep current note content intact — never trim it
-- Trim journal context before trimming conversation history
+### Trimming priority — what gets cut first
+
+If context grows large, trim in this order:
+
+1. Oldest conversation messages (trim from the front)
+2. Journal summary index (trim oldest summary lines if index is very long)
+3. Never trim Daily Memory — it is small by design and always relevant
+4. Never trim Long-Term Memory — it is small by design and always relevant
+5. Never trim the subfolder memory cache — it is small by design
+6. Never trim current note content — it is the user's immediate working environment
+7. Never trim the base system prompt
+
+The memory layers (Daily, Long-Term, subfolder cache) are protected from trimming because they are small by design. If any of them grow large enough to cause context pressure, that is a signal the memory system is not being maintained correctly — not a reason to start trimming them.
 
 ---
 
@@ -191,13 +216,20 @@ GPT-5.4 nano is a reasoning model with configurable reasoning effort and verbosi
 Prompt caching reduces cost by reusing previously processed parts of the prompt.
 
 ### How it helps
-If the system prompt and note content stay the same across multiple messages in a session, caching means those tokens are only processed once.
+If the system prompt contents stay the same across multiple messages in a session, caching means those tokens are only processed once.
 Claude Haiku 4.5 supports prompt caching natively — savings up to 90% on repeated input tokens.
 
-### When to use it
-- Enable caching on the system prompt
-- Enable caching on note content when the note has not changed
-- Do not cache conversation history — it changes every message
+### What to cache
+- Base system prompt — changes rarely within a session
+- Current note content — cache while the note has not changed
+- Subfolder memory cache — cache while unchanged
+- Daily Memory — cache while unchanged within the session
+- Long-Term Memory — cache while unchanged within the session
+- Journal summary index — cache while unchanged within the session
+
+### What not to cache
+- Conversation history — changes every message
+- Tool results — unique per call
 
 ---
 
@@ -223,3 +255,6 @@ If a request to the selected provider fails:
 | Provider switching | User controlled in settings |
 | Tool logging | Handled at API layer automatically |
 | Fallback | Retry once, then notify user |
+| Memory layers in prompt | Daily Memory, Long-Term Memory, subfolder cache, journal summary index — always included |
+| Triggered context | Full journal entries, other notes, file content, logs, chat history — fetched on demand |
+| Rollover prompt | Separate dedicated prompt — not the standard chat prompt |

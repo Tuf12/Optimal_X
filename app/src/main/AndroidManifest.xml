@@ -39,6 +39,13 @@
             android:theme="@style/Theme.OptimalX" />
 
         <activity
+            android:name=".widget.WidgetWebActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.OptimalX" />
+
+        <activity
             android:name=".widget.ConversationPickerActivity"
             android:exported="false"
             android:excludeFromRecents="true"

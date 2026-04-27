@@ -1,5 +1,14 @@
 README.md
 primary use for an app overview for sharing with others, not a necessary file for the build, as the other .md files provide the actual details.
+
+## Docs Directory Map
+
+- `architecture/`: app structure, UI architecture, data model, and core design docs
+- `systems/`: subsystem behavior (voice, widget, web, journal, retrieval, Eidos)
+- `reference/`: API/tool references used during implementation
+- `notes/`: working notes, journal, and active debug tracker
+- `archive/`: older planning/debug drafts kept for history
+
 # OptimalX v2
 
 ## What This Is
