@@ -14,7 +14,7 @@ The retrieval system handles search and navigation — finding notes, folders, l
 The memory system handles continuity over time — what Eidos knows and remembers between sessions.
 
 They work together but serve different purposes.
-The memory system is defined in JOURNAL_SYSTEM.md.
+The memory system is defined in MEMORY_SYSTEM.md.
 This file covers retrieval only.
 
 ---
@@ -132,7 +132,7 @@ The entire Work, Finance, and other branches were never touched.
 
 ### What does not get embedded
 - Timestamps, IDs, metadata — handled by keyword and date filtering
-- Daily Memory, Long-Term Memory, journal summary index — these ride in the prompt directly and are not searched via vector
+- Daily Memory, Long-Term Tag & Hint index, journal Tag & Hint index — these ride in the prompt directly and are not searched via vector
 
 ### When embeddings are generated
 - Note created → embed immediately
@@ -151,7 +151,7 @@ The entire Work, Finance, and other branches were never touched.
 | Eidos searches by topic or idea | Tag pass 1 → semantic pass 2 → keyword fallback |
 | Time-specific query | Date filter applied on top of either method |
 | Eidos needs a specific folder by name | Keyword search |
-| Journal summary index matches a topic | `read_journal` fetches the full entry — semantic search within it finds the specific content |
+| Journal Tag & Hint index matches a topic | `read_journal` fetches the full entry — semantic search within it finds the specific content |
 | Eidos verifies a past action | `read_log` with two-pass search |
 | User asks to find a past conversation | Chat history two-pass search |
 

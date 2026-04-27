@@ -206,36 +206,41 @@ There is no LLM-less fallback rollover path.
 
 ### Rollover sequence
 1. `read_daily_memory` — read today's full Daily Memory
-2. `read_log` (today) — review today's action log
-3. `read_journal` (today, if entries exist) — review anything written today
-4. `read_long_term_memory` — review current Long-Term Memory for context
-5. Optionally `read_note` on sources flagged in Daily Memory entries
-6. `write_journal_entry` — reflective summary with one-line Tag & Hint at top for index
-7. `update_journal_tag_hint_index` — append new Tag & Hint line
-8. `write_long_term_memory` for each DECISION or PREFERENCE entry flagged for promotion
-9. Optionally `prune_long_term_memory` for outdated entries
-10. Note unresolved ONGOING entries inside journal entry
-11. `clear_daily_memory` — wipe Daily Memory
-12. `write_log_entry` — log rollover completion
+2. `read_journal_tag_hint_index` — scan compact journal Tag & Hint lines
+3. `read_long_term_tag_hint_index` — scan compact long-term Tag & Hint lines
+4. Optionally `read_journal` — fetch full journal entries only when Tag & Hint lines match Daily topics
+5. Optionally `read_long_term_memory` — fetch long-term details only when Tag & Hint lines match Daily topics
+6. Optionally `read_log` (today) — verify actions only when Daily entries indicate a conflict or need verification
+7. Optionally `read_note` on sources flagged in Daily Memory entries
+8. `write_journal_entry` — reflective summary with one-line Tag & Hint at top for index
+9. `update_journal_tag_hint_index` — append new Tag & Hint line
+10. `write_long_term_memory` for each DECISION or PREFERENCE entry flagged for promotion
+11. Optionally `prune_long_term_memory` for outdated entries
+12. Note unresolved ONGOING entries inside journal entry
+13. `clear_daily_memory` — wipe Daily Memory
+14. `write_log_entry` — log rollover completion
 
 ### Rollover system prompt
 ```
 You are Eidos running a nightly memory rollover for OptimalX.
 
 Your task:
-1. Read today's Daily Memory, Log, and any Journal entries written today.
-2. Write a reflective journal entry summarizing what happened.
+1. Read today's Daily Memory in full first.
+2. Use Journal and Long-Term Tag & Hint indices to decide what else is relevant.
+   Fetch full entries only when Tag & Hint lines match today's Daily topics.
+   Use the Log only when verification is needed.
+3. Write a reflective journal entry summarizing what happened.
    Include one compact Tag & Hint line at the top for the Tag & Hint index.
    Focus on patterns, decisions, and anything worth remembering.
    Be concise — do not repeat the log verbatim.
-3. Append the Tag & Hint line to the journal Tag & Hint index.
-4. Review Daily Memory entries. Promote DECISION and PREFERENCE entries
+4. Append the Tag & Hint line to the journal Tag & Hint index.
+5. Review Daily Memory entries. Promote DECISION and PREFERENCE entries
    marked high importance to Long-Term Memory.
    Do not promote SENSITIVE entries unless importance and confidence are both high.
    Do not promote ONGOING entries — note them in the journal entry instead.
-5. Prune any Long-Term Memory entries that are now outdated or superseded.
-6. Clear Daily Memory.
-7. Log rollover completion.
+6. Prune any Long-Term Memory entries that are now outdated or superseded.
+7. Clear Daily Memory.
+8. Log rollover completion.
 ```
 
 ### Rollover failure detection

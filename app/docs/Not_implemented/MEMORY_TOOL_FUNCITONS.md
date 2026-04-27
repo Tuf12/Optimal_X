@@ -325,7 +325,7 @@ Reads the full Daily Memory note.
 ### write_daily_memory
 
 Appends a new entry to Daily Memory.
-Entries should use the structured flag format defined in JOURNAL_SYSTEM.md.
+Entries should use the structured flag format defined in MEMORY_SYSTEM.md.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -368,7 +368,7 @@ Reads the full Long-Term Memory note.
 
 Appends a new entry to Long-Term Memory.
 Used during rollover to promote high-value items from Daily Memory.
-Entries should use the structured flag format defined in JOURNAL_SYSTEM.md.
+Entries should use the structured flag format defined in MEMORY_SYSTEM.md.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -430,7 +430,7 @@ Called when something meaningful happens in a subfolder that Eidos should rememb
 ### write_journal_entry
 
 Writes a new reflective journal entry for the current day.
-Called during the midnight rollover. Includes a one-line summary at the top for the summary index.
+Called during the midnight rollover. Includes a one-line Tag & Hint line for the journal Tag & Hint index.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -445,7 +445,7 @@ Called during the midnight rollover. Includes a one-line summary at the top for 
 ### read_journal
 
 Reads journal entries. Can be filtered by date range or keyword.
-Used when a journal summary index line triggers a match — fetches the full entry.
+Used when a journal Tag & Hint index line triggers a match — fetches the full entry.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -458,9 +458,9 @@ Used when a journal summary index line triggers a match — fetches the full ent
 
 ---
 
-### read_journal_summary_index
+### read_journal_tag_hint_index
 
-Reads the full journal summary index — one compact line per journal entry.
+Reads the full journal Tag & Hint index — one compact line per journal entry.
 This is loaded into every prompt automatically. This tool is used when Eidos needs to explicitly search or re-read the index during a session.
 
 | Parameter | Type | Description |
@@ -472,14 +472,14 @@ This is loaded into every prompt automatically. This tool is used when Eidos nee
 
 ---
 
-### update_journal_summary_index
+### update_journal_tag_hint_index
 
-Appends a new one-line summary to the journal summary index.
+Appends a new one-line Tag & Hint line to the journal Tag & Hint index.
 Called during rollover immediately after writing the journal entry.
 
 | Parameter | Type | Description |
 |---|---|---|
-| summaryLine | String | The compact one-line summary for this journal entry |
+| tagHintLine | String | The compact one-line Tag & Hint line for this journal entry |
 | timestamp | Long | Unix timestamp matching the journal entry |
 
 - Does not require confirmation
@@ -568,8 +568,8 @@ This tool is not fully defined here because the voice system is its own MD file.
 | **Journal Tools** | | |
 | write_journal_entry | No | Yes |
 | read_journal | No | No |
-| read_journal_summary_index | No | No |
-| update_journal_summary_index | No | Yes |
+| read_journal_tag_hint_index | No | No |
+| update_journal_tag_hint_index | No | Yes |
 | **Log Tools** | | |
 | write_log_entry | No | Yes |
 | read_log | No | No |

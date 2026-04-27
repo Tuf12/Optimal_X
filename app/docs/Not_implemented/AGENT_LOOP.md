@@ -1,4 +1,4 @@
-# AGENTIC_LOOP.md
+# AGENT_LOOP.md
 
 ## Purpose
 
@@ -64,7 +64,7 @@ Tools: read_note, read_daily_memory, read_long_term_memory, list_folder_contents
 **Rook — Logical, Systematic**
 There is one correct path and it should be followed.
 Retrieval, search, structured reading. No ambiguity about what needs to happen.
-Tools: search_system, search_semantic, read_journal, read_journal_summary_index, read_log, read_subfolder_memory_cache, read_file, summarize_file
+Tools: search_system, search_semantic, read_journal, read_journal_tag_hint_index, read_long_term_tag_hint_index, read_log, read_subfolder_memory_cache, read_file, summarize_file
 
 **Bishop — Emotional, Personal**
 The situation involves the user's feelings, preferences, or personal context.
@@ -90,7 +90,9 @@ Tools: create_parent_folder, create_subfolder, rename_folder, write_note, append
 Something risky or irreversible is about to happen.
 Slow down. Check safety. Confirm before acting.
 King always runs before any destructive action regardless of which piece is leading.
-Tools: move_to_trash, prune_long_term_memory, edit_note_section, write_note (full overwrite), clear_daily_memory
+Tools: move_to_trash, prune_long_term_memory, edit_note_section, write_note (full overwrite)
+
+Note: `clear_daily_memory` is a rollover orchestrator/worker step and is not model-visible in normal chat tool sets.
 
 ### King Override Rule
 
@@ -385,5 +387,5 @@ Fine-tuning and weight adjustment are future additions built on top of accumulat
 - The loop does not know what feature is using it — it only knows its goal, its tools, and its context
 - All colors, UI notifications, and progress indicators follow THEME.md token system
 - Full tool definitions are in TOOL_FUNCTIONS.md
-- Memory layer assembly follows JOURNAL_SYSTEM.md
+- Memory layer assembly follows MEMORY_SYSTEM.md
 - Search behavior follows SEARCH_AND_RETRIEVAL.md

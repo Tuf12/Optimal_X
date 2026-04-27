@@ -107,8 +107,8 @@ These components are included on every request regardless of context:
 | Subfolder memory cache | Subfolder.memoryCache field | Omitted if null — included alongside note when present |
 | List of attached files | FileReference records | Names and types only — not file content |
 | Daily Memory | Eidos Daily system folder | Full content, always included |
-| Long-Term Memory | Eidos Memory system folder | Full content, always included |
-| Journal summary index | Eidos Journal system folder | One-line summaries only — full entries never auto-load |
+| Long-Term Tag & Hint index | Eidos Memory system folder | One compact Tag & Hint line per long-term entry — full entries fetched on demand |
+| Journal Tag & Hint index | Eidos Journal system folder | One compact Tag & Hint line per journal entry — full entries never auto-load |
 | Conversation history | Current session messages | Trimmed from oldest if context grows large |
 
 ### Included when triggered
@@ -117,7 +117,8 @@ These components are fetched by Eidos via tool calls during the session — not 
 
 | Component | Trigger |
 |---|---|
-| Full journal entries | A journal summary index line matches the current topic |
+| Full journal entries | A journal Tag & Hint index line matches the current topic |
+| Full long-term memory entries | A long-term Tag & Hint index line matches the current topic |
 | Other subfolder notes | User references content outside current location |
 | File content | Eidos is asked to read or summarize a specific file |
 | Log entries | Eidos needs to verify a past action |
@@ -127,7 +128,8 @@ These components are fetched by Eidos via tool calls during the session — not 
 
 | Component | Reason |
 |---|---|
-| Full journal history | Too large — fetched selectively via summary index trigger |
+| Full journal history | Too large — fetched selectively via Tag & Hint index trigger |
+| Full long-term memory history | Too large — fetched selectively via Tag & Hint index trigger |
 | Full Eidos Log history | Too large — searched via two-pass system on demand |
 | All file content | Loaded only when Eidos is explicitly asked to read a file |
 | Notes from other subfolders | Fetched only when Eidos searches for them |
@@ -140,7 +142,13 @@ The midnight rollover (`EidosMidnightWorker`) uses a separate, dedicated system 
 It does not use the standard chat system prompt above.
 
 The rollover prompt is scoped only to the memory task — no subfolder context, no conversation history, no file lists.
-Full rollover detail is defined in JOURNAL_SYSTEM.md.
+Full rollover detail is defined in MEMORY_SYSTEM.md.
+
+Rollover retrieval rule:
+- Read Daily Memory in full first.
+- Then use Journal and Long-Term Tag & Hint indices to decide what else to fetch.
+- Fetch full journal/long-term entries only when Tag & Hint lines match Daily topics.
+- Read the Log only when verification is needed.
 
 ---
 
@@ -187,9 +195,9 @@ All three models have large enough context windows that trimming is rarely neede
 If context grows large, trim in this order:
 
 1. Oldest conversation messages (trim from the front)
-2. Journal summary index (trim oldest summary lines if index is very long)
+2. Journal Tag & Hint index (trim oldest lines if index is very long)
 3. Never trim Daily Memory — it is small by design and always relevant
-4. Never trim Long-Term Memory — it is small by design and always relevant
+4. Never trim Long-Term Tag & Hint index — it is compact by design and always relevant
 5. Never trim the subfolder memory cache — it is small by design
 6. Never trim current note content — it is the user's immediate working environment
 7. Never trim the base system prompt
@@ -224,8 +232,8 @@ Claude Haiku 4.5 supports prompt caching natively — savings up to 90% on repea
 - Current note content — cache while the note has not changed
 - Subfolder memory cache — cache while unchanged
 - Daily Memory — cache while unchanged within the session
-- Long-Term Memory — cache while unchanged within the session
-- Journal summary index — cache while unchanged within the session
+- Long-Term Tag & Hint index — cache while unchanged within the session
+- Journal Tag & Hint index — cache while unchanged within the session
 
 ### What not to cache
 - Conversation history — changes every message
@@ -255,6 +263,6 @@ If a request to the selected provider fails:
 | Provider switching | User controlled in settings |
 | Tool logging | Handled at API layer automatically |
 | Fallback | Retry once, then notify user |
-| Memory layers in prompt | Daily Memory, Long-Term Memory, subfolder cache, journal summary index — always included |
-| Triggered context | Full journal entries, other notes, file content, logs, chat history — fetched on demand |
+| Memory layers in prompt | Daily Memory, subfolder cache, long-term Tag & Hint index, journal Tag & Hint index — always included |
+| Triggered context | Full journal entries, full long-term entries, other notes, file content, logs, chat history — fetched on demand |
 | Rollover prompt | Separate dedicated prompt — not the standard chat prompt |
