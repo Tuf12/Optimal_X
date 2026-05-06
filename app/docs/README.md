@@ -6,8 +6,11 @@ primary use for an app overview for sharing with others, not a necessary file fo
 - `architecture/`: app structure, UI architecture, data model, and core design docs
 - `systems/`: subsystem behavior (voice, widget, web, journal, retrieval, Eidos)
 - `reference/`: API/tool references used during implementation
+- `agentbyte/`: AgentByte loop, rollover engine, Tag & Hint loop specs, ABR1 contract, `AGENT_LOOP` hub
+- `memory/`: continuity and system-folder memory model (`MEMORY_SYSTEM.md`)
 - `notes/`: working notes, journal, and active debug tracker
 - `archive/`: older planning/debug drafts kept for history
+- `Not_implemented/`: optional placeholder; most specs moved to `agentbyte/` and `memory/` (see that folder’s README)
 
 # OptimalX v2
 

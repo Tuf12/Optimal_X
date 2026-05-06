@@ -93,8 +93,11 @@ dependencies {
     implementation(libs.mediapipe.tasks.text)
     implementation(libs.whisper.android)
 
+    implementation(libs.work.runtime.ktx)
+
     // Tests
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.room.testing)
 }
