@@ -1,3 +1,5 @@
+import com.android.build.api.dsl.AndroidResources
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -32,8 +34,8 @@ android {
         compose = true
     }
 
-    aaptOptions {
-        noCompress("tflite")
+    androidResources {
+        noCompress += listOf("tflite", "onnx")
     }
 
     compileOptions {

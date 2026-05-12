@@ -35,16 +35,21 @@
         <activity
             android:name=".widget.WidgetChatActivity"
             android:exported="false"
-            android:excludeFromRecents="true"
             android:taskAffinity=""
             android:theme="@style/Theme.OptimalX" />
 
         <activity
             android:name=".widget.WidgetWebActivity"
             android:exported="false"
-            android:excludeFromRecents="true"
             android:taskAffinity=""
             android:theme="@style/Theme.OptimalX" />
+
+        <activity
+            android:name=".widget.WidgetWebSearchActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/Theme.OptimalX"
+            android:windowSoftInputMode="adjustResize|stateVisible" />
 
         <activity
             android:name=".widget.ConversationPickerActivity"
@@ -132,6 +137,10 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
         </receiver>
+
+        <receiver
+            android:name=".voice.NoteReadAloudReceiver"
+            android:exported="false" />
 
     </application>
 

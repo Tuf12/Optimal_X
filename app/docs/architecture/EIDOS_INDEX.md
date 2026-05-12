@@ -11,7 +11,7 @@ The index is not a summary feed. It is structural truth plus lightweight semanti
 The index has explicit top-level branches:
 
 - `hierarchy`: parent -> subfolder -> note/file (+ subfolder memory cache)
-- `chats_general`: global/general chats only
+- `chats`: scoped chats (`general`, `parent`, `subfolder`)
 - `quick_notes`: dated quick-note entries
 - `journal`: dated journal entries
 - `ltm`: long-term memory entries
@@ -47,7 +47,7 @@ Canonical refs:
 - `chat:general:*` -> `parent_ref = null`, `root_branch=chats_general`
 - `chat:parent:<p>:*` -> `parent_ref = parent:<p>`, `root_branch=hierarchy`
 - `chat:subfolder:<s>:*` -> `parent_ref = subfolder:<s>`, `root_branch=hierarchy`
-- `chat:panel:<x>:*` -> `parent_ref = null`, `root_branch=hierarchy`
+- 
 - `quick_note:*` -> `parent_ref = null`, `root_branch=quick_notes`
 - `journal:*` -> `parent_ref = null`, `root_branch=journal`
 - `ltm:*` -> `parent_ref = null`, `root_branch=ltm`
@@ -79,5 +79,6 @@ The persisted table is row-based, but read APIs may project a branch-first tree 
 - `quick_notes.entries[]`
 - `journal.entries[]`
 - `ltm.entries[]`
+- `daily.memory[]`
 
 In either row or tree form, every object carries its own `piece/lens/hint`.
