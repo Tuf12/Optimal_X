@@ -1,0 +1,108 @@
+/* DESIGN.md compliant phone touch UI */
+body {
+  margin: 0;
+  padding: 16px;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f5f5f5;
+  color: #1a1a1a;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;        /* ADD THIS */
+  -webkit-overflow-scrolling: touch;  /* ADD THIS - smoother on iOS */
+}
+
+.container {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: visible;   /* ADD THIS */
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+h1 { font-size: 22px; margin: 0 0 12px; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+
+input, select, textarea, button {
+  font-size: 18px;
+  min-height: 56px;
+  padding: 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  touch-action: manipulation;
+}
+
+button.primary {
+  background: #0066cc;
+  color: white;
+  border: none;
+  font-weight: 600;
+}
+
+.grand-total {
+  font-size: 32px;
+  font-weight: 700;
+  text-align: right;
+  padding: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.actions button {
+  background: #0066cc;
+  color: white;
+  border: none;
+  font-weight: 600;
+}
+
+.total-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.room-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.remove-btn {
+  background: #cc0000;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  min-height: 40px;
+}
+
+.hidden { display: none; }

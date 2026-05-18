@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Tile Bid Calculator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+    <!-- Header -->
+    <header>
+        <h1>Tile Bid Template</h1>
+        <div class="header-fields">
+            <label>Job Name / Client
+                <input id="jobName" type="text" placeholder="Johnson AA Tile Plan">
+            </label>
+            <label>Date
+                <input id="date" type="date">
+            </label>
+            <label>Notes (auto)
+                <textarea id="notes" readonly>Labor only • Materials supplied by company • Verify all measurements on-site • 9 ft ceilings</textarea>
+            </label>
+        </div>
+    </header>
+
+    <!-- Pricing Matrix -->
+    <section class="card">
+        <h2>Pricing Matrix (editable)</h2>
+        <div class="pricing-grid">
+            <label>Shower Pan ($/sq ft)
+                <input id="rate-pan" type="number" value="50" step="1">
+            </label>
+            <label>Glass Tile Upcharge ($/sq ft)
+                <input id="rate-glass" type="number" value="25" step="1">
+            </label>
+            <label>Bath Floor ($/sq ft)
+                <input id="rate-floor" type="number" value="10" step="1">
+            </label>
+            <label>Niche (flat $)
+                <input id="rate-niche" type="number" value="500" step="1">
+            </label>
+            <label>Bench/Shelf (flat $)
+                <input id="rate-bench" type="number" value="500" step="1">
+            </label>
+            <div class="wall-rate">
+                <label>Shower/Tub Walls
+                    <select id="wall-tier">
+                        <option value="10">Mid – $10/sq ft</option>
+                        <option value="15">Premium – $15/sq ft</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+    </section>
+
+    <!-- Rooms -->
+    <section class="card">
+        <div class="section-header">
+            <h2>Rooms</h2>
+            <button id="addRoomBtn" class="primary">+ Add Room</button>
+        </div>
+        <div id="roomsContainer"></div>
+    </section>
+
+    <!-- Grand Total -->
+    <section class="card total-card">
+        <h2>Grand Total</h2>
+        <div class="total-row">
+            <label>
+                <input type="checkbox" id="contingencyToggle" checked> +5% contingency
+            </label>
+            <div id="grandTotal" class="grand-total">$0</div>
+        </div>
+    </section>
+
+    <!-- Actions -->
+    <footer class="actions">
+        <button id="copyNoteBtn">Copy to Note</button>
+        <button id="savePdfBtn">Save as PDF</button>
+        <button id="resetBtn">New Job</button>
+    </footer>
+</div>
+
+<script src="bridge.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
