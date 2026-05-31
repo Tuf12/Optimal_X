@@ -16,7 +16,6 @@ function updateRates() {
   rates.niche = parseFloat(document.getElementById('rate-niche').value) || 500;
   rates.bench = parseFloat(document.getElementById('rate-bench').value) || 500;
   rates.wall = parseFloat(document.getElementById('wall-tier').value) || 10;
-  calculateAll();
 }
 
 function createRoomCard(roomId) {
@@ -57,11 +56,16 @@ function createRoomCard(roomId) {
   const dimContainer = div.querySelector('.dim-fields');
   const overage = div.querySelector('.overage-toggle');
 
-  function attachInputListeners() {
-    div.querySelectorAll('input[type="number"], input[type="text"]').forEach(inp => {
-      inp.oninput = calculateAll;
-    });
-  }
+  div.addEventListener('input', (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) {
+      calculateAll();
+    }
+  });
+  div.addEventListener('change', (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) {
+      calculateAll();
+    }
+  });
 
   function renderDims() {
     dimContainer.innerHTML = '';
@@ -81,14 +85,12 @@ function createRoomCard(roomId) {
     } else {
       dimContainer.innerHTML = `<input type="number" placeholder="Sq ft or qty" class="direct" step="0.1">`;
     }
-    attachInputListeners();
   }
 
   select.onchange = () => { renderDims(); calculateAll(); };
   overage.onchange = calculateAll;
 
   renderDims();
-  attachInputListeners(); // initial attach
 
   return { div, id: roomId, getData: () => {
     const type = select.value;
@@ -155,9 +157,11 @@ function setupListeners() {
   document.getElementById('addRoomBtn').onclick = addRoom;
   document.getElementById('contingencyToggle').onchange = calculateAll;
 
-  document.querySelectorAll('.pricing-grid input, #wall-tier').forEach(el => {
-    el.oninput = calculateAll;
-  });
+  const pricing = document.querySelector('.pricing-grid');
+  if (pricing) {
+    pricing.addEventListener('input', calculateAll);
+    pricing.addEventListener('change', calculateAll);
+  }
 
   document.getElementById('copyNoteBtn').onclick = () => {
     const text = `Tile Bid – ${document.getElementById('jobName').value}\n` +
@@ -176,17 +180,41 @@ function setupListeners() {
   window.loadExampleData = loadExampleData;
 }
 
-function init() {
-  setupListeners();
-  addRoom();
-  calculateAll();
+window.panelGetState = function() {
+  return {
+    jobName: document.getElementById('jobName')?.value || '',
+    date: document.getElementById('date')?.value || '',
+    grandTotal: document.getElementById('grandTotal')?.textContent || '',
+    roomCount: rooms.length,
+    rates: { ...rates },
+  };
+};
 
-  const container = document.querySelector('.container');
-  if (container) {
-    container.addEventListener('touchmove', (e) => {
-      e.stopPropagation();
-    }, { passive: true });
+window.panelHandleAction = function(args = {}) {
+  const action = args.action || args;
+  if (action === 'loadExample') {
+    loadExampleData();
+    return { ok: true, action: 'loadExample' };
+  }
+  if (action === 'reset') {
+    location.reload();
+    return { ok: true, action: 'reset' };
+  }
+  return { ok: false, error: 'unknown_action', action };
+};
+
+function init() {
+  try {
+    setupListeners();
+    addRoom();
+    calculateAll();
+  } catch (err) {
+    console.error('Bid panel init failed:', err);
   }
 }
 
-init();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

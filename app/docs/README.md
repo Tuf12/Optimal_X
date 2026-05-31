@@ -3,11 +3,12 @@ primary use for an app overview for sharing with others, not a necessary file fo
 
 ## Docs Directory Map
 
-- `architecture/`: app structure, UI architecture, data model, and core design docs
+- `architecture/`: app structure, UI architecture, data model, and core design docs ([PANEL_GALLERY.md](architecture/PANEL_GALLERY.md) + [DUMPEDIT.md](architecture/DUMPEDIT.md) — pinned row, gallery, scratch buffer; [PANEL_PLATFORM.md](architecture/PANEL_PLATFORM.md) — WebView host contract + `panel_state`; [PANEL_WORKSHOP.md](architecture/PANEL_WORKSHOP.md) + [WORKSHOP_MODES.md](architecture/WORKSHOP_MODES.md) — v2 phased workshop UX; [DIFF_REVIEW.md](architecture/DIFF_REVIEW.md) — change review, checkpoints, undo; [OPTIMALX_LINK.md](architecture/OPTIMALX_LINK.md) — snapshot bridge between phone and PySide6 desktop app, single source of truth for backup, export, import, restore)
+- `implementation/`: build plans and checklists ([PINNED_ROW_PANEL_GALLERY_IMPLEMENTATION_PLAN.md](implementation/PINNED_ROW_PANEL_GALLERY_IMPLEMENTATION_PLAN.md) — pinned row, gallery, DumpEdit, pins, panel state — shipped; [PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md](implementation/PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md) — Eidos Chat on Panel Gallery + Panel Runner; [PANEL_WORKSHOP_OVERHAUL_PLAN.md](implementation/PANEL_WORKSHOP_OVERHAUL_PLAN.md) — workshop v2 Kotlin rollout; [OPTIMALX_LINK_IMPLEMENTATION_PLAN.md](implementation/OPTIMALX_LINK_IMPLEMENTATION_PLAN.md) — phone Ktor server + Linux desktop rollout)
 - `systems/`: subsystem behavior (voice, widget, web, journal, retrieval, Eidos)
 - `reference/`: API/tool references used during implementation
 - `agent_loops/`: AgentByte loop contracts — rollover engine ([ROLLOVER_ENGINE.md](agent_loops/ROLLOVER_ENGINE.md)), operating modes, Tag & Hint system, chat loop v1 design, panel workshop loop; links to Kotlin (`AgentByteLoop`, `MemoryRolloverService`, policies) are the runtime truth where docs lag
-- `memory/`: continuity and system-folder memory model (`MEMORY_SYSTEM.md`)
+- `memory/`: continuity and system-folder memory model (`MEMORY_SYSTEM.md`, `WORKSHOP_MEMORY.md` — Panel Workshop categorical prefs)
 - `notes/`: working notes, journal, and active debug tracker
 - `archive/`: older planning/debug drafts kept for history
 - `Not_implemented/`: optional placeholder; most specs live under `agent_loops/` and `memory/` (see that folder’s README)
@@ -75,9 +76,9 @@ This keeps the workflow fast and simple.
 The note editor is the core of the app.
 
 Additional features are accessed through:
-- swipe navigation (planned)
+- horizontal swipe between editor panels (Note, Files, Web, custom panels)
+- pinned row shortcuts on the parent page (Panels, DumpEdit, Workshop, Quick Notes)
 - hidden/expandable tools
-- secondary panels (files, etc.)
 
 The goal:
 > keep the screen clean and focused on thinking/writing
@@ -194,8 +195,8 @@ OptimalX v2 focuses on:
 - clean data structure
 - simplified UI
 - editor-first experience
-- swipe-based navigation
-- full AI integration (Eidos as operator)
+- pinned row + Panel Gallery + DumpEdit
+- editor swipe panels + full AI integration (Eidos as operator)
 - tool-based AI actions
 - structured knowledge storage
 

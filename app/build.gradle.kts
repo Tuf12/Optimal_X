@@ -1,9 +1,13 @@
 import com.android.build.api.dsl.AndroidResources
 
+// MediaPipe text tasks read this when packaging model assets (see mediapipe text_embedder sample).
+project.extra["ASSET_DIR"] = file("src/main/assets").absolutePath
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
 }
 
@@ -35,7 +39,7 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("tflite", "onnx")
+        noCompress += "tflite"
     }
 
     compileOptions {
@@ -51,6 +55,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.lifecycle.process)
     implementation(libs.activity.compose)
     implementation(libs.material)
 
@@ -91,14 +96,27 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.pdfbox.android)
-    implementation(libs.tflite)
+    // TFLite embeddings: MediaPipe TextEmbedder runs models/universal_sentence_encoder.tflite
+    // via libmediapipe_tasks_text_jni.so (16 KB–aligned in tasks-text 0.10.26+).
+    // Do not add org.tensorflow:tensorflow-lite — its prebuilt libtensorflowlite_jni.so is 4 KB only.
     implementation(libs.mediapipe.tasks.text)
-    implementation(libs.whisper.android)
 
     implementation(libs.work.runtime.ktx)
 
+    // Ktor server (OptimalX Link)
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.auth)
+    implementation(libs.ktor.server.status.pages)
+    implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.serialization.kotlinx.json)
+    implementation(libs.zxing.core)
+
     // Tests
     testImplementation(libs.junit)
+    testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.ktor.client.content.negotiation)
+    testImplementation(libs.ktor.serialization.kotlinx.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.room.testing)

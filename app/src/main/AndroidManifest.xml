@@ -3,9 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -64,6 +67,11 @@
             android:name=".widget.WidgetVoiceService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".data.eidos.EidosSendForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- File Viewer — "Open with OptimalX" from file managers / browsers -->
         <activity

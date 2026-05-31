@@ -9,8 +9,6 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  overflow-y: auto;        /* ADD THIS */
-  -webkit-overflow-scrolling: touch;  /* ADD THIS - smoother on iOS */
 }
 
 .container {
@@ -19,7 +17,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow: visible;   /* ADD THIS */
 }
 
 .card {
