@@ -2,7 +2,21 @@
 
 **Status:** Active — 2026-05-21  
 **Implementation tracker:** [PROMPT_SYSTEM_IMPLEMENTATION_PLAN.md](../implementation/PROMPT_SYSTEM_IMPLEMENTATION_PLAN.md)  
-**Retrieval:** [SEARCH_AND_RETRIEVAL.md](./SEARCH_AND_RETRIEVAL.md)
+**Retrieval:** [SEARCH_AND_RETRIEVAL.md](./SEARCH_AND_RETRIEVAL.md)  
+**LLM layer:** [API.md](../reference/API.md) · [LLM_API_REFERENCE.md](../reference/LLM_API_REFERENCE.md) · [EIDOS_LLM_CONTEXT_CLEANUP.md](../implementation/EIDOS_LLM_CONTEXT_CLEANUP.md) · [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) (Kimi K2.6)
+
+---
+
+## LLM providers
+
+| Provider | Model ID | Prompt / transport notes |
+|---|---|---|
+| **Kimi (primary)** | `kimi-k2.6` | Thinking enabled; Formula web tools; `reasoning_content` replay — [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) |
+| xAI | `grok-4.3` | Responses API; hosted `web_search`; incremental tool continuations |
+| OpenAI | `gpt-5.4-mini-2026-03-17` | Responses API; `reasoning.effort: medium` |
+| Anthropic | `claude-sonnet-4-6` | Messages API; `cache_control` on stable prefix |
+
+Provider-specific web and cache behavior in the system prompt defers to [API.md](../reference/API.md) and [LLM_API_REFERENCE.md](../reference/LLM_API_REFERENCE.md).
 
 ---
 
@@ -176,9 +190,11 @@ Not a subfolder — no `list_folder_contents` default target for buffer writes.
 
 ### Workshop
 
+**Execution profiles:** [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) — **build run** (kickoffs + Auto-Continue) vs **workshop edit** (Diff Review, short sends). Prompts must not treat both the same.
+
 | Component | Policy |
 |---|---|
-| Workshop mode identity + mode instructions | Inject |
+| Workshop mode identity + mode instructions | Inject (profile-aware: build run vs edit) |
 | Primary + extended workshop tool list | Inject |
 | Web search | Inject |
 | Daily memory | Inject (bounded) |
@@ -190,7 +206,7 @@ Not a subfolder — no `list_folder_contents` default target for buffer writes.
 | Open file content | — (Chat mode: discuss only; use `workshop_read_file` when user asks) |
 | Panel bridge | Inject when Preview / panel tab active |
 
-Steady state: manifest + summary + search → read → write loop. Workshop UX/efficiency improvements tracked separately.
+Steady state: manifest + search → read → write. **Build run:** Auto-Continue chunks + handoff. **Edit:** Diff Review, no long chains. See [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md).
 
 ---
 
@@ -274,16 +290,18 @@ Code status as of 2026-05-21. ✅ done · 🟡 partial · ❌ not done
 | Daily memory inject per policy above | ❌ |
 | Journal write quality / spam fix before any inject | ❌ |
 
-### Workshop UX (separate polish track)
+### Workshop UX (Auto-Continue + polish)
 
 | Item | Status |
 |------|--------|
 | `search_semantic` in all workshop modes (scoped to project) | ✅ |
 | Mode instructions: search → read(query) → write | ✅ |
+| Build run vs edit execution profiles documented | 🟡 [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) |
+| Auto-Continue (chunked kickoffs + LLM handoff) | 🔴 planned Phase 1.5 |
+| Tool-hop cap + workshop prompt cleanup | 🔴 planned Phase 1 |
 | Mode clarity (Chat / Plan / Edit / Build / Debug) | 🟡 working |
-| Chat mode tool round cap | ✅ (4 rounds) |
+| Chat mode tool round cap | ✅ (2 rounds) |
 | Panel bridge inactive guidance in prompt | ✅ |
-| Efficiency / user-friendly flows | 🟡 ongoing |
 
 ### Documentation
 
@@ -292,4 +310,5 @@ Code status as of 2026-05-21. ✅ done · 🟡 partial · ❌ not done
 | [SEARCH_AND_RETRIEVAL.md](./SEARCH_AND_RETRIEVAL.md) | ✅ |
 | [PROMPT_SYSTEM_IMPLEMENTATION_PLAN.md](../implementation/PROMPT_SYSTEM_IMPLEMENTATION_PLAN.md) | ✅ |
 | [EIDOS_LLM_CONTEXT_CLEANUP.md](../implementation/EIDOS_LLM_CONTEXT_CLEANUP.md) status update | 🟡 see that doc |
-| [LLM_API_REFERENCE.md](../reference/LLM_API_REFERENCE.md) sync | 🟡 |
+| [LLM_API_REFERENCE.md](../reference/LLM_API_REFERENCE.md) sync | ✅ |
+| [API.md](../reference/API.md) — Kimi K2.6 + four providers | ✅ |
