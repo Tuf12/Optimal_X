@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optimalx-link"
+version = "0.1.0"
+description = "Desktop client for OptimalX Link — snapshot bridge between the OptimalX Android app and a Linux Mint PC."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "OptimalX" },
+]
+keywords = ["optimalx", "android", "backup", "sync"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Utilities",
+]
+
+# Runtime dependencies — kept intentionally small. PySide6 is the GUI; aiohttp
+# is both the embedded server and the async HTTP client used to talk to the
+# phone.
+dependencies = [
+    "PySide6 >= 6.6, < 7",
+    "aiohttp >= 3.9, < 4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest >= 8.0",
+    "pytest-asyncio >= 0.23",
+    "ruff >= 0.5",
+]
+
+[project.scripts]
+optimalx-link = "optimalx_link.__main__:main"
+
+[project.urls]
+Spec = "https://github.com/local/OptimalX/blob/main/app/docs/architecture/OPTIMALX_LINK.md"
+
+[tool.setuptools.packages.find]
+include = ["optimalx_link*"]
+
+[tool.setuptools.package-data]
+optimalx_link = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+ignore = ["E501"]  # we hard-wrap at 100 above; ruff still warns at 88 by default

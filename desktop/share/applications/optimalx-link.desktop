@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OptimalX Link
+GenericName=Phone Snapshot Bridge
+Comment=Pull, browse, and restore OptimalX Android snapshots from your PC.
+Exec=optimalx-link
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;Network;
+Keywords=OptimalX;backup;snapshot;sync;android;
+StartupWMClass=optimalx-link

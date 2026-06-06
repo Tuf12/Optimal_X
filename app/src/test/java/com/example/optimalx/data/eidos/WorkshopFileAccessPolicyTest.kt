@@ -1,0 +1,79 @@
+package com.example.optimalx.data.eidos
+
+import org.junit.After
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Before
+import org.junit.Test
+
+class WorkshopFileAccessPolicyTest {
+
+    @Before
+    fun setUp() {
+        WorkshopEidosSession.end()
+    }
+
+    @After
+    fun tearDown() {
+        WorkshopEidosSession.end()
+    }
+
+    @Test
+    fun planMode_writesSpecMdDuringDesignReview() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.DESIGN_REVIEW)
+        assertNull(WorkshopFileAccessPolicy.writeFailure("IMPLEMENTATION_PLAN.md"))
+        assertNull(WorkshopFileAccessPolicy.writeFailure("FLOW.md"))
+    }
+
+    @Test
+    fun planMode_readsSpecMdDuringDesignReview() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.DESIGN_REVIEW)
+        assertNull(WorkshopFileAccessPolicy.markdownReadFailure("README.md"))
+    }
+
+    @Test
+    fun planMode_rejectsRuntimeWrites() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.SPEC_REVIEW)
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
+    }
+
+    @Test
+    fun editMode_blocksSpecMdWritesButAllowsReadsDuringDesignReview() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.EDIT, WorkshopProjectPhase.DESIGN_REVIEW)
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("DESIGN.md"))
+        assertNull(WorkshopFileAccessPolicy.markdownReadFailure("DESIGN.md"))
+    }
+
+    @Test
+    fun editMode_readsImplementationPlanDuringUpdate() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.EDIT, WorkshopProjectPhase.UPDATE)
+        assertNull(WorkshopFileAccessPolicy.markdownReadFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
+    }
+
+    @Test
+    fun editMode_allowsRuntimeWritesDuringDesignReview() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.EDIT, WorkshopProjectPhase.DESIGN_REVIEW)
+        assertNull(WorkshopFileAccessPolicy.writeFailure("style.css"))
+    }
+
+    @Test
+    fun planMode_writesSpecMdDuringUpdate() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.UPDATE)
+        assertNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
+    }
+
+    @Test
+    fun buildPlanKickoff_runtimeWritesOnly_noMd() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.BUILD_PLAN, WorkshopProjectPhase.UPDATE)
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
+        assertNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
+    }
+
+    @Test
+    fun legacyDebugMode_routesLikeEditForMarkdownFreeze() {
+        WorkshopEidosSession.begin(WorkshopEidosMode.DEBUG, WorkshopProjectPhase.UPDATE)
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
+        assertNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
+    }
+}
