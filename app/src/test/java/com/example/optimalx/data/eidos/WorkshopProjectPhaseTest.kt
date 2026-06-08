@@ -85,6 +85,17 @@ class WorkshopProjectPhaseTest {
     }
 
     @Test
+    fun resolveStoredEidosMode_kickoffDesignForcesBuildDesignWhenStoredPlan() {
+        assertEquals(
+            WorkshopEidosMode.BUILD_DESIGN,
+            WorkshopProjectPhase.DESIGN_BUILD.resolveStoredEidosMode(
+                WorkshopEidosMode.PLAN,
+                activeBuildKickoff = WorkshopBuildKickoff.DESIGN,
+            ),
+        )
+    }
+
+    @Test
     fun resolveStoredEidosMode_preservesPlanChipOnDesignBuild() {
         assertEquals(
             WorkshopEidosMode.PLAN,

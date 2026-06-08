@@ -96,7 +96,6 @@ enum class EidosSystemKind(
     DAILY("daily", "Eidos Daily", SystemFolderNames.EIDOS_DAILY, true),
     MEMORY("memory", "Eidos Memory", SystemFolderNames.EIDOS_MEMORY, true),
     INDEX("index", "Eidos Index", SystemFolderNames.EIDOS_INDEX, true),
-    REASONING("reasoning", "Reasoning", SystemFolderNames.EIDOS_REASONING, true),
     CHATS("chats", "Chats", SystemFolderNames.EIDOS_CHATS, false),
     ;
 
@@ -168,23 +167,6 @@ private data class MemoryNoteEntry(
     val sortKey: Long,
 )
 
-private data class ReasoningLogItem(
-    val id: String,
-    val subfolderName: String,
-    val timestamp: String?,
-    val title: String,
-    val preview: String,
-    val fullContent: String,
-    val sortKey: Long,
-)
-
-private data class ReasoningStructuredRecord(
-    val type: String,
-    val runId: String,
-    val timestamp: String?,
-    val obj: kotlinx.serialization.json.JsonObject,
-)
-
 private data class EidosIndexNode(
     val ref: String,
     val tag: String,
@@ -250,7 +232,6 @@ fun EidosSectionScreen(
 
         val sectionKinds = EidosSystemKind.entries.filterNot {
             it == EidosSystemKind.CHATS ||
-                it == EidosSystemKind.REASONING ||
                 // ON HOLD — Eidos Index UI (see EidosIndexFeature); retrieval uses search_semantic.
                 (!EidosIndexFeature.isActive && it == EidosSystemKind.INDEX)
         }
@@ -288,10 +269,6 @@ fun EidosSystemFolderScreen(
     onBack: () -> Unit,
     onOpenNote: (subfolderId: Long) -> Unit,
 ) {
-    if (kind == EidosSystemKind.REASONING) {
-        EidosReasoningLogDirectoryScreen(onBack = onBack)
-        return
-    }
     if (kind == EidosSystemKind.DAILY || kind == EidosSystemKind.MEMORY) {
         EidosSystemInboxListScreen(kind = kind, onBack = onBack)
         return
@@ -505,321 +482,6 @@ private fun EidosIndexScreen(
                     tv.text = payload
                 },
             )
-        }
-    }
-}
-
-@Composable
-private fun EidosReasoningLogDirectoryScreen(
-    onBack: () -> Unit,
-) {
-    val colors = LocalOptimalXColors.current
-    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as OptimalXApplication
-    var logs by remember { mutableStateOf<List<ReasoningLogItem>>(emptyList()) }
-    var selectedLog by remember { mutableStateOf<ReasoningLogItem?>(null) }
-
-    LaunchedEffect(Unit) {
-        val parent = app.database.parentFolderDao().getSystemFolderByName(SystemFolderNames.EIDOS_REASONING)
-        if (parent == null) {
-            logs = emptyList()
-            return@LaunchedEffect
-        }
-        app.database.subfolderDao().getAllActiveByParent(parent.id).collect { subfolders ->
-            val merged = subfolders
-                .filter { it.deletedAt == null }
-                .flatMap { sf ->
-                    val note = app.database.noteDao().getBySubfolderOnce(sf.id)
-                    parseReasoningLogItems(
-                        subfolderId = sf.id,
-                        subfolderName = sf.name,
-                        content = note?.content.orEmpty(),
-                        fallbackSortKey = sf.updatedAt,
-                    )
-                }
-                .sortedByDescending { it.sortKey }
-            logs = merged
-        }
-    }
-
-    if (selectedLog != null) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colors.background),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = { selectedLog = null }) {
-                    Text("Back", color = colors.textMid, fontFamily = DmSansFamily)
-                }
-                Text(
-                    text = "Reasoning Log",
-                    color = colors.textPrimary,
-                    fontFamily = DmSansFamily,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 17.sp,
-                )
-            }
-
-            val scrollState = androidx.compose.foundation.rememberScrollState()
-            AndroidView(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .navigationBarsPadding()
-                    .padding(16.dp),
-                factory = { ctx ->
-                    TextView(ctx).apply {
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                        setTextIsSelectable(true)
-                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                        setLineSpacing(0f, 24f / 15f)
-                    }
-                },
-                update = { tv ->
-                    tv.text = selectedLog?.fullContent.orEmpty()
-                    tv.setTextColor(colors.textPrimary.toArgb())
-                },
-            )
-        }
-        return
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colors.background),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) {
-                Text("Back", color = colors.textMid, fontFamily = DmSansFamily)
-            }
-            Text(
-                text = "Reasoning",
-                color = colors.textPrimary,
-                fontFamily = DmSansFamily,
-                fontWeight = FontWeight.Medium,
-                fontSize = 18.sp,
-            )
-        }
-
-        if (logs.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "No reasoning logs yet",
-                    color = colors.textDim,
-                    fontFamily = DmSansFamily,
-                    fontSize = 15.sp,
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(logs, key = { it.id }) { item ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.surface)
-                            .border(1.dp, colors.borderSoft, RoundedCornerShape(12.dp))
-                            .clickable { selectedLog = item }
-                            .padding(10.dp),
-                    ) {
-                        Text(
-                            text = listOfNotNull(item.subfolderName, item.timestamp).joinToString(" • "),
-                            color = colors.textDim,
-                            fontFamily = DmMonoFamily,
-                            fontSize = 11.sp,
-                        )
-                        Text(
-                            text = item.title,
-                            color = colors.textPrimary,
-                            fontFamily = DmSansFamily,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Text(
-                            text = item.preview,
-                            color = colors.textMid,
-                            fontFamily = DmSansFamily,
-                            fontSize = 13.sp,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun parseReasoningLogItems(
-    subfolderId: Long,
-    subfolderName: String,
-    content: String,
-    fallbackSortKey: Long,
-): List<ReasoningLogItem> {
-    if (content.isBlank()) return emptyList()
-    val json = Json { ignoreUnknownKeys = true }
-    val structuredLines = content.lineSequence()
-        .map { it.trim() }
-        .filter { it.startsWith("ABR1|") }
-        .toList()
-    if (structuredLines.isNotEmpty()) {
-        val records = structuredLines.mapNotNull { line ->
-            runCatching {
-                val obj = json.parseToJsonElement(line.removePrefix("ABR1|")).jsonObject
-                val type = obj["type"]?.jsonPrimitive?.content.orEmpty()
-                val runId = obj["run_id"]?.jsonPrimitive?.content.orEmpty()
-                ReasoningStructuredRecord(
-                    type = type,
-                    runId = runId.ifBlank { "unknown" },
-                    timestamp = obj["timestamp"]?.jsonPrimitive?.content,
-                    obj = obj,
-                )
-            }.getOrNull()
-        }
-
-        val groupedByRun = records.groupBy { it.runId }
-        return groupedByRun.entries.mapIndexed { index, (runId, runRecords) ->
-            val start = runRecords.firstOrNull { it.type == "run_start" }
-            val end = runRecords.firstOrNull { it.type == "run_end" }
-            val steps = runRecords.filter { it.type == "step" }
-            val exitReason = end?.obj?.get("exit_reason")?.jsonPrimitive?.content.orEmpty()
-            val startedAt = start?.timestamp
-            val endedAt = end?.timestamp
-            val fullTranscript = buildReasoningRunTranscript(
-                runId = runId,
-                start = start,
-                steps = steps,
-                end = end,
-            )
-            val preview = buildString {
-                append("steps=${steps.size}")
-                if (exitReason.isNotBlank()) append(" • exit=$exitReason")
-                if (!startedAt.isNullOrBlank()) append(" • started=$startedAt")
-            }
-            ReasoningLogItem(
-                id = "${subfolderId}_run_${runId}_$index",
-                subfolderName = subfolderName,
-                timestamp = endedAt ?: startedAt,
-                title = "Run $runId",
-                preview = preview,
-                fullContent = fullTranscript,
-                sortKey = fallbackSortKey - index,
-            )
-        }
-    }
-
-    return content.split(Regex("\\n\\s*\\n"))
-        .map { it.trim() }
-        .filter { it.isNotBlank() }
-        .mapIndexed { index, chunk ->
-            val first = chunk.lineSequence().firstOrNull().orEmpty()
-            ReasoningLogItem(
-                id = "${subfolderId}_legacy_${index}_${chunk.hashCode()}",
-                subfolderName = subfolderName,
-                timestamp = null,
-                title = first.take(80).ifBlank { "Legacy reasoning entry" },
-                preview = chunk.take(180),
-                fullContent = chunk,
-                sortKey = fallbackSortKey - index,
-            )
-        }
-}
-
-private fun buildReasoningRunTranscript(
-    runId: String,
-    start: ReasoningStructuredRecord?,
-    steps: List<ReasoningStructuredRecord>,
-    end: ReasoningStructuredRecord?,
-): String {
-    return buildString {
-        append("AgentByte Transcript\n")
-        append("run_id=$runId\n")
-        start?.timestamp?.let { append("started_at=$it\n") }
-        val promptLabel = start?.obj?.get("prompt_label")?.jsonPrimitive?.content.orEmpty()
-        if (promptLabel.isNotBlank()) append("prompt=\"$promptLabel\"\n")
-        append("\n")
-
-        steps.forEachIndexed { idx, step ->
-            val obj = step.obj
-            val calledTool = obj["called_tool_name"]?.jsonPrimitive?.content.orEmpty()
-            val calledToolArgs = obj["called_tool_arguments"]?.jsonPrimitive?.content.orEmpty()
-            val decisionRequired = obj["decision_required"]?.jsonPrimitive?.booleanOrNull ?: true
-            val decisionParseFailed = obj["decision_parse_failed"]?.jsonPrimitive?.booleanOrNull ?: false
-            val decisionRepairRetryAttempted = obj["decision_repair_retry_attempted"]?.jsonPrimitive?.booleanOrNull ?: false
-            val decisionRepairRetrySucceeded = obj["decision_repair_retry_succeeded"]?.jsonPrimitive?.booleanOrNull ?: false
-            val decisionSource = if (decisionRequired) "llm" else "orchestrator"
-            val stateBefore = obj["state_before"]?.jsonPrimitive?.content.orEmpty()
-            val stateAfter = obj["state_after"]?.jsonPrimitive?.content.orEmpty()
-            val stateDeltaCount = obj["state_delta"]?.jsonObject?.size ?: 0
-            append("Iteration ${obj["iteration"]?.jsonPrimitive?.content.orEmpty()} (step ${idx + 1})\n")
-            step.timestamp?.let { append("timestamp=$it\n") }
-            append("Selected: ${obj["selected_piece"]?.jsonPrimitive?.content.orEmpty()} (${obj["selected_role"]?.jsonPrimitive?.content.orEmpty()})\n")
-            append("Tool: ${calledTool.ifBlank { "none" }}\n")
-            append("Outcome: ${obj["outcome"]?.jsonPrimitive?.content.orEmpty()}\n")
-            append("Decision:\n")
-            append("  decision_required=$decisionRequired\n")
-            append("  decision_source=$decisionSource\n")
-            append("  selected_tool=${calledTool.ifBlank { "none" }}\n")
-            append("  arguments_present=${calledToolArgs.isNotBlank()}\n")
-            append("  decision_parse_failed=$decisionParseFailed\n")
-            append("  decision_repair_retry_attempted=$decisionRepairRetryAttempted\n")
-            append("  decision_repair_retry_succeeded=$decisionRepairRetrySucceeded\n")
-            append("State snapshot:\n")
-            append("  state_before=${if (stateBefore.isNotBlank()) "present" else "absent"} (chars=${stateBefore.length})\n")
-            append("  state_after=${if (stateAfter.isNotBlank()) "present" else "absent"} (chars=${stateAfter.length})\n")
-            append("  state_delta=$stateDeltaCount\n")
-            append("  full_state_payload=available_in_ABR1_JSON\n")
-            append("Prompt packet:\n")
-            val prompt = obj["prompt_packet"]?.jsonObject
-            if (prompt != null) {
-                append("  mode=${prompt["mode"]?.jsonPrimitive?.content.orEmpty()}\n")
-                append("  description=${prompt["description"]?.jsonPrimitive?.content.orEmpty()}\n")
-                val opening = prompt["recommended_opening_tools"]?.jsonArray
-                    ?.joinToString(",") { it.jsonPrimitive.content }
-                    .orEmpty()
-                append("  recommended_opening_tools=$opening\n")
-                val allowed = prompt["allowed_tools"]?.jsonArray
-                    ?.joinToString(",") { it.jsonPrimitive.content }
-                    .orEmpty()
-                append("  allowed_tools=$allowed\n")
-            } else {
-                append("  (none)\n")
-            }
-            append("LLM response (full):\n")
-            val llm = obj["llm_response_text"]?.jsonPrimitive?.content.orEmpty()
-            append(if (llm.isNotBlank()) llm else "(empty)")
-            if (llm.isBlank() && calledTool.isNotBlank()) {
-                append("\nLLM decision text captured in ABR1 (not shown in compact view).")
-            }
-            append("\n\n")
-        }
-
-        if (end != null) {
-            append("Exit: ${end.obj["exit_reason"]?.jsonPrimitive?.content.orEmpty()}\n")
-            append("iterations=${end.obj["iterations"]?.jsonPrimitive?.content.orEmpty()}\n")
-            end.timestamp?.let { append("ended_at=$it\n") }
         }
     }
 }
@@ -1446,7 +1108,7 @@ fun EidosSystemNoteScreen(
             }
         } else {
             val scrollState = androidx.compose.foundation.rememberScrollState()
-            // Native TextView: reliable selection/copy for read-only system notes (e.g. Eidos Reasoning).
+            // Native TextView: reliable selection/copy for read-only system notes.
             AndroidView(
                 modifier = Modifier
                     .weight(1f)

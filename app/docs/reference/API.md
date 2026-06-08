@@ -237,7 +237,7 @@ Moonshot-specific behavior is **not** duplicated here. Use [KIMI_K26_MOONSHOT_SP
 
 - `thinking: { type: "enabled" }` and `keep: "all"` on tool continuations
 - `reasoning_content` parse, UI display, and outbound replay rules
-- Formula tools (`web_search`, `fetch`, `convert`, `date`, `excel`, workshop `quickjs` in DEBUG)
+- Formula tools (`web_search`, `fetch`, `convert`, `date`, `excel`)
 - Streaming-only transport (`KimiProvider` + SSE)
 - Workshop write replay redaction (`redactToolCallForKimiReplay`)
 

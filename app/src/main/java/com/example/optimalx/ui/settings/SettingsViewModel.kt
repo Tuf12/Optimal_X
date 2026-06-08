@@ -239,6 +239,34 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    val workshopAutoContinueEnabled: StateFlow<Boolean> = ctx.settingsDataStore.data
+        .map { it[SettingsKeys.WORKSHOP_AUTO_CONTINUE_ENABLED] ?: SettingsDefaults.WORKSHOP_AUTO_CONTINUE_ENABLED }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            SettingsDefaults.WORKSHOP_AUTO_CONTINUE_ENABLED,
+        )
+
+    val workshopPauseBetweenChunks: StateFlow<Boolean> = ctx.settingsDataStore.data
+        .map { it[SettingsKeys.WORKSHOP_PAUSE_BETWEEN_CHUNKS] ?: SettingsDefaults.WORKSHOP_PAUSE_BETWEEN_CHUNKS }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            SettingsDefaults.WORKSHOP_PAUSE_BETWEEN_CHUNKS,
+        )
+
+    fun setWorkshopAutoContinueEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit { it[SettingsKeys.WORKSHOP_AUTO_CONTINUE_ENABLED] = enabled }
+        }
+    }
+
+    fun setWorkshopPauseBetweenChunks(enabled: Boolean) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit { it[SettingsKeys.WORKSHOP_PAUSE_BETWEEN_CHUNKS] = enabled }
+        }
+    }
+
     fun forceMemoryRollover() {
         if (_memoryRollover.value.isRunning) return
         viewModelScope.launch {

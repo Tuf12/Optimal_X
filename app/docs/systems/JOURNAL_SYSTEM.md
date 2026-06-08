@@ -29,10 +29,9 @@ It does **not** define the app-wide **Tag & Hint** routing layer (see [TAG_HINT_
 - **Eidos Daily** — Daily Memory (see MEMORY_SYSTEM)  
 - **Eidos Memory** — Long-Term Memory (see MEMORY_SYSTEM)  
 - **Eidos Index** — app-wide Tag & Hint index storage (see TAG_HINT_SYSTEM)  
-- **Eidos Reasoning** — AgentByte reasoning traces (see [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md); not chat transcripts)  
 - **Quick Notes** — voice / quick capture  
 
-**UI:** Main list shows **Eidos Chats**, **Quick Notes**, and **Eidos Reasoning** per [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt). Journal, Log, Daily, Index, and Memory are **Eidos-menu-only**. Full navigation vs **chat** vs **reasoning** storage is summarized in MEMORY_SYSTEM (single place of truth).
+**UI:** Main list shows **Quick Notes** and **Panel Workshop** per [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt). Journal, Log, Daily, Index, and Memory are **Eidos-menu-only**. Chat and provider-thinking storage is summarized in MEMORY_SYSTEM (single place of truth).
 
 ---
 
@@ -118,7 +117,7 @@ Read and delete individual entries where the UI allows; user does not append log
 
 ### What it is
 
-Stores **saved chat conversations** only. Separate from **Journal** (reflection), **Log** (audit), and **Eidos Reasoning** (AgentByte `ABR1|` traces — see MEMORY_SYSTEM).
+Stores **saved chat conversations** only. Separate from **Journal** (reflection) and **Log** (audit). Provider thinking lives on `ChatMessage` rows, not in a Reasoning folder — see MEMORY_SYSTEM.
 
 ### Structure
 

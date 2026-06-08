@@ -104,7 +104,8 @@ class SemanticChunkBuilder(
 
     suspend fun buildConversationChunks(conversationId: Long): List<SemanticChunkDraft> {
         val conversation = conversationDao.getById(conversationId) ?: return emptyList()
-        val messages = chatMessageDao.getAllByConversation(conversationId)
+        val messages = com.example.optimalx.data.eidos.ChatMessageHistoryLoader
+            .forUi(chatMessageDao, conversationId)
         if (messages.isEmpty()) return emptyList()
         val threadText = buildConversationThreadString(conversation, messages)
         val (parentFolderId, subfolderId) = resolveConversationScope(conversation)
@@ -153,7 +154,8 @@ class SemanticChunkBuilder(
 
     suspend fun conversationPlainText(conversationId: Long): String? {
         val conversation = conversationDao.getById(conversationId) ?: return null
-        val messages = chatMessageDao.getAllByConversation(conversationId)
+        val messages = com.example.optimalx.data.eidos.ChatMessageHistoryLoader
+            .forUi(chatMessageDao, conversationId)
         if (messages.isEmpty()) return null
         return buildConversationThreadString(conversation, messages)
     }

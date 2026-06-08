@@ -62,7 +62,7 @@ import com.example.optimalx.data.model.TagHintLine
         EidosApiTraceRun::class,
         EidosApiTraceRound::class,
     ],
-    version = 21,
+    version = 22,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -706,6 +706,14 @@ abstract class AppDatabase : RoomDatabase() {
 
         /** Persisted panel runtime state for gallery runner and editor custom tabs. Phase 4. */
         /** Developer API trace inspector — full outbound request/response per provider round. */
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE chat_messages ADD COLUMN isSyntheticHandoff INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -804,6 +812,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_18_19,
             MIGRATION_19_20,
             MIGRATION_20_21,
+            MIGRATION_21_22,
         )
 
         fun getInstance(context: Context): AppDatabase {

@@ -1,6 +1,7 @@
 package com.example.optimalx.data.eidos.model
 
-import com.example.optimalx.data.eidos.provider.KIMI_FORMULA_QUICKJS_URI
+import com.example.optimalx.data.eidos.ReasoningPersistPolicy
+
 import kotlinx.serialization.json.JsonObject
 
 /** First HTTP call for a user turn vs continuation after local tool execution. */
@@ -26,8 +27,6 @@ data class EidosRequest(
     val phase: EidosRequestPhase = EidosRequestPhase.FULL,
     /** Kimi streaming only — live reasoning/content preview during send. */
     val streamListener: EidosStreamListener? = null,
-    /** Formula URIs omitted from outbound Kimi tools (defaults exclude Workshop-only quickjs). */
-    val kimiFormulaExcludeUris: Set<String> = setOf(KIMI_FORMULA_QUICKJS_URI),
     /**
      * Developer API trace — invoked once per provider HTTP round with exact outbound JSON
      * (no Authorization header) and parsed response summary.
@@ -81,11 +80,16 @@ data class EidosResponse(
     val assistantReasoningContent: String? = null,
     /** All thinking blocks from this user turn (tool hops + final), for chat aggregation. */
     val reasoningTrace: List<EidosReasoningHop> = emptyList(),
+    /** Phase 1 — workshop send stopped at per-chunk tool-hop cap (Auto-Continue prep). */
+    val workshopPausedForToolCap: Boolean = false,
+    val workshopToolRoundsCompleted: Int = 0,
+    /** Phase 1.5 — chunk ended for handoff (tool cap or model-authored section). */
+    val workshopPausedForHandoff: Boolean = false,
 )
 
-/** Non-blank reasoning suitable for [ChatMessage.assistantReasoningContent] persistence. */
+/** Non-blank final-hop reasoning for [ChatMessage.assistantReasoningContent] only. */
 fun EidosResponse.persistableReasoningContent(): String? =
-    formatPersistableReasoning(reasoningTrace, assistantReasoningContent)
+    ReasoningPersistPolicy.finalHopForChat(reasoningTrace, assistantReasoningContent)
 
 enum class EidosRole {
     USER,

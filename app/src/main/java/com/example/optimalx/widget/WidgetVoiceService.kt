@@ -14,6 +14,8 @@ import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.db.seedDatabaseIfNeeded
 import com.example.optimalx.data.conversation.buildConversationTitleFromText
 import com.example.optimalx.data.conversation.looksLikeAutoTimestampTitle
+import com.example.optimalx.data.eidos.ChatMessageHistoryLoader
+import com.example.optimalx.data.eidos.ChatMessagePersistLimits
 import com.example.optimalx.data.eidos.toEidosApiMessage
 import com.example.optimalx.data.eidos.model.persistableReasoningContent
 import com.example.optimalx.data.model.ChatMessage
@@ -243,7 +245,9 @@ class WidgetVoiceService : Service(), CoroutineScope {
         val now = System.currentTimeMillis()
 
         db.chatMessageDao().insert(
-            ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
+            ChatMessagePersistLimits.clampForStorage(
+                ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
+            ),
         )
         conversation = maybeRetitleConversation(conversation, text, now)
 
@@ -259,19 +263,14 @@ class WidgetVoiceService : Service(), CoroutineScope {
         val reply = response.textResponse.ifBlank { "I could not generate a response." }
         val reasoningContent = response.persistableReasoningContent()
         val replyMsgId = db.chatMessageDao().insert(
-            ChatMessage(
-                conversationId = conversation.id,
-                role = "eidos",
-                content = reply,
-                assistantReasoningContent = reasoningContent,
+            ChatMessagePersistLimits.clampForStorage(
+                ChatMessage(
+                    conversationId = conversation.id,
+                    role = "eidos",
+                    content = reply,
+                    assistantReasoningContent = reasoningContent,
+                ),
             ),
-        )
-        app.eidosApiClient.archiveLinkedProviderReasoningForChatMessage(
-            response = response,
-            chatMessageId = replyMsgId,
-            currentSubfolderId = null,
-            currentParentFolderId = null,
-            currentScopeType = ConversationScopes.GENERAL,
         )
         db.conversationDao().update(conversation.copy(updatedAt = System.currentTimeMillis()))
         requestRetrievalSync("widget_quick_ask_reply:${conversation.id}")
@@ -288,10 +287,14 @@ class WidgetVoiceService : Service(), CoroutineScope {
         }
         var conversation = ensureQuickNotesConversation(daySubfolderId, text)
         val now = System.currentTimeMillis()
-        val history = db.chatMessageDao().getAllByConversation(conversation.id).map { it.toEidosApiMessage() }
+        val history = ChatMessageHistoryLoader
+            .forApi(db.chatMessageDao(), conversation.id)
+            .map { it.toEidosApiMessage() }
 
         db.chatMessageDao().insert(
-            ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
+            ChatMessagePersistLimits.clampForStorage(
+                ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
+            ),
         )
         conversation = maybeRetitleConversation(conversation, text, now)
 
@@ -309,19 +312,14 @@ class WidgetVoiceService : Service(), CoroutineScope {
         val reasoningContent = response.persistableReasoningContent()
         val parentFolderId = db.subfolderDao().getById(daySubfolderId)?.parentFolderId
         val replyMsgId = db.chatMessageDao().insert(
-            ChatMessage(
-                conversationId = conversation.id,
-                role = "eidos",
-                content = reply,
-                assistantReasoningContent = reasoningContent,
+            ChatMessagePersistLimits.clampForStorage(
+                ChatMessage(
+                    conversationId = conversation.id,
+                    role = "eidos",
+                    content = reply,
+                    assistantReasoningContent = reasoningContent,
+                ),
             ),
-        )
-        app.eidosApiClient.archiveLinkedProviderReasoningForChatMessage(
-            response = response,
-            chatMessageId = replyMsgId,
-            currentSubfolderId = daySubfolderId,
-            currentParentFolderId = parentFolderId,
-            currentScopeType = ConversationScopes.QUICK_NOTES_DAY,
         )
         db.conversationDao().update(conversation.copy(updatedAt = System.currentTimeMillis()))
         requestRetrievalSync("widget_quick_note_reply:${conversation.id}")

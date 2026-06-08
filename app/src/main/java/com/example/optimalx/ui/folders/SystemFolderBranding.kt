@@ -2,7 +2,6 @@ package com.example.optimalx.ui.folders
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
-import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Construction
 import androidx.compose.material.icons.filled.Memory
@@ -30,10 +29,6 @@ fun systemFolderBrandingForName(folderName: String): SystemFolderBranding? = whe
         icon = Icons.Filled.ChatBubbleOutline,
         caption = "Chats",
     )
-    SystemFolderNames.EIDOS_REASONING -> SystemFolderBranding(
-        icon = Icons.Filled.AccountTree,
-        caption = "Reasoning",
-    )
     SystemFolderNames.CHATS_SUBFOLDER -> SystemFolderBranding(
         icon = Icons.Filled.ChatBubbleOutline,
         caption = "Chats",
@@ -43,10 +38,6 @@ fun systemFolderBrandingForName(folderName: String): SystemFolderBranding? = whe
     -> SystemFolderBranding(
         icon = Icons.Filled.Memory,
         caption = "Memory cache",
-    )
-    SystemFolderNames.PARENT_REASONING_SUBFOLDER -> SystemFolderBranding(
-        icon = Icons.Filled.AccountTree,
-        caption = "Reasoning",
     )
     SystemFolderNames.PANEL_WORKSHOP -> SystemFolderBranding(
         icon = Icons.Filled.Construction,

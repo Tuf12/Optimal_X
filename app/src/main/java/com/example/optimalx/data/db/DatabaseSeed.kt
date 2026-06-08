@@ -16,6 +16,7 @@ private val SEED_DONE_KEY = booleanPreferencesKey("seed_done")
 object SystemFolderNames {
     const val CHATS_SUBFOLDER = "Chats"
     const val PARENT_MEMORY_CACHE_SUBFOLDER = "Memory Cache"
+    /** Legacy name — no longer created for new parents; existing rows may remain in DB. */
     const val PARENT_REASONING_SUBFOLDER = "Reasoning"
     const val EIDOS_JOURNAL = "Eidos Journal"
     const val EIDOS_LOG = "Eidos Log"
@@ -32,8 +33,7 @@ object SystemFolderNames {
  * Ensures required system-level parent folders exist.
  * Creates any missing system folder with isSystemFolder = true.
  * Journal/Log/Daily/Memory stay menu-only. Chats + Quick Notes + Panel Workshop
- * are reached from the parent-page pinned row. Eidos Chats and Eidos Reasoning
- * parents remain in DB for legacy data but are hidden from folder UI.
+ * are reached from the parent-page pinned row. Eidos Chats remains in DB for legacy data.
  */
 suspend fun seedDatabaseIfNeeded(context: Context, db: AppDatabase) {
     val dao = db.parentFolderDao()
@@ -45,7 +45,6 @@ suspend fun seedDatabaseIfNeeded(context: Context, db: AppDatabase) {
         SystemFolderNames.EIDOS_DAILY,
         SystemFolderNames.EIDOS_MEMORY,
         SystemFolderNames.EIDOS_INDEX,
-        SystemFolderNames.EIDOS_REASONING,
         SystemFolderNames.QUICK_NOTES,
         SystemFolderNames.PANEL_WORKSHOP,
     ).forEachIndexed { index, name ->

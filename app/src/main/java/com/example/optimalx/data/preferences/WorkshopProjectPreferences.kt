@@ -144,27 +144,27 @@ object WorkshopProjectPreferences {
     fun getEidosModeOverride(context: Context, subfolderId: Long): WorkshopEidosMode? =
         WorkshopEidosMode.fromStored(prefs(context).getString(eidosModeKey(subfolderId), null))
 
-    fun setEidosModeOverride(context: Context, subfolderId: Long, mode: WorkshopEidosMode?) {
+    fun setEidosModeOverride(context: Context, subfolderId: Long, mode: WorkshopEidosMode?, commit: Boolean = false) {
         val editor = prefs(context).edit()
         if (mode == null) {
             editor.remove(eidosModeKey(subfolderId))
         } else {
             editor.putString(eidosModeKey(subfolderId), mode.name)
         }
-        editor.apply()
+        if (commit) editor.commit() else editor.apply()
     }
 
     fun getBuildKickoff(context: Context, subfolderId: Long): WorkshopBuildKickoff? =
         WorkshopBuildKickoff.fromStored(prefs(context).getString(buildKickoffKey(subfolderId), null))
 
-    fun setBuildKickoff(context: Context, subfolderId: Long, kickoff: WorkshopBuildKickoff?) {
+    fun setBuildKickoff(context: Context, subfolderId: Long, kickoff: WorkshopBuildKickoff?, commit: Boolean = false) {
         val editor = prefs(context).edit()
         if (kickoff == null) {
             editor.remove(buildKickoffKey(subfolderId))
         } else {
             editor.putString(buildKickoffKey(subfolderId), kickoff.name)
         }
-        editor.apply()
+        if (commit) editor.commit() else editor.apply()
     }
 
     fun clearBuildKickoff(context: Context, subfolderId: Long) {

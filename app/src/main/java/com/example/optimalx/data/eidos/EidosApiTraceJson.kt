@@ -12,15 +12,20 @@ import kotlinx.serialization.json.put
 
 object EidosApiTraceJson {
 
+    private const val MAX_TRACE_JSON_CHARS = 400_000
+
     private val pretty = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
     }
 
-    fun formatRequest(bodyJson: String): String = runCatching {
-        val element = pretty.parseToJsonElement(bodyJson)
-        pretty.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), element)
-    }.getOrDefault(bodyJson)
+    fun formatRequest(bodyJson: String): String {
+        val formatted = runCatching {
+            val element = pretty.parseToJsonElement(bodyJson)
+            pretty.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), element)
+        }.getOrDefault(bodyJson)
+        return clampTraceJson(formatted)
+    }
 
     fun summarizeResponse(response: EidosResponse): String {
         val payload = buildJsonObject {
@@ -41,7 +46,10 @@ object EidosApiTraceJson {
             )
             put("providerResponseId", JsonPrimitive(response.providerResponseId ?: ""))
             response.assistantReasoningContent?.takeIf { it.isNotBlank() }?.let {
-                put("assistantReasoningContent", JsonPrimitive(it))
+                put(
+                    "assistantReasoningContent",
+                    JsonPrimitive(it.take(ChatMessagePersistLimits.MAX_REASONING_CHARS)),
+                )
             }
             response.usage?.let { put("usage", usageObject(it)) }
             if (response.reasoningTrace.isNotEmpty()) {
@@ -51,7 +59,12 @@ object EidosApiTraceJson {
                 )
             }
         }
-        return pretty.encodeToString(JsonObject.serializer(), payload)
+        return clampTraceJson(pretty.encodeToString(JsonObject.serializer(), payload))
+    }
+
+    private fun clampTraceJson(text: String): String {
+        if (text.length <= MAX_TRACE_JSON_CHARS) return text
+        return text.take(MAX_TRACE_JSON_CHARS) + "\n…[trace truncated for storage]"
     }
 
     private fun usageObject(usage: EidosTokenUsage): JsonObject = buildJsonObject {

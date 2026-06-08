@@ -1,7 +1,9 @@
 package com.example.optimalx.data.eidos.model
 
+import com.example.optimalx.data.eidos.ReasoningPersistPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReasoningTraceTest {
@@ -17,11 +19,11 @@ class ReasoningTraceTest {
                 isFinal = true,
             ),
         )
-        assertEquals("Only final thinking.", formatPersistableReasoning(hops, null))
+        assertEquals("Only final thinking.", formatArchivedReasoningTrace(hops, null))
     }
 
     @Test
-    fun multiHopTurn_joinsWithSectionHeaders() {
+    fun multiHopArchive_joinsWithSectionHeaders() {
         val hops = listOf(
             EidosReasoningHop(
                 round = 0,
@@ -45,7 +47,7 @@ class ReasoningTraceTest {
                 isFinal = true,
             ),
         )
-        val formatted = formatPersistableReasoning(hops, null)!!
+        val formatted = formatArchivedReasoningTrace(hops, null)!!
         assertEquals(
             "### Before search_semantic\nNeed to search first.\n\n" +
                 "### Before read_note\nNow read the note.\n\n" +
@@ -56,12 +58,12 @@ class ReasoningTraceTest {
 
     @Test
     fun emptyTrace_fallsBackToFinalReasoning() {
-        assertEquals("fallback", formatPersistableReasoning(emptyList(), "fallback"))
-        assertNull(formatPersistableReasoning(emptyList(), null))
+        assertEquals("fallback", formatArchivedReasoningTrace(emptyList(), "fallback"))
+        assertNull(formatArchivedReasoningTrace(emptyList(), null))
     }
 
     @Test
-    fun persistableReasoningContent_usesTraceOnResponse() {
+    fun persistableReasoningContent_storesFinalHopOnlyForChat() {
         val response = EidosResponse(
             textResponse = "Hello",
             assistantReasoningContent = "Final only in field",
@@ -82,9 +84,27 @@ class ReasoningTraceTest {
                 ),
             ),
         )
-        assertEquals(
-            "### Before search_semantic\nHop one\n\n### Final answer\nHop two",
-            response.persistableReasoningContent(),
+        val preview = response.persistableReasoningContent()!!
+        assertTrue(preview.contains("Hop two"))
+        assertTrue(preview.contains("2 provider thinking hops"))
+        assertTrue(!preview.contains("Hop one"))
+    }
+
+    @Test
+    fun recordReasoningHop_capsAtIngest() {
+        val hops = mutableListOf<EidosReasoningHop>()
+        val huge = "x".repeat(ReasoningPersistPolicy.MAX_PER_HOP_CHARS + 5_000)
+        recordReasoningHop(
+            hops = hops,
+            response = EidosResponse(
+                textResponse = "",
+                assistantReasoningContent = huge,
+                toolCalls = emptyList(),
+            ),
+            round = 0,
+            phase = EidosRequestPhase.FULL,
         )
+        assertEquals(1, hops.size)
+        assertTrue(hops.single().reasoning.length <= ReasoningPersistPolicy.MAX_PER_HOP_CHARS)
     }
 }

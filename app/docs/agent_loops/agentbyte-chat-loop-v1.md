@@ -119,11 +119,8 @@ Hook sequence:
 ## Open Questions
 1. Should final assistant prose always come from model explicit-complete step, or can a no-tool completion path synthesize final text?
 2. Do we want per-turn token budgets exposed in settings?
-3. Should reasoning inbox default to grouped-by-run rendering for `ABR1` entries?
-
 ## First Implementation Tasks
 1. Add `ChatAgentByteLoopService` (new orchestration class).
 2. Add chat `LoopEngine` implementation using existing providers and `RoomToolExecutor`.
 3. Route `EidosChatViewModel` turn execution through service (flagged).
-4. Reuse `AgentByteReasoningLogger` with scope-aware routing.
-5. Add lightweight telemetry counters: iterations, exits, blocked tools.
+4. Add lightweight telemetry counters: iterations, exits, blocked tools.

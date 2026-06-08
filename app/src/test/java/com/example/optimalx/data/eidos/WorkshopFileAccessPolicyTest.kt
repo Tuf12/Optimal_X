@@ -3,6 +3,7 @@ package com.example.optimalx.data.eidos
 import org.junit.After
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 
@@ -16,6 +17,29 @@ class WorkshopFileAccessPolicyTest {
     @After
     fun tearDown() {
         WorkshopEidosSession.end()
+    }
+
+    @Test
+    fun coerceModeForPhase_docAlignForcesPlanWhenStoredEdit() {
+        assertEquals(
+            WorkshopEidosMode.PLAN,
+            WorkshopEidosModeResolver.coerceModeForPhase(
+                WorkshopEidosMode.EDIT,
+                WorkshopProjectPhase.LOGIC_BUILD,
+                docAlignScope = WorkshopDocAlignScope.DESIGN,
+            ),
+        )
+    }
+
+    @Test
+    fun editMode_docAlignAllowsSpecMdWritesDuringLogicBuild() {
+        WorkshopEidosSession.begin(
+            WorkshopEidosMode.EDIT,
+            WorkshopProjectPhase.LOGIC_BUILD,
+            docAlignScope = WorkshopDocAlignScope.DESIGN,
+        )
+        assertNull(WorkshopFileAccessPolicy.writeFailure("DESIGN.md"))
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
     }
 
     @Test
@@ -64,8 +88,9 @@ class WorkshopFileAccessPolicyTest {
     }
 
     @Test
-    fun buildPlanKickoff_runtimeWritesOnly_noMd() {
+    fun buildPlanKickoff_allowsImplementationPlanMd_otherSpecsBlocked() {
         WorkshopEidosSession.begin(WorkshopEidosMode.BUILD_PLAN, WorkshopProjectPhase.UPDATE)
+        assertNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
         assertNotNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
         assertNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
     }

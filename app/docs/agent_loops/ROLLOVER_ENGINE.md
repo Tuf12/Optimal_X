@@ -27,7 +27,7 @@ Rollover is an **AgentByte loop that is LLM-guided per iteration**, with **code-
 
 **Allowlists per piece** (for generic AgentByte policy) live in [`AgentBytePolicies.kt`](../../src/main/java/com/example/optimalx/data/eidos/agentbyte/AgentBytePolicies.kt). The **`ChessPiece`** enum is in [`AgentByteModels.kt`](../../src/main/java/com/example/optimalx/data/eidos/agentbyte/AgentByteModels.kt).
 
-**Related:** ABR1 one-line JSON records — implementation and field choices in [`AgentByteReasoningLogger.kt`](../../src/main/java/com/example/optimalx/data/eidos/agentbyte/AgentByteReasoningLogger.kt). Kotlin rollover — [`MemoryRolloverService.kt`](../../src/main/java/com/example/optimalx/data/eidos/MemoryRolloverService.kt) (`runRolloverAgentByteLoop`, `RolloverPhaseState`, `phaseAllowedTools`). *(Older standalone markdown contracts and “full rewrite” refactor plans are not in this repo.)*
+**Related:** [`AgentByteReasoningLogger.kt`](../../src/main/java/com/example/optimalx/data/eidos/agentbyte/AgentByteReasoningLogger.kt) is a no-op stub (Reasoning folder logging removed). Kotlin rollover — [`MemoryRolloverService.kt`](../../src/main/java/com/example/optimalx/data/eidos/MemoryRolloverService.kt) (`runRolloverAgentByteLoop`, `RolloverPhaseState`, `phaseAllowedTools`). *(Older standalone markdown contracts and “full rewrite” refactor plans are not in this repo.)*
 
 ## Orchestration model (for coding agents)
 

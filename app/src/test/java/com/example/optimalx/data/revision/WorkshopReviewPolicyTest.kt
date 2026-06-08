@@ -30,9 +30,6 @@ class WorkshopReviewPolicyTest {
         )
         for (phase in phases) {
             for (mode in buildModes) {
-                if (mode == WorkshopEidosMode.BUILD_PLAN && phase == WorkshopProjectPhase.UPDATE) {
-                    continue
-                }
                 assertFalse(
                     "phase=$phase mode=$mode should auto-accept",
                     WorkshopReviewPolicy.shouldReview(phase, mode),
@@ -42,8 +39,8 @@ class WorkshopReviewPolicyTest {
     }
 
     @Test
-    fun buildPlanInUpdate_routesThroughReview() {
-        assertTrue(
+    fun buildPlanInUpdate_autoAcceptsLikeOtherBuildFamily() {
+        assertFalse(
             WorkshopReviewPolicy.shouldReview(
                 WorkshopProjectPhase.UPDATE,
                 WorkshopEidosMode.BUILD_PLAN,

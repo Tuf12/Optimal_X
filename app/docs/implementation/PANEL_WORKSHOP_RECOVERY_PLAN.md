@@ -111,7 +111,7 @@ COMPLETE ──► Update (enters UPDATE) ──► Chat / Plan / Edit
 
 ### Debug (optional fourth chip — logic only)
 
-Product default above is **three chips**. If Preview/bridge debugging remains necessary, expose **Debug** only from **LOGIC_BUILD** onward as a fourth chip with QuickJS (Kimi). Otherwise fold debug behavior into **Edit** prompts for logic review. **Recovery default: three chips; Debug deferred unless manual testing demands it.**
+Product default above is **three chips**. If Preview/bridge debugging remains necessary, expose **Debug** only from **LOGIC_BUILD** onward as a fourth chip (console buffer + `call_panel_function`; no Kimi Formula sandbox). Otherwise fold debug behavior into **Edit** prompts for logic review. **Recovery default: three chips; Debug deferred unless manual testing demands it.**
 
 ---
 

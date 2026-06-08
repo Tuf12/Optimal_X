@@ -52,6 +52,19 @@ object PanelPlatformSpec {
         - Do not workshop_read_file entire large runtime files without query — search finds the relevant passage.
     """.trimIndent()
 
+    /** Auto-Continue — required when pausing before a kickoff finishes (Phase 1.5). */
+    val EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS: String = """
+        Auto-continue handoff (build/plan kickoffs):
+        When pausing before the kickoff is finished, end your visible reply with:
+
+        ${WorkshopHandoffParser.SECTION_HEADING}
+        - Done: (concrete progress this chunk)
+        - Next: (exact next files/steps for the following chunk)
+        - Constraints: (phase/mode limits — e.g. no .md writes in build design)
+
+        Do not claim the kickoff is complete unless the full goal is done.
+    """.trimIndent()
+
     /**
      * Code edits never require Preview or an active panel bridge.
      * call_panel_function is optional for live getState/runAction tests only.
@@ -261,7 +274,7 @@ object PanelPlatformSpec {
         docAlignScope: WorkshopDocAlignScope? = null,
         updateSection: WorkshopUpdateSection? = null,
     ): String {
-        if (docAlignScope != null && mode == WorkshopEidosMode.PLAN) {
+        if (docAlignScope != null) {
             return eidosAlignDocsFromCodeInstructions(subfolderId, docAlignScope, updateSection)
         }
         val effective = WorkshopEidosMode.effectiveForInstructions(mode, phase, docAlignScope)
@@ -295,14 +308,14 @@ object PanelPlatformSpec {
                 WorkshopEidosMode.CHAT -> eidosLogicReviewChatInstructions(subfolderId)
                 WorkshopEidosMode.BUILD_LOGIC -> eidosBuildLogicInstructions(subfolderId)
                 WorkshopEidosMode.PLAN -> eidosPlanModeInstructions(subfolderId)
-                else -> logicEditOrDebugInstructions(subfolderId, phase, mode)
+                else -> logicEditOrDebugInstructions(subfolderId, phase)
             }
         }
         if (phase == WorkshopProjectPhase.LOGIC_REVIEW) {
             return when (effective) {
                 WorkshopEidosMode.CHAT -> eidosLogicReviewChatInstructions(subfolderId)
                 WorkshopEidosMode.PLAN -> eidosPlanModeInstructions(subfolderId)
-                else -> logicEditOrDebugInstructions(subfolderId, phase, mode)
+                else -> logicEditOrDebugInstructions(subfolderId, phase)
             }
         }
         if (phase == WorkshopProjectPhase.UPDATE) {
@@ -320,7 +333,7 @@ object PanelPlatformSpec {
             WorkshopEidosMode.BUILD_LOGIC -> eidosBuildLogicInstructions(subfolderId)
             WorkshopEidosMode.BUILD_PLAN -> eidosBuildFromImplementationPlanInstructions(subfolderId)
             WorkshopEidosMode.CHAT -> eidosChatModeInstructions(subfolderId)
-            else -> logicEditOrDebugInstructions(subfolderId, phase, mode)
+            else -> logicEditOrDebugInstructions(subfolderId, phase)
         }
     }
 
@@ -328,7 +341,6 @@ object PanelPlatformSpec {
     fun eidosPhaseEditInstructions(
         subfolderId: Long,
         phase: WorkshopProjectPhase,
-        includeQuickJs: Boolean = phase.allowsDebugMode,
     ): String {
         val phaseLabel = phase.displayName
         val scopeBlock = when (phase) {
@@ -353,11 +365,6 @@ object PanelPlatformSpec {
                 Scope: change only files required for the user's request.
             """.trimIndent()
         }
-        val quickJsBlock = if (includeQuickJs) """
-            Kimi QuickJS (when your provider exposes the `quickjs` Formula tool):
-            - Run small isolated snippets to test an expression — not full file rewrites.
-            - Use results to guide workshop_replace_string edits; QuickJS does not replace workshop_read_file.
-        """.trimIndent() else ""
 
         val persistenceBlock = if (phase == WorkshopProjectPhase.LOGIC_BUILD ||
             phase == WorkshopProjectPhase.LOGIC_REVIEW ||
@@ -373,6 +380,17 @@ object PanelPlatformSpec {
             else -> EIDOS_WORKSHOP_PATCH_POLICY
         }
 
+        val editAutoContinueBlock = if (WorkshopReviewPolicy.shouldReview(phase, WorkshopEidosMode.EDIT)) {
+            """
+            Edit auto-continue:
+            - Long edits may span multiple tool chunks — the app Auto-Continues until this request is done or a safety cap is hit.
+            - Proposals queue during the run; disk is unchanged until the user accepts in Diff Review.
+            - When finished, tell the user to verify in Preview (shows proposed code), then open Diff Review to accept.
+            """.trimIndent()
+        } else {
+            ""
+        }
+
         return """
             Panel Workshop — EDIT ($phaseLabel) (subfolderId=$subfolderId)
             Active phase: $phaseLabel — apply the user's current request.
@@ -385,11 +403,11 @@ object PanelPlatformSpec {
 
             ${reviewNoticeFor(phase, WorkshopEidosMode.EDIT)}
 
-            $quickJsBlock
+            $editAutoContinueBlock
 
             $persistenceBlock
 
-            Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}${if (includeQuickJs) " (+ quickjs on Kimi when available)" else ""}.
+            Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
             ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
@@ -397,17 +415,11 @@ object PanelPlatformSpec {
         """.trimIndent()
     }
 
-    /** Edit prompts; legacy DEBUG stored mode maps to [eidosPhaseEditInstructions] with QuickJS hints. */
+    /** Edit prompts; legacy DEBUG stored mode maps to [eidosPhaseEditInstructions]. */
     private fun logicEditOrDebugInstructions(
         subfolderId: Long,
         phase: WorkshopProjectPhase?,
-        rawMode: WorkshopEidosMode,
-    ): String {
-        val resolvedPhase = phase ?: WorkshopProjectPhase.COMPLETE
-        val quickJs = resolvedPhase.allowsDebugMode &&
-            WorkshopEidosMode.normalizeToUserChip(rawMode) == WorkshopEidosMode.EDIT
-        return eidosPhaseEditInstructions(subfolderId, resolvedPhase, includeQuickJs = quickJs)
-    }
+    ): String = eidosPhaseEditInstructions(subfolderId, phase ?: WorkshopProjectPhase.COMPLETE)
 
     fun eidosGenerateSpecsInstructions(subfolderId: Long): String = """
         Panel Workshop — GENERATE SPECS (Plan) (subfolderId=$subfolderId)
@@ -428,6 +440,8 @@ object PanelPlatformSpec {
         $EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION
 
         ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
+
+        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -467,6 +481,8 @@ object PanelPlatformSpec {
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
         ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
+
+        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
 
         ${WorkshopAndroidLayoutRules.EIDOS_CONTEXT_SUMMARY}
 
@@ -513,6 +529,8 @@ object PanelPlatformSpec {
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
         ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
+
+        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -620,41 +638,47 @@ object PanelPlatformSpec {
 
     fun eidosBuildFromImplementationPlanInstructions(subfolderId: Long): String = """
         Panel Workshop — BUILD PLAN (Update) (subfolderId=$subfolderId)
-        Active phase: UPDATE — execute the **accepted** ${IMPLEMENTATION_PLAN_MD} on runtime files only.
+        Active phase: UPDATE — execute the **accepted** ${IMPLEMENTATION_PLAN_MD} on runtime files (build-run profile).
 
         Rules:
         - Read ${IMPLEMENTATION_PLAN_MD} with workshop_read_file (query for the current phase section).
-        - Implement **one plan phase** (or the next incomplete phase) per this kickoff — do not run the entire plan in one turn unless it is a single tiny step.
-        - Edit index.html, style.css, script.js, and bridge.js as needed for that phase only.
-        - Do NOT workshop_write_file or workshop_create_file for any .md file (including ${IMPLEMENTATION_PLAN_MD}).
+        - Execute plan phases **in order**. One plan phase per slice when possible.
+        - Edit index.html, style.css, script.js, and bridge.js as needed for the **current** plan phase only.
+        - You may update ${IMPLEMENTATION_PLAN_MD} to mark phase progress (e.g. checkboxes).
+        - Do NOT workshop_write_file or workshop_create_file for other spec .md files — use Plan mode for those.
+        - Writes apply **directly to disk** (no Diff Review during Build plan). User verifies in Preview when the full plan is done.
 
         $EIDOS_WORKSHOP_RUNTIME_EDIT_POLICY
 
         $EIDOS_WORKSHOP_SUBSTANTIAL_WRITE_POLICY
 
-        $EIDOS_WORKSHOP_REVIEW_QUEUE_NOTICE
-
-        When this phase's runtime work is done, tell the user to open **Diff Review** (or tap Review in the workshop), accept proposals, verify in Preview, then tap **Build plan** again for the next phase.
+        When a **single plan phase** is complete, end with ## Workshop handoff (Done / Next phase / Constraints).
+        Auto-Continue will start the next plan phase automatically — do not ask the user to tap Build plan again.
+        When **all** plan phases are complete, say clearly that the implementation plan is complete and tell the user to verify in Preview, then **Accept update**.
 
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
         ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
+        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
+
         ${eidosContextSummary()}
     """.trimIndent()
 
     fun workshopBuildFromPlanKickoffFooter(): String = """
-        Build plan — execute the next phase from the accepted ${IMPLEMENTATION_PLAN_MD} (runtime files only).
-        Read the plan, complete the next incomplete phase, then stop. Do not edit any .md files.
-        Tell the user to open Diff Review for proposals and tap Build plan again when ready for the next phase.
+        Build plan — run the accepted ${IMPLEMENTATION_PLAN_MD} from first incomplete phase through all remaining phases.
+        Runtime files only (plus optional phase markers in ${IMPLEMENTATION_PLAN_MD}).
+        After each plan phase, end with ## Workshop handoff — the app Auto-Continues to the next phase.
+        When every phase is done, state that the implementation plan is complete; user reviews in Preview then Accept update.
+        Do not ask for Diff Review during this run.
     """.trimIndent()
 
     fun eidosUpdateEditInstructionsUnified(subfolderId: Long): String =
-        eidosPhaseEditInstructions(subfolderId, WorkshopProjectPhase.UPDATE, includeQuickJs = true)
+        eidosPhaseEditInstructions(subfolderId, WorkshopProjectPhase.UPDATE)
 
     /** @deprecated Debug is folded into Edit; use [eidosPhaseEditInstructions]. */
     fun eidosUpdateDebugInstructions(subfolderId: Long): String =
-        eidosPhaseEditInstructions(subfolderId, WorkshopProjectPhase.UPDATE, includeQuickJs = true)
+        eidosPhaseEditInstructions(subfolderId, WorkshopProjectPhase.UPDATE)
 
     /** @deprecated Legacy section-scoped update; use [eidosUpdateChatInstructionsUnified]. */
     fun eidosUpdateChatInstructions(subfolderId: Long, section: WorkshopUpdateSection): String = """
@@ -773,17 +797,15 @@ object PanelPlatformSpec {
     ): String = eidosPhaseEditInstructions(
         subfolderId,
         phase ?: WorkshopProjectPhase.LOGIC_REVIEW,
-        includeQuickJs = phase?.allowsDebugMode == true,
     )
 
-    /** @deprecated Use [eidosPhaseEditInstructions] with QuickJS. */
+    /** @deprecated Use [eidosPhaseEditInstructions]. */
     fun eidosLogicReviewDebugInstructions(
         subfolderId: Long,
         phase: WorkshopProjectPhase? = WorkshopProjectPhase.LOGIC_REVIEW,
     ): String = eidosPhaseEditInstructions(
         subfolderId,
         phase ?: WorkshopProjectPhase.LOGIC_REVIEW,
-        includeQuickJs = true,
     )
 
     /** @deprecated Use [eidosPhaseEditInstructions]. */
@@ -793,17 +815,15 @@ object PanelPlatformSpec {
     ): String = eidosPhaseEditInstructions(
         subfolderId,
         phase ?: WorkshopProjectPhase.COMPLETE,
-        includeQuickJs = phase?.allowsDebugMode == true,
     )
 
-    /** @deprecated Use [eidosPhaseEditInstructions] with QuickJS. */
+    /** @deprecated Use [eidosPhaseEditInstructions]. */
     fun eidosDebugModeInstructions(
         subfolderId: Long,
         phase: WorkshopProjectPhase? = null,
     ): String = eidosPhaseEditInstructions(
         subfolderId,
         phase ?: WorkshopProjectPhase.COMPLETE,
-        includeQuickJs = true,
     )
 
     fun eidosChatModeInstructions(subfolderId: Long): String = """

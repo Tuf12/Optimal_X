@@ -31,7 +31,7 @@ interface ParentFolderDao {
     @Query(
         """
         SELECT * FROM parent_folders WHERE deletedAt IS NULL AND (
-            isSystemFolder = 0 OR name IN ('Eidos Chats', 'Quick Notes', 'Eidos Reasoning', 'Panel Workshop')
+            isSystemFolder = 0 OR name IN ('Eidos Chats', 'Quick Notes', 'Panel Workshop')
         ) ORDER BY sortOrder ASC, createdAt ASC
         """,
     )

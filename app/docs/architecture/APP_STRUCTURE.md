@@ -20,7 +20,7 @@ App
             └── Files Panel (swipe)
 ```
 
-System-level parent folders still exist in the database for legacy data and internal tools. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Memory**, and **Eidos Index** are reachable from the **Eidos section** (top bar menu). **Eidos Chats** and **Eidos Reasoning** parents remain in the DB but are **hidden** from folder UI — chat navigation lives in the chat UI.
+System-level parent folders still exist in the database for legacy data and internal tools. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Memory**, and **Eidos Index** are reachable from the **Eidos section** (top bar menu). Legacy **Eidos Chats** / **Eidos Reasoning** parents may remain in the DB but are **hidden** from folder UI — chat navigation lives in the chat UI.
 
 **Quick Notes**, **Panel Workshop**, **Panels** (gallery), and **DumpEdit** are reached from the **pinned row** on the Parent Folder Page, not from the user folder grid.
 
@@ -163,5 +163,5 @@ Future panels can be added to the swipe system without changing the screen struc
 - No third folder level (no subfolders inside subfolders)
 - No tab bar navigation
 - No side drawer / hamburger menu
-- Eidos Chats / Eidos Reasoning as visible folder cards (legacy rows may exist in DB)
+- Eidos Chats / Eidos Reasoning as visible folder cards (removed from UI; legacy DB rows may exist)
 - No calculator, math, or checklist panels (removed from v1)

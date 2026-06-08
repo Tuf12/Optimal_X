@@ -102,7 +102,7 @@ enum class WorkshopProjectPhase {
 
 **User-visible chips:** **Chat**, **Plan**, **Edit** only.  
 **Primary-button kickoffs only:** `BUILD_DESIGN`, `BUILD_LOGIC` (not shown as chips).  
-**Legacy enum values** `DESIGN`, `BUILD`, `DEBUG` remain for prefs migration and map to **Edit** (QuickJS in Edit when phase allows).  
+**Legacy enum values** `DESIGN`, `BUILD`, `DEBUG` remain for prefs migration and map to **Edit**.
 **Plan artifact (Phase 4):** optional `IMPLEMENTATION_PLAN.md` — phased steps, files touched, test notes; Plan may read any file, write spec `.md` only.
 
 Canonical contracts: [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md#eidos-modes-three-chips).
@@ -122,7 +122,7 @@ Canonical contracts: [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_W
 - **Reads:** Any project file (spec + runtime) for comparison; **must not** write runtime files.
 - **Platform:** `PanelPlatformSpec.eidosPlanModeInstructions()` + `WorkshopAndroidLayoutRules.EIDOS_CONTEXT_SUMMARY` for DESIGN.md — not full Build checklist.
 - **Spec rule:** Summarize intent in **human language**; do not rewrite code in human language. Enforce greenfield char caps in prompt.
-- **UPDATE execution (Phase 4.5 — planned):** After user **Accept implementation plan**, **Build plan** kickoff runs the plan on runtime files (Edit + Diff Review). See [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md#phase-45--implementation-plan-execution-update--plan-mode).
+- **UPDATE execution:** After **Accept implementation plan**, one **Build plan** tap runs all phases with Auto-Continue (build-run profile — direct disk, no Diff Review mid-run). See [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md).
 
 #### Build design (`BUILD_DESIGN`)
 
@@ -158,8 +158,7 @@ Canonical contracts: [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_W
 - **Goal:** Fix broken Preview, calculations, bridge, scroll; separate panel bug vs platform gap.
 - **Writes:** Targeted runtime fixes.
 - **Reads:** Runtime files, console buffer, `call_panel_function`.
-- **Kimi Phase 3.6:** Expose Formula `moonshot/quickjs:latest` **only** when `workshopEidosMode == DEBUG` and provider is Kimi. System prompt: small JS snippets to reproduce/isolate bugs before proposing fixes.
-- **Platform gaps:** When JS is correct in QuickJS but Preview/bridge fails, use `platformIssueTemplate()` — surfaces Kotlin ↔ JS communication gaps for platform work.
+- **Platform gaps:** When panel JS looks correct but Preview/bridge fails, use `platformIssueTemplate()` — surfaces Kotlin ↔ JS communication gaps for platform work.
 
 #### Chat / Plan nudge
 
@@ -175,7 +174,6 @@ If user asks for code during Chat, suggest **Design**, **Edit**, or the phase-ap
 | `workshop_write_file` | `.md` | shell files | shell files | logic files | ✓ | ✓ | ✗ |
 | `workshop_create_file` | `.md` | shell | shell | logic | ✓ | ✓ | ✗ |
 | `call_panel_function` | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Formula `quickjs` | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ (Kimi) | ✗ |
 
 Enforcement:
 
@@ -197,7 +195,7 @@ Extend `PanelPlatformSpec.eidosInstructionsForMode()`:
 | `eidosDesignModeInstructions()` | DESIGN (design review) |
 | `eidosBuildLogicInstructions()` | BUILD_LOGIC |
 | `eidosEditModeInstructions()` | Edit |
-| `eidosDebugModeInstructions()` | Debug (+ QuickJS note when Kimi) |
+| `eidosDebugModeInstructions()` | Debug (+ platform gap note) |
 | `eidosChatModeInstructions()` | Chat |
 
 `EidosApiClient.buildWorkshopPanelContext()` must:
@@ -316,13 +314,12 @@ Prefer **intake summary** and **checkpoint doc snapshots** over replaying long t
 | Prefs | `WorkshopProjectPreferences.kt` | ✅ Phase 0 — phase, intake, update section |
 | Phase + mode resolver | `data/eidos/WorkshopEidosModeResolver.kt` | Phase-aware suggest; remove sync digest |
 | Per-mode prompts | `PanelPlatformSpec.kt` | New design/logic/align prompts |
-| Tool allowlist | `EidosToolCatalog.kt` | ✅ Phase 0 modes wired; QuickJS in Debug (Phase 3.6) |
+| Tool allowlist | `EidosToolCatalog.kt` | ✅ Phase 0 modes wired |
 | Write guards | `RoomToolExecutor` | ✅ DESIGN rejects `.md` writes; phase freeze in Phase 3 |
 | API wiring | `EidosApiClient.kt` | `workshopProjectPhase`, intake summary |
 | UI | `WorkshopEditorScreen.kt` | Phase primary button; remove Sync to code |
 | ViewModel | `WorkshopEditorViewModel.kt` | ✅ Phase 0 — `projectPhase` StateFlow |
 | Eidos chat VM | `EidosChatViewModel.kt` | ✅ Phase 0 — `workshopProjectPhase` StateFlow |
-| Kimi QuickJS | `KimiFormulaToolService.kt`, Phase 3.6 | DEBUG + Kimi only |
 
 **Deferred:** `panel_verify` tool; chess-piece AgentByte loop; DIFF_REVIEW pending batches (see [DIFF_REVIEW.md](DIFF_REVIEW.md)).
 
@@ -375,4 +372,5 @@ Build / Design / Edit / Debug writes should use **pending change sets** per [DIF
 | Version | Date | Notes |
 |---------|------|--------|
 | 1 | 2026-05-18 | Plan/Build/Edit/Debug/Chat; auto-suggest; Sync to code; chess separation |
-| 2 | 2026-05-25 | Phased lifecycle; BUILD_DESIGN/BUILD_LOGIC/DESIGN modes; doc align on approval; remove Sync to code; Debug + QuickJS from logic build; intake summary; `.md` freeze during design review |
+| 2 | 2026-05-25 | Phased lifecycle; BUILD_DESIGN/BUILD_LOGIC/DESIGN modes; doc align on approval; remove Sync to code; Debug from logic build; intake summary; `.md` freeze during design review |
+| 3 | 2026-06-06 | Kimi Formula `quickjs` removed from product and codebase |

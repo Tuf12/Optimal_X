@@ -17,8 +17,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
-import com.example.optimalx.data.eidos.WorkshopEidosMode
-import com.example.optimalx.data.eidos.WorkshopProjectPhase
 
 private const val MOONSHOT_API_BASE = "https://api.moonshot.ai/v1"
 
@@ -37,15 +35,12 @@ const val KIMI_FORMULA_DATE_URI = "moonshot/date:latest"
 /** Moonshot Formula URI for Excel/CSV structural analysis. */
 const val KIMI_FORMULA_EXCEL_URI = "moonshot/excel:latest"
 
-/** Moonshot Formula URI for sandboxed JavaScript evaluation (Workshop DEBUG only). */
-const val KIMI_FORMULA_QUICKJS_URI = "moonshot/quickjs:latest"
 
 /**
  * Loads and executes Kimi K2.6 official Formula tools via the Moonshot Formula API.
  *
  * Shipped formulas: [KIMI_FORMULA_WEB_SEARCH_URI] (`web_search`), [KIMI_FORMULA_FETCH_URI] (`fetch`),
  * [KIMI_FORMULA_CONVERT_URI] (`convert`), [KIMI_FORMULA_DATE_URI] (`date`), [KIMI_FORMULA_EXCEL_URI] (`excel`),
- * [KIMI_FORMULA_QUICKJS_URI] (`quickjs`, Workshop DEBUG only).
  * Thinking stays enabled; unlike builtin `$web_search`, Formula tools are client-executed.
  *
  * @see <a href="https://platform.kimi.ai/docs/guide/use-official-tools">Kimi official tools</a>
@@ -131,27 +126,9 @@ class KimiFormulaToolService(
         return false
     }
 
-    fun formulaToolSchemas(
-        excludeUris: Set<String> = setOf(KIMI_FORMULA_QUICKJS_URI),
-    ): List<JsonObject> {
-        if (excludeUris.isEmpty()) return cachedToolSchemas
-        val excludedNames = cachedToolNameToUri
-            .filter { (_, uri) -> uri in excludeUris }
-            .keys
-        if (excludedNames.isEmpty()) return cachedToolSchemas
-        return cachedToolSchemas.filter { tool ->
-            val name = tool["function"]?.jsonObject
-                ?.get("name")
-                ?.jsonPrimitive
-                ?.contentOrNull
-            name !in excludedNames
-        }
-    }
+    fun formulaToolSchemas(): List<JsonObject> = cachedToolSchemas
 
     fun formulaUriForTool(name: String): String? = cachedToolNameToUri[name]
-
-    fun isQuickJsFormulaTool(name: String): Boolean =
-        cachedToolNameToUri[name] == KIMI_FORMULA_QUICKJS_URI
 
     fun isFormulaTool(name: String): Boolean = name in cachedToolNameToUri
 
@@ -205,25 +182,12 @@ class KimiFormulaToolService(
     }
 
     companion object {
-        /** Kimi Formula `quickjs` is Workshop Edit + logic-build phase onward only. */
-        fun workshopQuickJsExposureAllowed(
-            isPanelWorkshop: Boolean,
-            mode: WorkshopEidosMode?,
-            phase: WorkshopProjectPhase?,
-        ): Boolean {
-            val chip = mode?.let { WorkshopEidosMode.normalizeToUserChip(it) } ?: return false
-            return isPanelWorkshop &&
-                chip == WorkshopEidosMode.EDIT &&
-                phase?.allowsDebugMode == true
-        }
-
         val KIMI_FORMULA_URIS: List<String> = listOf(
             KIMI_FORMULA_WEB_SEARCH_URI,
             KIMI_FORMULA_FETCH_URI,
             KIMI_FORMULA_CONVERT_URI,
             KIMI_FORMULA_DATE_URI,
             KIMI_FORMULA_EXCEL_URI,
-            KIMI_FORMULA_QUICKJS_URI,
         )
 
         @Volatile

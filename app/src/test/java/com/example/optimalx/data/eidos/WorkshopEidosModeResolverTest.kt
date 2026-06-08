@@ -80,6 +80,36 @@ class WorkshopEidosModeResolverTest {
     }
 
     @Test
+    fun coerceModeForPhase_designBuildKickoffForcesBuildDesignWhenStoredPlan() {
+        assertEquals(
+            WorkshopEidosMode.BUILD_DESIGN,
+            WorkshopEidosModeResolver.coerceModeForPhase(
+                WorkshopEidosMode.PLAN,
+                WorkshopProjectPhase.DESIGN_BUILD,
+                activeBuildKickoff = WorkshopBuildKickoff.DESIGN,
+            ),
+        )
+    }
+
+    @Test
+    fun modeForActiveBuildKickoff_mapsKickoffToInternalMode() {
+        assertEquals(
+            WorkshopEidosMode.BUILD_DESIGN,
+            WorkshopEidosModeResolver.modeForActiveBuildKickoff(
+                WorkshopProjectPhase.DESIGN_BUILD,
+                WorkshopBuildKickoff.DESIGN,
+            ),
+        )
+        assertEquals(
+            WorkshopEidosMode.BUILD_LOGIC,
+            WorkshopEidosModeResolver.modeForActiveBuildKickoff(
+                WorkshopProjectPhase.LOGIC_BUILD,
+                WorkshopBuildKickoff.LOGIC,
+            ),
+        )
+    }
+
+    @Test
     fun coerceModeForPhase_designBuildPreservesPlan() {
         assertEquals(
             WorkshopEidosMode.PLAN,

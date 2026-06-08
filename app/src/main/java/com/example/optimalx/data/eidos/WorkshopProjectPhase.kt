@@ -77,6 +77,7 @@ enum class WorkshopProjectPhase {
         @Suppress("UNUSED_PARAMETER") designLayoutReady: Boolean = false,
         @Suppress("UNUSED_PARAMETER") logicBehaviorReady: Boolean = false,
     ): WorkshopEidosMode {
+        WorkshopEidosModeResolver.modeForActiveBuildKickoff(this, activeBuildKickoff)?.let { return it }
         if (stored != null) {
             if (this == DESIGN_BUILD &&
                 activeBuildKickoff == WorkshopBuildKickoff.DESIGN &&

@@ -513,15 +513,6 @@ class FolderRepository(
                 )
             )
             db.noteDao().insert(Note(subfolderId = memoryCacheSubfolderId))
-            val reasoningSubfolderId = db.subfolderDao().insert(
-                Subfolder(
-                    parentFolderId = id,
-                    name = SystemFolderNames.PARENT_REASONING_SUBFOLDER,
-                    isSystemSubfolder = true,
-                    sortOrder = 9997,
-                )
-            )
-            db.noteDao().insert(Note(subfolderId = reasoningSubfolderId))
             id
         }
         requestIndexAndSemanticSync("create_parent_folder:$id")

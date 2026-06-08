@@ -66,7 +66,7 @@ v2 Panel Workshop splits **spec work**, **design shell**, and **logic** into gat
 | Design build | Full layout, bundling, bridge order, scaffolds | Yes — **shell only** (no business logic) |
 | Design review | Compact layout reminder; **code is truth**; no `.md` in context | No |
 | Logic build | Full bridge + runtime checklist | Yes — behavior files |
-| Logic review / Debug | Runtime + console + bridge; QuickJS when Kimi DEBUG | Partial + debug block |
+| Logic review / Debug | Runtime + console + bridge | Partial + debug block |
 | Complete / Update | Compact reminder per section | On design/logic writes only |
 
 **Doc alignment:** Spec `.md` files are **human-readable snapshots** updated **code → spec on user approval** — not live build drivers during iteration. There is **no Sync to code** button. See [WORKSHOP_MODES.md](WORKSHOP_MODES.md).
@@ -322,9 +322,9 @@ Static validation: `PanelPlatformSpec.validatePersistenceContract(scriptJs, brid
 
 Use `console.error(...)` in `script.js` when init fails. Eidos should ask the user to open Preview and report console buffer content when debugging.
 
-**Debug mode** (from logic build phase): console buffer + `call_panel_function` + Kimi Formula **`quickjs`** (Phase 3.6) to isolate JS vs **platform gap** (Kotlin ↔ bridge ↔ WebView).
+**Debug mode** (from logic build phase): console buffer + `call_panel_function` to isolate panel JS vs **platform gap** (Kotlin ↔ bridge ↔ WebView).
 
-When QuickJS passes but Preview fails, Eidos should file a **platform issue** — not keep patching panel JS.
+When isolated reasoning suggests correct JS but Preview still fails, Eidos should file a **platform issue** — not keep patching panel JS.
 
 ---
 
@@ -338,7 +338,6 @@ When QuickJS passes but Preview fails, Eidos should file a **platform issue** �
 | `workshop_write_file` | Overwrite project file |
 | `workshop_create_file` | Create file in workshop subfolder |
 | `call_panel_function` | Invoke live panel JS via bridge |
-| Formula `quickjs` | **DEBUG mode + Kimi only** — sandbox JS snippets (Phase 3.6) |
 
 Tool availability is filtered by **`WorkshopProjectPhase`** and **`WorkshopEidosMode`** — see [WORKSHOP_MODES.md](WORKSHOP_MODES.md). Example: no `.md` read/write during **design review**.
 
@@ -353,7 +352,7 @@ Tool availability is filtered by **`WorkshopProjectPhase`** and **`WorkshopEidos
 | `eidosDesignModeInstructions()` | Design review — code only |
 | `eidosBuildLogicInstructions()` | Logic build |
 | `eidosEditModeInstructions()` | Targeted runtime edits |
-| `eidosDebugModeInstructions()` | Debug + platform gap + QuickJS note |
+| `eidosDebugModeInstructions()` | Debug + platform gap note |
 | `eidosChatModeInstructions()` | Intake / discussion — no writes |
 | `eidosAlignDocsFromCodeInstructions()` | Approval gates — short code → spec |
 | `eidosContextSummary()` | Compact layout + platform hint |
@@ -409,7 +408,7 @@ Apply during **design build** and **logic build** writes (and scoped Update edit
 
 When something in this table is required, Eidos should **not** hack around silently — document a **platform issue** for the app developer (see template below).
 
-**Debug workflow:** If panel JS validates in QuickJS but fails in Preview/bridge, classify as **platform gap** and use the template — this surfaces missing Kotlin ↔ JS contract work.
+**Debug workflow:** If panel JS looks correct in review but fails in Preview/bridge, classify as **platform gap** and use the template — this surfaces missing Kotlin ↔ JS contract work.
 
 ---
 
@@ -436,7 +435,7 @@ When something in this table is required, Eidos should **not** hack around silen
 | Eidos `call_panel_function` fails | Preview/tab not visible | User opens Preview or custom panel tab |
 | `Identifier 'rooms' has already been declared` | Scripts executed twice | Composite build strips external src; reload preview |
 | Bridge idle | Missing `bridge.js` or `panelGetState` not defined | Add scaffold `bridge.js` |
-| QuickJS OK, Preview broken | Platform / bridge / bundling gap | Platform issue — not panel JS |
+| Logic looks OK, Preview broken | Platform / bridge / bundling gap | Platform issue — not panel JS |
 
 ---
 
@@ -455,7 +454,6 @@ When Eidos cannot fix panel code alone:
 **Workshop phase:** (e.g. LOGIC_REVIEW, DEBUG)
 **Repro steps:** 
 **Console / verify output:** 
-**QuickJS result (if run):** 
 **Minimal panel snippet:** 
 **Suggested Kotlin / bridge API:** (e.g. runAction action name + args)
 ```
@@ -524,4 +522,5 @@ When this doc and `PanelPlatformSpec.kt` disagree, **update both** — Kotlin is
 | Version | Date | Notes |
 |---------|------|--------|
 | 1 | 2026-05-18 | Initial platform doc: bundling, WebView, scroll, bridge, authoring rules, unsupported matrix |
-| 2 | 2026-05-25 | Aligned with Panel Workshop v2: phased platform context, scaffolds, doc snapshots, no Sync to code, Debug + QuickJS, new prompt helpers |
+| 2 | 2026-05-25 | Aligned with Panel Workshop v2: phased platform context, scaffolds, doc snapshots, no Sync to code, Debug mode, new prompt helpers |
+| 3 | 2026-06-06 | Kimi Formula `quickjs` removed from product and codebase |

@@ -18,6 +18,8 @@ import androidx.work.WorkerParameters
 import com.example.optimalx.MainActivity
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.R
+import com.example.optimalx.data.eidos.ChatMessageHistoryLoader
+import com.example.optimalx.data.eidos.ChatMessagePersistLimits
 import com.example.optimalx.data.eidos.model.persistableReasoningContent
 import com.example.optimalx.data.model.ChatMessage
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
@@ -56,7 +58,7 @@ class EidosChatSendWorker(
 
         val db = app.database
         val conversation = db.conversationDao().getById(conversationId) ?: return@withContext Result.failure()
-        val allMessages = db.chatMessageDao().getAllByConversation(conversationId)
+        val allMessages = ChatMessageHistoryLoader.forApi(db.chatMessageDao(), conversationId)
         val rawHistory = allMessages.toEidosApiHistoryExcludingLatestUser(userText)
         val history = rawHistory
 
@@ -90,20 +92,15 @@ class EidosChatSendWorker(
             }
             val reasoningContent = response.persistableReasoningContent()
             val replyMsgId = db.chatMessageDao().insert(
-                ChatMessage(
-                    conversationId = conversationId,
-                    role = "eidos",
-                    content = replyText,
-                    assistantReasoningContent = reasoningContent,
-                    createdAt = System.currentTimeMillis(),
-                )
-            )
-            app.eidosApiClient.archiveLinkedProviderReasoningForChatMessage(
-                response = response,
-                chatMessageId = replyMsgId,
-                currentSubfolderId = currentSubfolderId,
-                currentParentFolderId = currentParentFolderId,
-                currentScopeType = currentScopeType,
+                ChatMessagePersistLimits.clampForStorage(
+                    ChatMessage(
+                        conversationId = conversationId,
+                        role = "eidos",
+                        content = replyText,
+                        assistantReasoningContent = reasoningContent,
+                        createdAt = System.currentTimeMillis(),
+                    ),
+                ),
             )
             db.conversationDao().update(conversation.copy(updatedAt = System.currentTimeMillis()))
             app.appIndexSyncService.requestSync("background_conversation_reply_written:$conversationId")

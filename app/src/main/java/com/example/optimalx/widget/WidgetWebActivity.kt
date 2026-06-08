@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -29,12 +27,10 @@ class WidgetWebActivity : ComponentActivity() {
     }
 
     private var initialQuery by mutableStateOf("")
-    private var launchNonce by mutableLongStateOf(0L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         initialQuery = intent.getStringExtra(EXTRA_INITIAL_QUERY).orEmpty()
-        launchNonce = System.currentTimeMillis()
 
         setContent {
             OptimalXTheme {
@@ -53,15 +49,13 @@ class WidgetWebActivity : ComponentActivity() {
                     eidosViewModel.setChatUiVisible(true)
                     onDispose { eidosViewModel.setChatUiVisible(false) }
                 }
-                key(launchNonce) {
-                    WebPanel(
-                        modifier = Modifier.fillMaxSize(),
-                        panelTitle = "Widget Web",
-                        eidosViewModel = eidosViewModel,
-                        scopeKey = "widget_quick_web",
-                        initialUrl = initialQuery,
-                    )
-                }
+                WebPanel(
+                    modifier = Modifier.fillMaxSize(),
+                    panelTitle = "Widget Web",
+                    eidosViewModel = eidosViewModel,
+                    scopeKey = "widget_quick_web",
+                    initialUrl = initialQuery,
+                )
             }
         }
     }
@@ -70,6 +64,5 @@ class WidgetWebActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         initialQuery = intent.getStringExtra(EXTRA_INITIAL_QUERY).orEmpty()
-        launchNonce = System.currentTimeMillis()
     }
 }

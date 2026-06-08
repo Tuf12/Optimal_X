@@ -2,6 +2,7 @@ package com.example.optimalx.ui.workshop
 
 import android.content.Context
 import com.example.optimalx.data.db.AppDatabase
+import com.example.optimalx.data.eidos.WorkshopBuildKickoff
 import com.example.optimalx.data.eidos.WorkshopDocAlignGate
 import com.example.optimalx.data.eidos.WorkshopDocAlignScope
 import com.example.optimalx.data.eidos.WorkshopEidosMode
@@ -24,6 +25,8 @@ object WorkshopUpdateCompletion {
         subfolderId: Long,
         docAlignScope: WorkshopDocAlignScope?,
         sendSucceeded: Boolean,
+        workshopRunContinuing: Boolean = false,
+        workshopPausedForToolCap: Boolean = false,
     ) {
         if (docAlignScope != null) {
             WorkshopProjectPreferences.setPendingUpdateAwaitingAlign(context, subfolderId, false)
@@ -36,7 +39,36 @@ object WorkshopUpdateCompletion {
         ) {
             WorkshopProjectPreferences.setPendingUpdateAwaitingAlign(context, subfolderId, false)
         }
+        finishPendingLogicReviewAfterBuildIfNeeded(
+            context = context,
+            subfolderId = subfolderId,
+            sendSucceeded = sendSucceeded,
+            workshopRunContinuing = workshopRunContinuing,
+            workshopPausedForToolCap = workshopPausedForToolCap,
+        )
         tryFinishPendingUpdate(context, db, subfolderId)
+    }
+
+    /**
+     * After **Build logic** kickoff completes (including final auto-continue chunk), advance to logic
+     * review so the primary action becomes Accept logic — not when Accept design doc-align runs.
+     */
+    internal fun finishPendingLogicReviewAfterBuildIfNeeded(
+        context: Context,
+        subfolderId: Long,
+        sendSucceeded: Boolean,
+        workshopRunContinuing: Boolean,
+        workshopPausedForToolCap: Boolean,
+    ) {
+        if (!sendSucceeded || workshopRunContinuing || workshopPausedForToolCap) return
+        if (!WorkshopProjectPreferences.isPendingLogicReviewAfterBuild(context, subfolderId)) return
+        if (WorkshopProjectPreferences.getBuildKickoff(context, subfolderId) != WorkshopBuildKickoff.LOGIC) return
+        WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(context, subfolderId, false)
+        WorkshopProjectPreferences.setLogicBehaviorReady(context, subfolderId, true)
+        if (WorkshopProjectPreferences.getProjectPhase(context, subfolderId) == WorkshopProjectPhase.LOGIC_BUILD) {
+            WorkshopProjectPreferences.setProjectPhase(context, subfolderId, WorkshopProjectPhase.LOGIC_REVIEW)
+            WorkshopProjectPreferences.setEidosModeOverride(context, subfolderId, WorkshopEidosMode.EDIT)
+        }
     }
 
     suspend fun tryFinishPendingUpdate(

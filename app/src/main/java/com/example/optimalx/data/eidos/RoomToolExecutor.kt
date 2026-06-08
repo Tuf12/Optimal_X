@@ -170,8 +170,6 @@ class RoomToolExecutor(
                 "prune_long_term_memory" -> pruneLongTermMemory(args)
                 "read_subfolder_memory_cache" -> readSubfolderMemoryCache(args)
                 "update_subfolder_memory_cache" -> updateSubfolderMemoryCache(args)
-                "read_reasoning_trace" -> readReasoningTrace(args)
-                "append_reasoning_trace" -> appendReasoningTrace(args)
 
                 // 6.6 Journal tools
                 "write_journal_entry" -> writeJournalEntry(args)
@@ -295,15 +293,6 @@ class RoomToolExecutor(
             )
         )
         db.noteDao().insert(Note(subfolderId = memoryCacheSubfolderId))
-        val reasoningSubfolderId = db.subfolderDao().insert(
-            Subfolder(
-                parentFolderId = id,
-                name = SystemFolderNames.PARENT_REASONING_SUBFOLDER,
-                isSystemSubfolder = true,
-                sortOrder = 9997,
-            )
-        )
-        db.noteDao().insert(Note(subfolderId = reasoningSubfolderId))
         return ToolExecutionResult.Success(
             content = "Created parent folder '$name' (id=$id)",
             modifiedSystem = true,
@@ -622,7 +611,7 @@ class RoomToolExecutor(
             ?: return ToolExecutionResult.Failure("Conversation not found")
 
         val messages = if (includeMessages) {
-            val all = db.chatMessageDao().getAllByConversation(conversationId)
+            val all = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conversationId)
             if (limit != null) all.takeLast(limit) else all
         } else {
             emptyList()
@@ -699,7 +688,7 @@ class RoomToolExecutor(
             .asSequence()
             .filter { inDateRange(it.updatedAt, dateFrom, dateTo) }
             .forEach { conv ->
-                val messages = db.chatMessageDao().getAllByConversation(conv.id)
+                val messages = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conv.id)
                 val titleMatch = q == null || conv.title.lowercase(Locale.US).contains(q)
                 val matchingMsg = if (q == null) null else messages.firstOrNull { it.content.lowercase(Locale.US).contains(q) }
                 if (!titleMatch && matchingMsg == null) return@forEach
@@ -1130,99 +1119,6 @@ class RoomToolExecutor(
         )
     }
 
-    private suspend fun appendReasoningTrace(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val content = args.string("content") ?: return ToolExecutionResult.Failure("content is required")
-        val trimmedContent = content.trim()
-        if (trimmedContent.isBlank()) return ToolExecutionResult.Failure("content is empty")
-
-        val subfolder = db.subfolderDao().getById(subfolderId)
-            ?: return ToolExecutionResult.Failure("Subfolder not found")
-        if (subfolder.deletedAt != null) return ToolExecutionResult.Failure("Subfolder is deleted")
-
-        val piece = args.string("piece")?.trim().orEmpty()
-        val situation = args.string("situation")?.trim().orEmpty()
-        val step = args.string("step")?.trim().orEmpty()
-        val timestamp = args.long("timestamp") ?: System.currentTimeMillis()
-        val ts = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-            .withZone(ZoneId.systemDefault())
-            .format(Instant.ofEpochMilli(timestamp))
-        val header = buildList {
-            add("source=subfolder:$subfolderId")
-            if (piece.isNotBlank()) add("piece=${piece.uppercase(Locale.US)}")
-            if (situation.isNotBlank()) add("situation=$situation")
-            if (step.isNotBlank()) add("step=$step")
-        }.joinToString(" | ")
-        val entry = "[$ts] $header\n$trimmedContent"
-
-        val reasoningNote = getOrCreateParentReasoningNote(subfolder.parentFolderId)
-        val updated = if (reasoningNote.content.isBlank()) entry else "${reasoningNote.content.trimEnd()}\n\n$entry"
-        val now = System.currentTimeMillis()
-        db.noteDao().update(reasoningNote.copy(content = updated, updatedAt = now))
-        semanticChunkBuilder.indexNote(semanticIndexer, reasoningNote.subfolderId)
-        db.subfolderDao().getById(reasoningNote.subfolderId)?.let { sf ->
-            db.subfolderDao().update(sf.copy(updatedAt = now))
-        }
-
-        return ToolExecutionResult.Success(
-            content = "Reasoning trace appended (subfolderId=$subfolderId)",
-            modifiedSystem = true,
-        )
-    }
-
-    private suspend fun readReasoningTrace(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val query = args.string("query")?.trim()?.takeIf { it.isNotBlank() }
-        val dateFrom = args.long("dateFrom")
-        val dateTo = args.long("dateTo")
-        val limit = (args.long("limit") ?: 50L).toInt().coerceIn(1, 500)
-
-        val subfolder = db.subfolderDao().getById(subfolderId)
-            ?: return ToolExecutionResult.Failure("Subfolder not found")
-        if (subfolder.deletedAt != null) return ToolExecutionResult.Failure("Subfolder is deleted")
-
-        val note = getOrCreateParentReasoningNote(subfolder.parentFolderId)
-        if (note.aiBlind) {
-            return ToolExecutionResult.Failure("Reasoning trace is blind from Eidos (content is private)")
-        }
-        val marker = "source=subfolder:$subfolderId"
-        val chunks = note.content
-            .split(Regex("\n\\s*\n"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it.contains(marker) }
-
-        val filtered = buildJsonArray {
-            chunks.forEach { chunk ->
-                if (query != null && !chunk.contains(query, ignoreCase = true)) return@forEach
-                val parsed = parseReasoningChunk(chunk)
-                val parsedMillis = parsed.timestampMillis
-                if ((dateFrom != null || dateTo != null) && parsedMillis == null) return@forEach
-                if (parsedMillis != null && !inDateRange(parsedMillis, dateFrom, dateTo)) return@forEach
-                add(
-                    buildJsonObject {
-                        put("raw", JsonPrimitive(parsed.raw))
-                        if (parsed.timestamp != null) put("timestamp", JsonPrimitive(parsed.timestamp))
-                        if (parsed.source != null) put("source", JsonPrimitive(parsed.source))
-                        if (parsed.piece != null) put("piece", JsonPrimitive(parsed.piece))
-                        if (parsed.situation != null) put("situation", JsonPrimitive(parsed.situation))
-                        if (parsed.step != null) put("step", JsonPrimitive(parsed.step))
-                        put("content", JsonPrimitive(parsed.content))
-                    }
-                )
-            }
-        }
-
-        val items = filtered.take(limit)
-        return ToolExecutionResult.Success(
-            content = buildJsonObject {
-                put("subfolderId", JsonPrimitive(subfolderId))
-                put("count", JsonPrimitive(items.size))
-                put("entries", buildJsonArray { items.forEach { add(it) } })
-            }.toString(),
-            modifiedSystem = false,
-        )
-    }
-
     private suspend fun readJournal(args: JsonObject): ToolExecutionResult {
         val query = args.string("query")
         val dateFrom = args.long("dateFrom")
@@ -1372,30 +1268,6 @@ class RoomToolExecutor(
                     name = SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
                     isSystemSubfolder = true,
                     sortOrder = 9998,
-                    updatedAt = System.currentTimeMillis(),
-                )
-            )
-            db.subfolderDao().getById(id)!!
-        }
-        return getOrCreateDailyNote(subfolder.id)
-    }
-
-    private suspend fun getOrCreateParentReasoningNote(parentFolderId: Long): Note {
-        val existing = db.subfolderDao().getAllByParentOnce(parentFolderId)
-            .firstOrNull {
-                it.deletedAt == null &&
-                    it.isSystemSubfolder &&
-                    it.name == SystemFolderNames.PARENT_REASONING_SUBFOLDER
-            }
-        val subfolder = if (existing != null) {
-            existing
-        } else {
-            val id = db.subfolderDao().insert(
-                Subfolder(
-                    parentFolderId = parentFolderId,
-                    name = SystemFolderNames.PARENT_REASONING_SUBFOLDER,
-                    isSystemSubfolder = true,
-                    sortOrder = 9997,
                     updatedAt = System.currentTimeMillis(),
                 )
             )
@@ -1637,45 +1509,6 @@ class RoomToolExecutor(
             scopeId = refMeta.scopeId,
             parentRef = refMeta.parentRef,
             rootBranch = refMeta.rootBranch,
-        )
-    }
-
-    private fun parseReasoningChunk(raw: String): ParsedReasoningChunk {
-        val lines = raw.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return ParsedReasoningChunk(raw = raw, content = raw)
-
-        val header = lines.first().trim()
-        val body = lines.drop(1).joinToString("\n").trim().ifBlank { header }
-
-        val tsMatch = Regex("""^\[([^\]]+)]\s*(.*)$""").find(header)
-        val timestamp = tsMatch?.groupValues?.getOrNull(1)?.trim()?.ifBlank { null }
-        val metaRaw = tsMatch?.groupValues?.getOrNull(2)?.trim().orEmpty()
-        val metaParts = metaRaw.split("|").map { it.trim() }.filter { it.contains("=") }
-        val metaMap = metaParts.associate { part ->
-            val idx = part.indexOf('=')
-            val key = part.substring(0, idx).trim().lowercase(Locale.US)
-            val value = part.substring(idx + 1).trim()
-            key to value
-        }
-
-        val timestampMillis = timestamp?.let {
-            runCatching {
-                LocalDate.parse(it.substring(0, 10))
-                    .atStartOfDay(ZoneId.systemDefault())
-                    .toInstant()
-                    .toEpochMilli()
-            }.getOrNull()
-        }
-
-        return ParsedReasoningChunk(
-            raw = raw,
-            timestamp = timestamp,
-            timestampMillis = timestampMillis,
-            source = metaMap["source"],
-            piece = metaMap["piece"],
-            situation = metaMap["situation"],
-            step = metaMap["step"],
-            content = body,
         )
     }
 
@@ -2036,14 +1869,3 @@ class RoomToolExecutor(
     }
 
 }
-
-private data class ParsedReasoningChunk(
-    val raw: String,
-    val timestamp: String? = null,
-    val timestampMillis: Long? = null,
-    val source: String? = null,
-    val piece: String? = null,
-    val situation: String? = null,
-    val step: String? = null,
-    val content: String,
-)

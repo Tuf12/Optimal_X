@@ -154,7 +154,7 @@ This means:
 - folder structure maps directly to what is on screen
 - system tools (Panels, DumpEdit, Workshop, Quick Notes) are always visible on the parent pinned row
 
-Note: System-level folders (Eidos Journal, Eidos Log, Eidos Daily, Eidos Memory) are accessible from the Eidos section menu. **Eidos Chats** and **Eidos Reasoning** are hidden from folder UI; conversations are browsed in the chat UI. Quick Notes and Panel Workshop are reached from the **pinned row**, not the folder grid.
+Note: System-level folders (Eidos Journal, Eidos Log, Eidos Daily, Eidos Memory) are accessible from the Eidos section menu. Legacy **Eidos Chats** / **Eidos Reasoning** parents are hidden from folder UI; conversations are browsed in the chat UI. Quick Notes and Panel Workshop are reached from the **pinned row**, not the folder grid.
 
 ---
 

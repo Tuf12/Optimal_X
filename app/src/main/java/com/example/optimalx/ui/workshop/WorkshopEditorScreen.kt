@@ -133,6 +133,8 @@ fun WorkshopEditorScreen(
     val diskRevision by viewModel.diskRevision.collectAsState()
     val eidosSending by eidosViewModel.isSending.collectAsState()
     val pendingChangeCount by viewModel.pendingChangeCount.collectAsState()
+    val previewHtml by viewModel.previewHtml.collectAsState()
+    val isPreviewingProposedChanges by viewModel.isPreviewingProposedChanges.collectAsState()
     val acceptUpdateFinishPending by viewModel.acceptUpdateFinishPending.collectAsState()
     val checkpointsForCurrentFile by viewModel.checkpointsForCurrentFile.collectAsState()
     val persistenceFinishGate by viewModel.persistenceFinishGate.collectAsState()
@@ -345,14 +347,28 @@ fun WorkshopEditorScreen(
             ) {
                 when {
                     isPreviewMode -> {
-                        key(diskRevision) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            if (isPreviewingProposedChanges) {
+                                Text(
+                                    text = "Previewing proposed changes (not on disk until Diff Review accept)",
+                                    color = colors.accent,
+                                    fontFamily = DmSansFamily,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(colors.accentDim)
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                )
+                            }
                             WorkshopPreviewPanel(
-                                html = viewModel.getCompositeHtml(),
+                                html = previewHtml,
                                 htmlFilePath = null,
                                 workshopSubfolderId = subfolderId,
                                 panelContextType = "workshop_preview",
                                 isVisibleAndFocused = true,
                                 onConsoleError = { viewModel.addConsoleError(it) },
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }

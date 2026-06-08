@@ -50,7 +50,6 @@ import com.example.optimalx.ui.gallery.PanelGalleryScreen
 import com.example.optimalx.ui.gallery.PanelRunnerScreen
 import com.example.optimalx.ui.memorycache.MemoryCacheInboxScreen
 import com.example.optimalx.ui.quicknotes.QuickNotesInboxScreen
-import com.example.optimalx.ui.reasoning.ReasoningInboxScreen
 import com.example.optimalx.ui.settings.SettingsScreen
 import com.example.optimalx.ui.workshop.WorkshopEditorScreen
 import com.example.optimalx.ui.workshop.review.DiffReviewScreen
@@ -64,7 +63,6 @@ object Routes {
     const val EDITOR = "editor/{subfolderId}"
     const val QUICK_NOTES_INBOX = "quick_notes/{subfolderId}"
     const val MEMORY_CACHE_INBOX = "memory_cache/{subfolderId}"
-    const val REASONING_INBOX = "reasoning/{subfolderId}"
     const val TRASH = "trash"
     const val SETTINGS = "settings"
     const val OPTIMALX_LINK = "optimalx_link"
@@ -85,7 +83,6 @@ object Routes {
     fun editor(subfolderId: Long) = "editor/$subfolderId"
     fun quickNotesInbox(subfolderId: Long) = "quick_notes/$subfolderId"
     fun memoryCacheInbox(subfolderId: Long) = "memory_cache/$subfolderId"
-    fun reasoningInbox(subfolderId: Long) = "reasoning/$subfolderId"
     fun eidosSection(scopeType: String, scopeId: Long) = "eidos_section/$scopeType/$scopeId"
     fun eidosFolder(kind: EidosSystemKind) = "eidos_folder/${kind.routeValue}"
     fun eidosNote(kind: EidosSystemKind, subfolderId: Long) = "eidos_note/${kind.routeValue}/$subfolderId"
@@ -371,23 +368,6 @@ fun AppNavigation(folderRepository: FolderRepository) {
         ) { backStackEntry ->
             val subfolderId = backStackEntry.arguments?.getLong("subfolderId") ?: 0L
             MemoryCacheInboxScreen(
-                subfolderId = subfolderId,
-                onBack = { navController.popBackStack() },
-                onEidosClick = {
-                    eidosViewModel.setSubfolderScope(subfolderId)
-                    openEidosChat()
-                },
-                onEidosSectionClick = { navController.navigate(Routes.eidosSection("subfolder", subfolderId)) },
-                onSettingsClick = { navController.navigate(Routes.SETTINGS) },
-            )
-        }
-
-        composable(
-            route = Routes.REASONING_INBOX,
-            arguments = listOf(navArgument("subfolderId") { type = NavType.LongType }),
-        ) { backStackEntry ->
-            val subfolderId = backStackEntry.arguments?.getLong("subfolderId") ?: 0L
-            ReasoningInboxScreen(
                 subfolderId = subfolderId,
                 onBack = { navController.popBackStack() },
                 onEidosClick = {

@@ -1,6 +1,7 @@
 package com.example.optimalx.ui.eidos
 
 import android.app.Application
+import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -15,6 +16,8 @@ import com.example.optimalx.data.db.SystemFolderNames
 import com.example.optimalx.data.eidos.EidosActiveSendRegistry
 import com.example.optimalx.data.eidos.EidosChatSendWorker
 import com.example.optimalx.data.eidos.EidosContextLimits
+import com.example.optimalx.data.eidos.ChatMessageHistoryLoader
+import com.example.optimalx.data.eidos.ChatMessagePersistLimits
 
 import com.example.optimalx.data.eidos.WorkshopEidosModeResolver
 import com.example.optimalx.data.eidos.WorkshopIntakeSummary
@@ -30,7 +33,16 @@ import com.example.optimalx.data.model.Conversation
 import com.example.optimalx.data.eidos.PanelPlatformSpec
 import com.example.optimalx.data.eidos.WorkshopDocAlignScope
 import com.example.optimalx.data.eidos.ImplementationPlanGate
+import com.example.optimalx.data.eidos.WorkshopAutoContinue
 import com.example.optimalx.data.eidos.WorkshopBuildKickoff
+import com.example.optimalx.data.eidos.WorkshopChunkedRunState
+import com.example.optimalx.data.eidos.WorkshopContinueTicket
+import com.example.optimalx.data.eidos.WorkshopExecutionProfile
+import com.example.optimalx.data.eidos.WorkshopHandoffParser
+import com.example.optimalx.data.eidos.WorkshopToolRoundPause
+import com.example.optimalx.data.eidos.model.EidosResponse
+import com.example.optimalx.data.revision.SCOPE_WORKSHOP_PROJECT
+import com.example.optimalx.data.revision.WorkshopReviewPolicy
 import com.example.optimalx.data.eidos.WorkshopEidosMode
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
 import com.example.optimalx.data.eidos.WorkshopUpdateSection
@@ -100,6 +112,7 @@ data class EidosUiMessage(
     val text: String,
     val timeLabel: String,
     val reasoningText: String? = null,
+    val isSyntheticHandoff: Boolean = false,
 )
 
 data class ConversationSummary(
@@ -190,6 +203,11 @@ class EidosChatViewModel(
         sending && provider == "kimi"
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    private val _workshopAutoContinueActive = MutableStateFlow(false)
+    val workshopAutoContinueActive: StateFlow<Boolean> = _workshopAutoContinueActive.asStateFlow()
+
+    private var workshopChunkedRun: WorkshopChunkedRunState? = null
+
     private val _streamPreview = MutableStateFlow<EidosStreamUpdate?>(null)
     val streamPreview: StateFlow<EidosStreamUpdate?> = _streamPreview.asStateFlow()
 
@@ -249,6 +267,8 @@ class EidosChatViewModel(
     }
 
     fun cancelActiveSend() {
+        clearWorkshopChunkedRun()
+        clearActiveWorkshopBuildKickoff()
         apiExchangeJob?.cancel(CancellationException("User stopped"))
         activeConversationId?.let { EidosActiveSendRegistry.cancel(it) }
     }
@@ -588,8 +608,25 @@ class EidosChatViewModel(
     fun setWorkshopEidosMode(mode: WorkshopEidosMode) {
         if (mode !in WorkshopEidosMode.USER_CHIP_MODES) return
         val subfolderId = _workshopScopeSubfolderId.value ?: return
+        clearActiveWorkshopBuildKickoff(subfolderId)
         _workshopEidosModeOverride.value = mode
         WorkshopProjectPreferences.setEidosModeOverride(getApplication(), subfolderId, mode)
+    }
+
+    /**
+     * Clears a stale one-shot build kickoff so Chat / Plan / Edit chips work again.
+     * BUILD_PLAN in particular locks [resolveWorkshopEidosModeForSend] until kickoff is cleared.
+     */
+    private fun clearActiveWorkshopBuildKickoff(subfolderId: Long? = _workshopScopeSubfolderId.value) {
+        val id = subfolderId ?: return
+        WorkshopProjectPreferences.clearBuildKickoff(appRef, id)
+        val stored = WorkshopProjectPreferences.getEidosModeOverride(appRef, id)
+        if (stored != null && (stored.isBuildFamily || !stored.visibleInSelector)) {
+            WorkshopProjectPreferences.setEidosModeOverride(appRef, id, WorkshopEidosMode.EDIT)
+            if (_workshopScopeSubfolderId.value == id) {
+                _workshopEidosModeOverride.value = WorkshopEidosMode.EDIT
+            }
+        }
     }
 
     private fun syncWorkshopEidosModeFromPrefs() {
@@ -611,11 +648,13 @@ class EidosChatViewModel(
     }
 
     private fun resolveWorkshopEidosModeForSend(): WorkshopEidosMode {
-        val mode = workshopEidosMode.value
+        WorkshopEidosModeResolver.modeForDocAlign(_pendingDocAlignScope.value)?.let { return it }
         val phase = _workshopProjectPhase.value
         val subfolderId = _workshopScopeSubfolderId.value
         val app = getApplication<Application>()
         val activeKickoff = subfolderId?.let { WorkshopProjectPreferences.getBuildKickoff(app, it) }
+        WorkshopEidosModeResolver.modeForActiveBuildKickoff(phase, activeKickoff)?.let { return it }
+        val mode = workshopEidosMode.value
         if (WorkshopEidosModeResolver.isBuildKickoffModeActive(mode, phase, activeKickoff)) {
             return mode
         }
@@ -631,7 +670,7 @@ class EidosChatViewModel(
         val stored = WorkshopProjectPreferences.getIntakeSummary(getApplication(), workshopSubfolderId)
         if (stored.isNotBlank()) return stored
         val conv = restoreWorkshopConversation(workshopSubfolderId) ?: return ""
-        val messages = db.chatMessageDao().getAllByConversation(conv.id)
+        val messages = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conv.id)
         return WorkshopIntakeSummary.fromChatMessages(messages)
     }
 
@@ -662,13 +701,20 @@ class EidosChatViewModel(
 
     /** After specs accepted — layout shell (runtime files only). */
     fun sendWorkshopBuildDesignKickoff(workshopSubfolderId: Long) {
-        setWorkshopScope(workshopSubfolderId)
+        val app = getApplication<Application>()
         WorkshopProjectPreferences.setBuildKickoff(
-            getApplication(),
+            app,
             workshopSubfolderId,
             WorkshopBuildKickoff.DESIGN,
+            commit = true,
         )
-        WorkshopProjectPreferences.setEidosModeOverride(getApplication(), workshopSubfolderId, WorkshopEidosMode.BUILD_DESIGN)
+        WorkshopProjectPreferences.setEidosModeOverride(
+            app,
+            workshopSubfolderId,
+            WorkshopEidosMode.BUILD_DESIGN,
+            commit = true,
+        )
+        setWorkshopScope(workshopSubfolderId)
         _workshopEidosModeOverride.value = WorkshopEidosMode.BUILD_DESIGN
         val footer = PanelPlatformSpec.workshopBuildDesignKickoffFooter()
         val text = buildString {
@@ -681,21 +727,24 @@ class EidosChatViewModel(
 
     /** UPDATE — execute next phase from accepted IMPLEMENTATION_PLAN.md (runtime only). */
     fun sendWorkshopBuildFromPlanKickoff(workshopSubfolderId: Long) {
-        setWorkshopScope(workshopSubfolderId)
+        val app = getApplication<Application>()
         WorkshopProjectPreferences.setBuildKickoff(
-            getApplication(),
+            app,
             workshopSubfolderId,
             WorkshopBuildKickoff.PLAN,
+            commit = true,
         )
         WorkshopProjectPreferences.setEidosModeOverride(
-            getApplication(),
+            app,
             workshopSubfolderId,
             WorkshopEidosMode.BUILD_PLAN,
+            commit = true,
         )
+        setWorkshopScope(workshopSubfolderId)
         _workshopEidosModeOverride.value = WorkshopEidosMode.BUILD_PLAN
         val footer = PanelPlatformSpec.workshopBuildFromPlanKickoffFooter()
         val text = buildString {
-            append("Build plan — execute the next phase from the accepted implementation plan:\n\n")
+            append("Build plan — run the accepted implementation plan (all phases, Auto-Continue):\n\n")
             append(footer)
         }
         _input.value = text
@@ -704,13 +753,20 @@ class EidosChatViewModel(
 
     /** After design accepted — wire script.js / bridge.js behavior. */
     fun sendWorkshopBuildLogicKickoff(workshopSubfolderId: Long) {
-        setWorkshopScope(workshopSubfolderId)
+        val app = getApplication<Application>()
         WorkshopProjectPreferences.setBuildKickoff(
-            getApplication(),
+            app,
             workshopSubfolderId,
             WorkshopBuildKickoff.LOGIC,
+            commit = true,
         )
-        WorkshopProjectPreferences.setEidosModeOverride(getApplication(), workshopSubfolderId, WorkshopEidosMode.BUILD_LOGIC)
+        WorkshopProjectPreferences.setEidosModeOverride(
+            app,
+            workshopSubfolderId,
+            WorkshopEidosMode.BUILD_LOGIC,
+            commit = true,
+        )
+        setWorkshopScope(workshopSubfolderId)
         _workshopEidosModeOverride.value = WorkshopEidosMode.BUILD_LOGIC
         val footer = PanelPlatformSpec.workshopBuildLogicKickoffFooter()
         val text = buildString {
@@ -723,9 +779,15 @@ class EidosChatViewModel(
 
     /** Approval gate — refresh spec .md from current code (Plan mode). */
     fun sendWorkshopAlignDocsFromCode(workshopSubfolderId: Long, scope: WorkshopDocAlignScope) {
-        setWorkshopScope(workshopSubfolderId)
+        val app = getApplication<Application>()
         _pendingDocAlignScope.value = scope
-        WorkshopProjectPreferences.setEidosModeOverride(getApplication(), workshopSubfolderId, WorkshopEidosMode.PLAN)
+        WorkshopProjectPreferences.setEidosModeOverride(
+            app,
+            workshopSubfolderId,
+            WorkshopEidosMode.PLAN,
+            commit = true,
+        )
+        setWorkshopScope(workshopSubfolderId)
         _workshopEidosModeOverride.value = WorkshopEidosMode.PLAN
         val footer = PanelPlatformSpec.workshopAlignDocsKickoffFooter(
             scope,
@@ -985,7 +1047,7 @@ class EidosChatViewModel(
         activeConversationId = conv.id
         _activeConversationMemoryDepth.value = conv.memoryDepth
         _hasActiveConversation.value = true
-        val msgs = db.chatMessageDao().getAllByConversation(conv.id)
+        val msgs = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conv.id)
         _messages.value = msgs.map { it.toUiMessage() }
     }
 
@@ -1450,7 +1512,7 @@ class EidosChatViewModel(
         if (resetProviderChain) {
             previousResponseId = null
         }
-        val msgs = db.chatMessageDao().getAllByConversation(conversationId)
+        val msgs = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conversationId)
         _messages.value = msgs.map { it.toUiMessage() }
         if (!ConversationScopes.isWebScope(conversation.scopeType)) {
             persistConversationPointerIfNeeded(conversation)
@@ -1460,6 +1522,8 @@ class EidosChatViewModel(
     // ── New chat / switch ─────────────────────────────────────────────────────
 
     fun newChat() {
+        clearWorkshopChunkedRun()
+        clearActiveWorkshopBuildKickoff()
         currentScope = viewedScope
         clearSubfolderEditorSurfaceIfStale(currentScope)
         updateChatScopeLabel()
@@ -1745,6 +1809,7 @@ class EidosChatViewModel(
         val job = appRef.eidosSendScope.launch {
             _isSending.value = true
             suppressStoppedReplyOnCancellation = false
+            clearWorkshopChunkedRun()
             var conversation: Conversation? = null
             try {
                 val now = System.currentTimeMillis()
@@ -1756,7 +1821,9 @@ class EidosChatViewModel(
                     conversation = conv
                 }
                 val userMsgId = db.chatMessageDao().insert(
-                    ChatMessage(conversationId = conv.id, role = "user", content = text, createdAt = now)
+                    ChatMessagePersistLimits.clampForStorage(
+                        ChatMessage(conversationId = conv.id, role = "user", content = text, createdAt = now),
+                    ),
                 )
                 _messages.value = _messages.value + EidosUiMessage(
                     id = userMsgId, role = EidosRole.USER, text = text,
@@ -1766,6 +1833,9 @@ class EidosChatViewModel(
                 callApiAndInsertReply(conv, text)
                 refreshSummaries()
             } catch (ce: CancellationException) {
+                (viewedScope as? ConversationScope.Workshop)?.subfolderId?.let {
+                    clearActiveWorkshopBuildKickoff(it)
+                }
                 if (!suppressStoppedReplyOnCancellation) {
                     conversation?.let { appendStoppedReplyIfNeeded(it) }
                 }
@@ -1793,8 +1863,8 @@ class EidosChatViewModel(
         if (apiScope is ConversationScope.Workshop) {
             workshopFlushOpenFileBeforeSend?.invoke()
         }
-        val rawHistory = db.chatMessageDao()
-            .getAllByConversation(conversation.id)
+        val rawHistory = ChatMessageHistoryLoader
+            .forApi(db.chatMessageDao(), conversation.id)
             .toEidosApiHistoryExcludingLatestUser(userText)
         val history = rawHistory
         val subfolderIdForApi = when (val s = apiScope) {
@@ -1846,6 +1916,8 @@ class EidosChatViewModel(
             null
         }
         var workshopSendSucceeded = false
+        var workshopPausedForToolCap = false
+        var workshopChained = false
         try {
             val response = try {
                 api.send(
@@ -1887,24 +1959,27 @@ class EidosChatViewModel(
                     _streamPreview.value = null
                 }
             }
+            workshopPausedForToolCap = response.workshopPausedForToolCap
+            if (workshopPausedForToolCap && apiScope is ConversationScope.Workshop) {
+                Log.d(
+                    WorkshopToolRoundPause.LOG_TAG,
+                    "tool_cap_pause persisted rounds=${response.workshopToolRoundsCompleted} " +
+                        "conv=${conversation.id}",
+                )
+            }
             val replyText = response.textResponse.ifBlank {
                 "I ran the request but did not receive a text response."
             }
             val reasoningContent = response.persistableReasoningContent()
             val replyMsgId = db.chatMessageDao().insert(
-                ChatMessage(
-                    conversationId = conversation.id,
-                    role = "eidos",
-                    content = replyText,
-                    assistantReasoningContent = reasoningContent,
+                ChatMessagePersistLimits.clampForStorage(
+                    ChatMessage(
+                        conversationId = conversation.id,
+                        role = "eidos",
+                        content = replyText,
+                        assistantReasoningContent = reasoningContent,
+                    ),
                 ),
-            )
-            api.archiveLinkedProviderReasoningForChatMessage(
-                response = response,
-                chatMessageId = replyMsgId,
-                currentSubfolderId = subfolderIdForApi,
-                currentParentFolderId = parentFolderIdForApi,
-                currentScopeType = scopeTypeForApi,
             )
             if (isActiveConversation(boundConversationId)) {
                 _messages.value = _messages.value + EidosUiMessage(
@@ -1920,6 +1995,13 @@ class EidosChatViewModel(
             requestRetrievalSync("conversation_reply_written:${conversation.id}")
             maybeNotifyBackgroundReply(conversation, replyText)
             workshopSendSucceeded = true
+            workshopChained = maybeContinueWorkshopChunk(
+                conversation = conversation,
+                response = response,
+                apiScope = apiScope,
+                workshopPausedForToolCap = workshopPausedForToolCap,
+                replyText = replyText,
+            )
         } finally {
             if (apiScope is ConversationScope.Workshop) {
                 WorkshopUpdateCompletion.onWorkshopSendFinished(
@@ -1928,18 +2010,160 @@ class EidosChatViewModel(
                     subfolderId = apiScope.subfolderId,
                     docAlignScope = docAlignScope,
                     sendSucceeded = workshopSendSucceeded,
+                    workshopRunContinuing = workshopChained,
+                    workshopPausedForToolCap = workshopPausedForToolCap,
                 )
                 refreshWorkshopProjectPhase()
                 refreshImplementationPlanGate()
                 if (workshopSendSucceeded &&
+                    !workshopPausedForToolCap &&
+                    !workshopChained &&
                     WorkshopProjectPreferences.getBuildKickoff(appRef, apiScope.subfolderId) != null
                 ) {
                     val subId = apiScope.subfolderId
                     WorkshopProjectPreferences.clearBuildKickoff(appRef, subId)
                     WorkshopProjectPreferences.setEidosModeOverride(appRef, subId, WorkshopEidosMode.EDIT)
                     _workshopEidosModeOverride.value = WorkshopEidosMode.EDIT
+                    clearWorkshopChunkedRun()
                 }
             }
+        }
+    }
+
+    private suspend fun isWorkshopAutoContinueEnabled(): Boolean =
+        appRef.settingsDataStore.data.first()[SettingsKeys.WORKSHOP_AUTO_CONTINUE_ENABLED]
+            ?: SettingsDefaults.WORKSHOP_AUTO_CONTINUE_ENABLED
+
+    private suspend fun isWorkshopPauseBetweenChunksEnabled(): Boolean =
+        appRef.settingsDataStore.data.first()[SettingsKeys.WORKSHOP_PAUSE_BETWEEN_CHUNKS]
+            ?: SettingsDefaults.WORKSHOP_PAUSE_BETWEEN_CHUNKS
+
+    private fun clearWorkshopChunkedRun() {
+        workshopChunkedRun = null
+        _workshopAutoContinueActive.value = false
+    }
+
+    private fun ensureWorkshopChunkedRun(conversationId: Long, subfolderId: Long): WorkshopChunkedRunState {
+        val existing = workshopChunkedRun
+        if (existing != null && existing.conversationId == conversationId) return existing
+        return WorkshopChunkedRunState(
+            conversationId = conversationId,
+            subfolderId = subfolderId,
+            chunksCompleted = 1,
+        ).also { workshopChunkedRun = it }
+    }
+
+    /**
+     * Phase 1.5 — after assistant reply is saved, parse handoff → synthetic user → next send.
+     * @return true when a follow-up chunk was started (kickoff must stay active).
+     */
+    private suspend fun maybeContinueWorkshopChunk(
+        conversation: Conversation,
+        response: EidosResponse,
+        apiScope: ConversationScope,
+        workshopPausedForToolCap: Boolean,
+        replyText: String,
+    ): Boolean {
+        if (apiScope !is ConversationScope.Workshop) return false
+        if (!isWorkshopAutoContinueEnabled()) return false
+        if (isWorkshopPauseBetweenChunksEnabled() && workshopPausedForToolCap) return false
+
+        val subfolderId = apiScope.subfolderId
+        val mode = resolveWorkshopEidosModeForSend()
+        val phase = _workshopProjectPhase.value
+            ?: WorkshopProjectPreferences.getProjectPhase(appRef, subfolderId)
+        val activeKickoff = WorkshopProjectPreferences.getBuildKickoff(appRef, subfolderId)
+
+        if (!WorkshopExecutionProfile.shouldChainAfterSend(
+                assistantText = replyText,
+                pausedForToolCap = workshopPausedForToolCap,
+                mode = mode,
+                phase = phase,
+                activeKickoff = activeKickoff,
+            )
+        ) {
+            clearWorkshopChunkedRun()
+            return false
+        }
+
+        val state = ensureWorkshopChunkedRun(conversation.id, subfolderId)
+        val planPhaseComplete = activeKickoff == WorkshopBuildKickoff.PLAN &&
+            WorkshopExecutionProfile.suggestsPlanPhaseComplete(replyText, activeKickoff)
+
+        if (activeKickoff == WorkshopBuildKickoff.PLAN &&
+            state.planPhasesCompleted >= WorkshopAutoContinue.MAX_PLAN_PHASES_PER_RUN
+        ) {
+            Log.w(
+                WorkshopAutoContinue.LOG_TAG,
+                "chain_stopped max_plan_phases=${state.planPhasesCompleted} subfolder=$subfolderId",
+            )
+            clearWorkshopChunkedRun()
+            return false
+        }
+
+        if (!planPhaseComplete && state.chunksCompleted >= WorkshopAutoContinue.MAX_CHUNKS_PER_KICKOFF) {
+            Log.w(
+                WorkshopAutoContinue.LOG_TAG,
+                "chain_stopped max_chunks=${state.chunksCompleted} subfolder=$subfolderId",
+            )
+            clearWorkshopChunkedRun()
+            return false
+        }
+
+        val fallback = WorkshopContinueTicket.build(
+            phase = phase,
+            mode = mode,
+            toolNames = emptyList(),
+            lastAssistantSnippet = replyText,
+            activeKickoff = activeKickoff,
+        )
+        val (handoffText, usedFallback) = WorkshopHandoffParser.handoffForSyntheticUser(replyText, fallback)
+        if (usedFallback) {
+            WorkshopContinueTicket.logFallbackUsed(phase, mode)
+        }
+
+        workshopChunkedRun = state.copy(
+            chunksCompleted = if (planPhaseComplete) 1 else state.chunksCompleted + 1,
+            planPhasesCompleted = if (planPhaseComplete) {
+                state.planPhasesCompleted + 1
+            } else {
+                state.planPhasesCompleted
+            },
+        )
+        _workshopAutoContinueActive.value = true
+        Log.d(
+            WorkshopAutoContinue.LOG_TAG,
+            "chain_chunk next=${workshopChunkedRun?.chunksCompleted} planPhases=${workshopChunkedRun?.planPhasesCompleted} " +
+                "planPhaseBoundary=$planPhaseComplete fallback=$usedFallback " +
+                "toolCap=$workshopPausedForToolCap conv=${conversation.id}",
+        )
+
+        insertSyntheticHandoffUser(conversation, handoffText)
+        callApiAndInsertReply(conversation, handoffText)
+        return true
+    }
+
+    private suspend fun insertSyntheticHandoffUser(conversation: Conversation, handoffText: String) {
+        val now = System.currentTimeMillis()
+        val userMsgId = db.chatMessageDao().insert(
+            ChatMessagePersistLimits.clampForStorage(
+                ChatMessage(
+                    conversationId = conversation.id,
+                    role = "user",
+                    content = handoffText,
+                    createdAt = now,
+                    isSyntheticHandoff = true,
+                ),
+            ),
+        )
+        if (isActiveConversation(conversation.id)) {
+            _messages.value = _messages.value + EidosUiMessage(
+                id = userMsgId,
+                role = EidosRole.USER,
+                text = handoffText,
+                timeLabel = messageTimeFormatter.format(Instant.ofEpochMilli(now)),
+                isSyntheticHandoff = true,
+            )
         }
     }
 
@@ -2168,6 +2392,9 @@ class EidosChatViewModel(
                 callApiAndInsertReply(conv, trimmed)
                 refreshSummaries()
             } catch (ce: CancellationException) {
+                (viewedScope as? ConversationScope.Workshop)?.subfolderId?.let {
+                    clearActiveWorkshopBuildKickoff(it)
+                }
                 if (!suppressStoppedReplyOnCancellation) {
                     conversation?.let { appendStoppedReplyIfNeeded(it) }
                 }
@@ -2199,6 +2426,7 @@ class EidosChatViewModel(
         text = content,
         timeLabel = messageTimeFormatter.format(Instant.ofEpochMilli(createdAt)),
         reasoningText = assistantReasoningContent?.takeIf { it.isNotBlank() },
+        isSyntheticHandoff = isSyntheticHandoff,
     )
 
     private fun refreshHistoryDirectoryOptions() {

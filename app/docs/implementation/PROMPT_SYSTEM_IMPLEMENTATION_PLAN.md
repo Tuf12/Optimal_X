@@ -61,7 +61,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 | MESSAGES_CACHED full history on tool hops | ✅ | Anthropic + Kimi |
 | RESPONSES_CHAINED incremental continuations | ✅ | OpenAI + xAI |
 | Kimi workshop write replay redaction | ✅ | `redactToolCallForKimiReplay()` |
-| LLM reasoning → Reasoning system folders | ✅ | [EidosLlmReasoningLogger.kt](../../src/main/java/com/example/optimalx/data/eidos/EidosLlmReasoningLogger.kt) — kimi, openai, xai |
+| LLM reasoning → chat bubble preview | ✅ | [ReasoningPersistPolicy.kt](../../src/main/java/com/example/optimalx/data/eidos/ReasoningPersistPolicy.kt) — final-hop only on `ChatMessage` |
 
 ### Location context (partial) 🟡
 
@@ -71,7 +71,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 | Subfolder files | Names + types inline | ❌ “use list_folder_contents / read_file — not listed inline” |
 | Parent folder | Subfolder list inline | ❌ “use list_folder_contents — not listed inline” |
 | Workshop cold start | README ≤2k | 🟡 [WorkshopSpecMarkdown](../../src/main/java/com/example/optimalx/data/eidos/WorkshopSpecMarkdown.kt) bounded spec `.md` (README first in list, 2k/file, 6k total) when no project summary |
-| Workshop steady state | Manifest + summary | ✅ file manifest + optional project summary; Chat mode skips open excerpt |
+| Workshop steady state | Manifest + search/read | ✅ file manifest + bounded spec fallback; **no** project summary inject (Phase 1); Chat mode skips open excerpt |
 | Memory bodies in prompt | Tool-driven (decided) | ❌ not inlined; ❌ no memory pointer lines yet |
 
 ---
@@ -82,7 +82,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 |-------|----------|
 | Note body in prompt | **Summary only** — orientation; facts from `search_semantic` chunks |
 | Parent / subfolder chat | **Inline inventory** (names, ids, types) — **not implemented yet** |
-| Workshop | Startup spec/README bounded; steady state manifest + summary; search → read → write |
+| Workshop | Startup spec/README bounded; steady state manifest + search → read → write (no project summary inject — Phase 1) |
 | Daily memory | **Inject** (bounded excerpt + “only when relevant” guidance) — at-hand for the day; not implemented in `assembleSystemPrompt` yet |
 | Long-term memory | **Search / tool only** — embedded in semantic index; do not inject |
 | Journal | **Search / tool only** — embedded in semantic index; no prompt inject until write quality fixed |
@@ -106,7 +106,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 | 0d | Global max iterations 13 / workshop 18 | ❌ Not done — only `WORKSHOP_CHAT_MAX_TOOL_ROUNDS = 4` for Chat mode |
 | 0d | Duplicate tool failure guard (same call fails twice) | ❌ Not done |
 | — | Kimi invalid JSON args replay guard | ✅ Done (`redactToolCallForKimiReplay`) |
-| — | Persist provider thinking to Reasoning folders | ✅ Done ([EidosLlmReasoningLogger](../../src/main/java/com/example/optimalx/data/eidos/EidosLlmReasoningLogger.kt)) |
+| — | Persist provider thinking on chat rows | ✅ Done ([ReasoningPersistPolicy.kt](../../src/main/java/com/example/optimalx/data/eidos/ReasoningPersistPolicy.kt)) |
 
 ### Phase 1 — Prompt policy text
 
@@ -190,7 +190,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 | 3 | `search_semantic` in parent scope with `scopeType=local_first` | Scoped chunks + weak expansion |
 | 4 | `read_note` with `query` after search hit | Relevant sections + line ranges |
 | 5 | Settings → Rebuild semantic index | `full_bootstrap` log; chunks > 0 |
-| 6 | Reasoning inbox | New entries from kimi/openai/xai turns |
+| 6 | Chat bubble Reasoning expand | Final-hop preview visible after kimi/openai/xai turns |
 | 7 | Parent folder chat (after 3a) | Subfolder names/ids visible in system prompt |
 | 8 | Eidos Index menu | Hidden; `read_tag_hints` fails with on-hold message |
 
@@ -201,7 +201,7 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 1. **Workshop README:** keep `WorkshopSpecMarkdown` multi-file fallback or PROMPT_SYSTEM’s README-only ≤2k block when no project summary?
 2. **Memory tier chip:** hide or label “history not trimmed” while trim is disabled?
 3. **Tool loop caps:** adopt PROMPT_SYSTEM 13/18 globally or keep workshop Chat mode’s separate 4-round read cap?
-4. **Anthropic reasoning logging:** add to `REASONING_LOG_PROVIDERS` when API exposes thinking text?
+4. **Anthropic reasoning preview:** persist thinking text on `ChatMessage` when API exposes it?
 
 ---
 
@@ -213,6 +213,6 @@ Read tools: expand a region or prep edits; **not** required second hop for Q&A (
 | Tools | `EidosToolCatalog.kt`, `RoomToolExecutor.kt` |
 | Semantic index | `SemanticIndexer.kt`, `SemanticChunkBuilder.kt`, `SemanticMaterializer.kt`, `SemanticSyncService.kt`, `SemanticScopeSearch.kt`, `EmbeddingEngine.kt` |
 | Providers | `KimiProvider.kt`, `AnthropicProvider.kt`, `OpenAIProvider.kt`, `XAIProvider.kt` |
-| Reasoning archive | `EidosLlmReasoningLogger.kt`, `ReasoningInboxScreen.kt` |
+| Reasoning preview | `ReasoningPersistPolicy.kt`, `ReasoningTrace.kt`, `EidosChatScreen.kt` |
 | Summaries | `ContentSummaryService.kt`, `WorkshopSpecMarkdown.kt` |
 | Index on hold | `EidosIndexFeature.kt`, `AppIndexMaterializer.kt` |

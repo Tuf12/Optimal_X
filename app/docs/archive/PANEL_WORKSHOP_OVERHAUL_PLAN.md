@@ -11,7 +11,7 @@
 **Product spec:** [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md) (v2)  
 **Modes + phases:** [WORKSHOP_MODES.md](../architecture/WORKSHOP_MODES.md) (v2)  
 **Platform contract:** [PANEL_PLATFORM.md](../architecture/PANEL_PLATFORM.md)  
-**Kimi debug tooling:** [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6  
+**Kimi debug tooling:** ~~[KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6~~ — QuickJS **removed 2026-06-06**; see Kimi spec Phase 3.6 section
 **Change review (shipped):** [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md)  
 **Recovery (2026-06-01):** [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md) — canonical flow, three Eidos modes (Chat/Plan/Edit), unified Update cycle; supersedes Phase 6 section-picker UX
 
@@ -27,7 +27,7 @@ Replace README-first + one-shot **Start Build** + **Sync to code** with a **gate
 2. Generate short spec `.md` files → user accepts
 3. **Design build** (layout shell only) → user accepts in Preview
 4. Align docs from code (short)
-5. **Logic build** → user accepts; **Debug** available (Kimi QuickJS in Phase 3.6)
+5. **Logic build** → user accepts; **Debug** available (console + bridge; no Kimi QuickJS)
 6. Final doc align → **Complete** → **Update** mode (scoped sections)
 
 **Core invariant:** During design/logic iteration, **code is truth**. Spec files update only on **user approval gates** — not on every edit, not via Sync to code.
@@ -47,7 +47,7 @@ Replace README-first + one-shot **Start Build** + **Sync to code** with a **gate
 | Platform prompts | Single `eidosWorkshopInstructions()` for BUILD | `PanelPlatformSpec.kt` |
 | Scaffolds | HTML/CSS/JS with Android layout + bridge patterns | `FolderRepository.WORKSHOP_*_SCAFFOLD`, `WorkshopAndroidLayoutRules.kt` |
 | Debug | Available any time after build | Mode chip always enabled when built |
-| QuickJS | Not wired | Phase 3.6 open |
+| QuickJS | Removed 2026-06-06 (was Phase 3.6 / Phase 8) |
 
 ---
 
@@ -62,7 +62,6 @@ Replace README-first + one-shot **Start Build** + **Sync to code** with a **gate
 | **Doc sync** | **Code → spec** on approval only; remove Sync to code UX + digest-driven BUILD |
 | **MD freeze** | `DESIGN_REVIEW`: Eidos cannot read/write `.md` via tools |
 | **Debug gate** | Enabled from `LOGIC_BUILD` onward |
-| **QuickJS** | Kimi + `DEBUG` mode only (Phase 3.6) |
 
 See lifecycle diagram in [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md#build-lifecycle-phases).
 
@@ -83,7 +82,7 @@ See lifecycle diagram in [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md#b
 | User changes after complete | Chat with Eidos in Edit/Design/Debug; align docs on section accept |
 | Platform guidance | Keep scaffolds + `WorkshopAndroidLayoutRules` + `PanelPlatformSpec`; apply full checklist only when writing runtime files |
 | Debug availability | From **logic build** phase onward |
-| Kimi QuickJS | DEBUG workshop mode only — [Phase 3.6](../implementation/KIMI_K26_MOONSHOT_SPEC.md#phase-36--workshop-debug-only-quickjs--optional) |
+| ~~Kimi QuickJS~~ | **Removed 2026-06-06** — was DEBUG-only; see [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6 |
 | v1 project migration | `initial_build_sent == true` → `WorkshopProjectPhase.COMPLETE` |
 | DIFF_REVIEW | Shipped — see [Phase 10](#phase-10--diff_review) and [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md) |
 
@@ -208,16 +207,16 @@ See lifecycle diagram in [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md#b
 
 ---
 
-### Phase 8 — Kimi QuickJS (cross-link Phase 3.6)
+### Phase 8 — Kimi QuickJS ❌ Removed (2026-06-06)
+
+Was cross-linked to [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6. Shipped briefly; product removed Formula `moonshot/quickjs:latest` from `KimiFormulaToolService` and all workshop prompts.
 
 | ID | Task | Status |
 |----|------|--------|
-| 8a | Add `moonshot/quickjs:latest` to `KIMI_FORMULA_URIS` | ✅ |
-| 8b | Expose QuickJS in tools only when `workshopEidosMode == DEBUG` && phase >= LOGIC_BUILD | ✅ |
-| 8c | Debug prompt: QuickJS for isolate JS; platform issue template when Preview/bridge still fails | ✅ |
-| 8d | Manual test: DEBUG on broken panel → QuickJS used; not in BUILD_DESIGN / PLAN / CHAT | ❌ (manual) |
+| 8a–8c | Wire + gate + debug prompts | ~~✅~~ removed |
+| 8d | Manual test | N/A |
 
-**Deliverable:** Kimi can sandbox-test JS during logic review debug.
+**Deliverable (historical):** Kimi could sandbox-test JS during logic review debug — **no longer in codebase.**
 
 ---
 
@@ -257,7 +256,7 @@ Detailed task log: [DIFF_REVIEW_IMPLEMENTATION_PLAN.md](../implementation/DIFF_R
 4. **Phase 3 + 4** — Design build/review + align on accept
 5. **Phase 5** — Logic build + Finish + remove Sync to code
 6. **Phase 7** — Full Eidos wiring (can overlap 2–5)
-7. **Phase 8** — QuickJS (Kimi Phase 3.6)
+7. ~~**Phase 8** — QuickJS (Kimi Phase 3.6)~~ removed 2026-06-06
 8. **Phase 6** — Update mode
 9. **Phase 10** — DIFF_REVIEW when ready
 
@@ -274,7 +273,7 @@ Detailed task log: [DIFF_REVIEW_IMPLEMENTATION_PLAN.md](../implementation/DIFF_R
 | 5 | Accept design | DESIGN.md updated briefly from code; no full code regen from docs |
 | 6 | Build logic | Calculations/bridge behavior added |
 | 7 | Debug before logic build | Debug chip disabled |
-| 8 | Debug during logic review (Kimi) | QuickJS available; not in Plan/Chat |
+| 8 | Debug during logic review | Console + bridge tools; not in Plan/Chat |
 | 9 | Finish | All `.md` short snapshots; phase COMPLETE |
 | 10 | Update → Design section | Same freeze + align on accept |
 | 11 | No Sync to code button | Never shown |
@@ -299,7 +298,7 @@ Detailed task log: [DIFF_REVIEW_IMPLEMENTATION_PLAN.md](../implementation/DIFF_R
 | Editor VM / screen | `ui/workshop/WorkshopEditorViewModel.kt`, `WorkshopEditorScreen.kt` |
 | Mode chips | `ui/workshop/WorkshopEidosModeSelector.kt` |
 | Project create | `data/repository/FolderRepository.kt` |
-| Kimi QuickJS | `data/eidos/provider/KimiFormulaToolService.kt` |
+| ~~Kimi QuickJS~~ | `KimiFormulaToolService.kt` | **Removed 2026-06-06** |
 | Composite / preview | `ui/workshop/PanelHtmlComposer.kt`, `WorkshopPreviewPanel.kt` |
 
 ---

@@ -14,6 +14,8 @@ import com.example.optimalx.data.eidos.WorkshopEidosMode
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
 import com.example.optimalx.data.eidos.PanelPlatformSpec
 import com.example.optimalx.data.eidos.WorkshopSpecValidation
+import com.example.optimalx.data.revision.PENDING_ITEM_STATUS_PENDING
+import com.example.optimalx.data.revision.SOURCE_TYPE_WORKSHOP_FILE
 import android.util.Log
 import com.example.optimalx.data.panel.PanelReleaseStore
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
@@ -204,6 +206,41 @@ class WorkshopEditorViewModel(
     private val _fileContent = MutableStateFlow("")
     val fileContent: StateFlow<String> = _fileContent.asStateFlow()
 
+    /** Latest proposed bytes per [FileReference.id] while Diff Review is open. */
+    val pendingProposalsByFileId: StateFlow<Map<Long, String>> = openPendingSet
+        .flatMapLatest { set ->
+            if (set == null) {
+                flowOf(emptyMap())
+            } else {
+                db.pendingChangeDao().observeItems(set.id).map { items ->
+                    items.filter {
+                        it.status == PENDING_ITEM_STATUS_PENDING &&
+                            it.sourceType == SOURCE_TYPE_WORKSHOP_FILE
+                    }.associate { it.sourceId to it.proposedContent }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /** True when Preview composites pending proposals instead of on-disk files. */
+    val isPreviewingProposedChanges: StateFlow<Boolean> = pendingProposalsByFileId
+        .map { it.isNotEmpty() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Composite HTML for Preview — uses pending proposals when queued. */
+    val previewHtml: StateFlow<String> = combine(
+        files,
+        pendingProposalsByFileId,
+        _fileContent,
+        _currentFileId,
+    ) { fileList, proposedByFileId, editorContent, currentId ->
+        buildCompositeHtml(fileList, proposedByFileId, editorContent, currentId)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        "<html><body><p>Loading preview…</p></body></html>",
+    )
+
     /** True when the user edited the open file locally; cleared on open/reload from disk. */
     private val _isDirty = MutableStateFlow(false)
 
@@ -264,29 +301,20 @@ class WorkshopEditorViewModel(
         val list = files.value
         val phase = _projectPhase.value
         val designReadyFlag = _designLayoutReady.value
-        val logicReadyFlag = _logicBehaviorReady.value
 
         val designInferred = withContext(Dispatchers.IO) {
             phase == WorkshopProjectPhase.DESIGN_BUILD &&
                 !designReadyFlag &&
                 inferDesignLayoutReadyFromFiles(list)
         }
-        val logicInferred = withContext(Dispatchers.IO) {
-            phase == WorkshopProjectPhase.LOGIC_BUILD &&
-                !logicReadyFlag &&
-                inferLogicBehaviorReadyFromFiles(list)
-        }
-
         if (designInferred) {
             markDesignLayoutReady()
         } else {
             reconcileDesignPhaseAfterLayoutReady()
         }
-        if (logicInferred) {
-            markLogicBehaviorReady()
-        } else {
-            reconcileLogicPhaseAfterBehaviorReady()
-        }
+        // Logic behavior ready is set explicitly when Build logic kickoff completes — not inferred
+        // from disk (Build design already changes script.js stubs and would skip Build logic).
+        reconcileLogicPhaseAfterBehaviorReady()
     }
 
     private fun markDesignLayoutReady() {
@@ -322,25 +350,19 @@ class WorkshopEditorViewModel(
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.EDIT)
     }
 
+    private fun resetLogicBehaviorProgressForNewLogicBuild() {
+        pendingLogicReviewAfterBuild = false
+        WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(ctx, subfolderId, false)
+        WorkshopProjectPreferences.setLogicBehaviorReady(ctx, subfolderId, false)
+        _logicBehaviorReady.value = false
+    }
+
     private fun markLogicBehaviorReady() {
         if (!_logicBehaviorReady.value) {
             WorkshopProjectPreferences.setLogicBehaviorReady(ctx, subfolderId, true)
             _logicBehaviorReady.value = true
         }
         reconcileLogicPhaseAfterBehaviorReady()
-    }
-
-    private fun inferLogicBehaviorReadyFromFiles(list: List<FileReference>): Boolean {
-        fun read(ref: FileReference?) =
-            ref?.let { runCatching { File(it.filePath).readText() }.getOrDefault("") }.orEmpty()
-        val bridgeScaffold = FolderRepository.WORKSHOP_BRIDGE_JS_SCAFFOLD.trimIndent().trim()
-        val scriptScaffold = FolderRepository.WORKSHOP_SCRIPT_JS_SCAFFOLD.trimIndent().trim()
-        val bridge = list.firstOrNull { it.fileName.equals("bridge.js", ignoreCase = true) }
-        val script = list.firstOrNull { it.fileName.equals("script.js", ignoreCase = true) }
-        val bridgeText = read(bridge).trim()
-        val scriptText = read(script).trim()
-        if (bridgeText != bridgeScaffold) return true
-        return scriptText != scriptScaffold && scriptText.length > scriptScaffold.length + 300
     }
 
     private fun reconcileLogicPhaseAfterBehaviorReady() {
@@ -603,19 +625,32 @@ class WorkshopEditorViewModel(
         }
     }
 
-    fun getCompositeHtml(): String {
-        val fileList = files.value
+    fun getCompositeHtml(): String = buildCompositeHtml(
+        fileList = files.value,
+        proposedByFileId = pendingProposalsByFileId.value,
+        editorContent = _fileContent.value,
+        currentFileId = _currentFileId.value,
+    )
+
+    private fun buildCompositeHtml(
+        fileList: List<FileReference>,
+        proposedByFileId: Map<Long, String>,
+        editorContent: String,
+        currentFileId: Long?,
+    ): String {
         val htmlFile = fileList.firstOrNull {
             it.fileType.equals("html", ignoreCase = true)
         } ?: return "<html><body><p>No HTML file found. Create an index.html to preview.</p></body></html>"
 
-        val htmlContent = readWorkshopFileText(htmlFile)
+        val htmlContent = readWorkshopFileText(htmlFile, proposedByFileId, editorContent, currentFileId)
         val cssContents = fileList
             .filter { it.fileType.equals("css", ignoreCase = true) }
-            .map { readWorkshopFileText(it) }
+            .map { readWorkshopFileText(it, proposedByFileId, editorContent, currentFileId) }
         val jsContents = fileList
             .filter { it.fileType.equals("js", ignoreCase = true) }
-            .map { ref -> ref.fileName to readWorkshopFileText(ref) }
+            .map { ref ->
+                ref.fileName to readWorkshopFileText(ref, proposedByFileId, editorContent, currentFileId)
+            }
 
         return PanelHtmlComposer.buildCompositeHtml(
             htmlContent = htmlContent,
@@ -624,9 +659,15 @@ class WorkshopEditorViewModel(
         )
     }
 
-    private fun readWorkshopFileText(ref: FileReference): String {
-        if (_currentFileId.value == ref.id) {
-            return _fileContent.value
+    private fun readWorkshopFileText(
+        ref: FileReference,
+        proposedByFileId: Map<Long, String> = pendingProposalsByFileId.value,
+        editorContent: String = _fileContent.value,
+        currentFileId: Long? = _currentFileId.value,
+    ): String {
+        proposedByFileId[ref.id]?.let { return it }
+        if (currentFileId == ref.id) {
+            return editorContent
         }
         return runCatching { File(ref.filePath).readText() }.getOrDefault("")
     }
@@ -800,7 +841,7 @@ class WorkshopEditorViewModel(
         viewModelScope.launch {
             _summaryFeedback.emit(
                 "Update/edit — Chat, Plan, or Edit. Accept plan when IMPLEMENTATION_PLAN.md is ready, " +
-                    "then Build plan to run a phase. Review diffs, then Accept update to sync specs and return to Complete.",
+                    "then tap Build plan once (Auto-Continue runs all phases). Verify in Preview, then Accept update.",
             )
         }
     }
@@ -950,10 +991,6 @@ class WorkshopEditorViewModel(
                 pendingDesignReviewAfterBuild = false
                 WorkshopProjectPreferences.setPendingDesignReviewAfterBuild(ctx, subfolderId, false)
             }
-            if (_projectPhase.value == WorkshopProjectPhase.LOGIC_BUILD && pendingLogicReviewAfterBuild) {
-                pendingLogicReviewAfterBuild = false
-                WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(ctx, subfolderId, false)
-            }
             reconcileBuildPhaseFromDisk()
             invalidateImplementationPlanAcceptanceIfNeeded(eidos)
             refreshImplementationPlanState()
@@ -1021,6 +1058,7 @@ class WorkshopEditorViewModel(
 
     private suspend fun applyAcceptDesignAction(openEidosSheet: () -> Unit, eidos: EidosChatViewModel) {
         flushCurrentFileToDisk()
+        resetLogicBehaviorProgressForNewLogicBuild()
         setProjectPhase(WorkshopProjectPhase.LOGIC_BUILD)
         eidos.refreshWorkshopProjectPhase()
         val started = alignDocsFromCode(
@@ -1143,7 +1181,7 @@ class WorkshopEditorViewModel(
         refreshImplementationPlanState()
         eidos.refreshImplementationPlanGate()
         _summaryFeedback.emit(
-            "Implementation plan accepted. Tap Build plan in chat or the top bar to run the next phase.",
+            "Implementation plan accepted. Tap **Build plan** once — Eidos will run all phases with Auto-Continue.",
         )
     }
 
@@ -1152,7 +1190,7 @@ class WorkshopEditorViewModel(
         if (_projectPhase.value != WorkshopProjectPhase.UPDATE) return
         if (pendingChangeCount.value > 0) {
             _summaryFeedback.emit(
-                "Review pending changes on the Diff Review screen first — then tap Build plan again.",
+                "Clear pending Diff Review changes from a prior Edit session first — then tap Build plan.",
             )
             return
         }

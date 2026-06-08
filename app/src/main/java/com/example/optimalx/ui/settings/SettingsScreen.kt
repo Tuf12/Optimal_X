@@ -478,6 +478,71 @@ fun SettingsScreen(
                         },
                     )
                 }
+                val workshopAutoContinue by viewModel.workshopAutoContinueEnabled.collectAsState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Workshop Auto-Continue",
+                            color = colors.textPrimary,
+                            fontFamily = DmSansFamily,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "During build kickoffs, chain Eidos chunks using LLM handoff messages (synthetic user resend).",
+                            color = colors.textDim,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp, end = 8.dp),
+                        )
+                    }
+                    Switch(
+                        checked = workshopAutoContinue,
+                        onCheckedChange = {
+                            viewModel.setWorkshopAutoContinueEnabled(it)
+                            feedback = if (it) "Auto-Continue enabled" else "Auto-Continue disabled"
+                        },
+                    )
+                }
+                val pauseBetweenChunks by viewModel.workshopPauseBetweenChunks.collectAsState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Pause between workshop chunks",
+                            color = colors.textPrimary,
+                            fontFamily = DmSansFamily,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "When on, tool-cap pauses wait for you to reply continue instead of auto-resending the handoff.",
+                            color = colors.textDim,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp, end = 8.dp),
+                        )
+                    }
+                    Switch(
+                        checked = pauseBetweenChunks,
+                        enabled = workshopAutoContinue,
+                        onCheckedChange = {
+                            viewModel.setWorkshopPauseBetweenChunks(it)
+                            feedback = if (it) "Pause between chunks on" else "Pause between chunks off"
+                        },
+                    )
+                }
             }
 
             SettingsSection(title = "OptimalX Link") {

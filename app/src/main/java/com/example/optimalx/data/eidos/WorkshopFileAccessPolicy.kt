@@ -16,15 +16,26 @@ object WorkshopFileAccessPolicy {
         val phase = WorkshopEidosSession.currentPhase() ?: return null
         val updateSection = WorkshopEidosSession.currentUpdateSection()
 
+        if (WorkshopEidosSession.currentDocAlignScope() != null &&
+            PanelPlatformSpec.isMarkdownWorkshopFile(fileName)
+        ) {
+            return null
+        }
         if (mode == WorkshopEidosMode.PLAN && PanelPlatformSpec.isPlanMarkdownFile(fileName)) {
             return null
         }
         if (WorkshopEidosSession.currentDocAlignScope() != null && mode == WorkshopEidosMode.PLAN) {
             return null
         }
+        if ((mode == WorkshopEidosMode.BUILD_PLAN || mode.isPlanBuildKickoff) &&
+            fileName.equals(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD, ignoreCase = true)
+        ) {
+            return null
+        }
         if (mode.isBuildFamily || mode.isPlanBuildKickoff) {
             return ToolExecutionResult.Failure(
-                "Build kickoff writes runtime files only — no .md changes. Specs align on Accept.",
+                "Build plan writes runtime files only — other .md specs use Plan mode. " +
+                    "You may update ${PanelPlatformSpec.IMPLEMENTATION_PLAN_MD} to mark phase progress.",
             )
         }
         val chip = WorkshopEidosMode.normalizeToUserChip(mode)
@@ -61,6 +72,11 @@ object WorkshopFileAccessPolicy {
     fun runtimeWriteFailure(fileName: String): ToolExecutionResult.Failure? {
         if (PanelPlatformSpec.isMarkdownWorkshopFile(fileName)) return null
         val mode = WorkshopEidosSession.currentMode() ?: return null
+        if (WorkshopEidosSession.currentDocAlignScope() != null) {
+            return ToolExecutionResult.Failure(
+                "Doc align pass updates spec .md only — do not change $fileName.",
+            )
+        }
         if (mode.isBuildFamily || mode.isPlanBuildKickoff) return null
         return when (WorkshopEidosMode.normalizeToUserChip(mode)) {
             WorkshopEidosMode.CHAT -> ToolExecutionResult.Failure(

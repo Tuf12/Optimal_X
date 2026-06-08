@@ -202,7 +202,7 @@ Not a subfolder — no `list_folder_contents` default target for buffer writes.
 | Journal | Search / Tool |
 | File manifest | Inject (names + fileReferenceIds) |
 | README / spec `.md` | Inject only at cold start (bounded ≤2k per spec file; see `WorkshopSpecMarkdown`) |
-| Project summary | Inject when user has generated one |
+| Project summary | — (not injected in workshop Eidos prompt; user may still **Generate Project Summary** for human reading — model uses `search_semantic` / `workshop_read_file`) |
 | Open file content | — (Chat mode: discuss only; use `workshop_read_file` when user asks) |
 | Panel bridge | Inject when Preview / panel tab active |
 
@@ -253,10 +253,10 @@ Code status as of 2026-05-21. ✅ done · 🟡 partial · ❌ not done
 | Item | Status |
 |------|--------|
 | Kimi `reasoning_content` replay + `thinking.keep: all` | ✅ |
-| OpenAI/xAI reasoning capture + Reasoning folder log | ✅ |
+| OpenAI/xAI reasoning capture + chat bubble preview | ✅ |
 | Kimi workshop write replay redaction | ✅ |
 | History trim disabled (tool-safe trimmer pending) | ✅ |
-| Global max iterations 13 / workshop 18 | ❌ |
+| Global max iterations 13 / workshop build 12 per send | 🟡 workshop cap shipped Phase 1 (`WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS`); global 13 still open |
 | Duplicate tool-failure guard | ❌ |
 | Anthropic multi-tool regression verified | 🟡 |
 
@@ -280,7 +280,7 @@ Code status as of 2026-05-21. ✅ done · 🟡 partial · ❌ not done
 | Subfolder memory cache inject when populated | ❌ |
 | Daily memory inject (bounded + relevance guidance) | ❌ |
 | Workshop cold-start README/spec bounded | 🟡 (`WorkshopSpecMarkdown`) |
-| Workshop manifest + project summary | ✅ |
+| Workshop manifest (+ bounded spec fallback, no project summary inject) | ✅ Phase 1 |
 
 ### Memory layers
 
@@ -297,8 +297,8 @@ Code status as of 2026-05-21. ✅ done · 🟡 partial · ❌ not done
 | `search_semantic` in all workshop modes (scoped to project) | ✅ |
 | Mode instructions: search → read(query) → write | ✅ |
 | Build run vs edit execution profiles documented | 🟡 [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) |
-| Auto-Continue (chunked kickoffs + LLM handoff) | 🔴 planned Phase 1.5 |
-| Tool-hop cap + workshop prompt cleanup | 🔴 planned Phase 1 |
+| Auto-Continue (chunked kickoffs + LLM handoff) | ✅ Phase 1.5 (2026-06-03) |
+| Tool-hop cap + workshop prompt cleanup | ✅ Phase 1 (2026-06-03) |
 | Mode clarity (Chat / Plan / Edit / Build / Debug) | 🟡 working |
 | Chat mode tool round cap | ✅ (2 rounds) |
 | Panel bridge inactive guidance in prompt | ✅ |

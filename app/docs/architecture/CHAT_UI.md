@@ -69,7 +69,7 @@ Every conversation is scoped to the context where Eidos was opened.
 
 **Implementation:** [PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md](../implementation/PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md) — gallery/runner Eidos rollout.
 
-**Eidos Chats vs Eidos Reasoning:** **Eidos Chats** holds **conversation** history (this doc). **Eidos Reasoning** holds **AgentByte reasoning traces** (`ABR1|` lines), routed by scope in code — not chat bubbles. Do not store reasoning transcripts in the Chats folder. See [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md).
+**Provider thinking:** Kimi/OpenAI/xAI `reasoning_content` is stored on each assistant `ChatMessage` (`assistantReasoningContent`) and shown in the collapsible **Reasoning** section on chat bubbles — not in a separate Reasoning folder. See [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md).
 
 ---
 

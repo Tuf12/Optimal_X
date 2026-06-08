@@ -7,7 +7,7 @@
 | **Status** | **v2 spec** — phased workflow (replaces README-first + one-shot Start Build) |
 | **Audience** | Product, UX, Eidos prompt authors |
 | **Related** | [WORKSHOP_MODES.md](WORKSHOP_MODES.md) (modes + phases), [PANEL_PLATFORM.md](PANEL_PLATFORM.md) (runtime contract), [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) (Auto-Continue + prompt/token fixes), [WORKSHOP_MEMORY.md](../memory/WORKSHOP_MEMORY.md) (categorical cross-project preferences), [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md) (recovery checklist), [DIFF_REVIEW.md](DIFF_REVIEW.md) (pending edits on edit profile) |
-| **Kimi integration** | Debug + Formula `quickjs` from logic build onward — see [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6 |
+| **Kimi integration** | Formula `web_search` / `fetch` (and utility tools) in workshop when provider is Kimi — see [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) |
 
 ---
 
@@ -92,7 +92,7 @@ Workshop does **not** “use” the panel in the product sense — it **previews
 | **Design review** | Preview panel; chat and iterate on layout | **Accept design** | Design edit — code only; **no `.md` read/write** |
 | **Doc align (design)** | Optional quick read of updated DESIGN.md | Automatic on accept design | Short code → DESIGN.md (+ FLOW if needed) |
 | **Logic build** | Eidos wires calculations, state, bridge actions | **Build logic** | Logic build — `script.js` / `bridge.js` |
-| **Logic review** | Preview + chat; **Debug** available (Kimi + QuickJS) | **Accept logic** | Chat / Plan / Edit on runtime files |
+| **Logic review** | Preview + chat; **Debug** available (console + bridge) | **Accept logic** | Chat / Plan / Edit on runtime files |
 | **Doc align (finish)** | Quick read of all spec files | Automatic on Accept logic | Short code → all `.md` snapshots |
 | **Complete** | Build finished; run panel from Gallery or custom tab | **Update** | Opens maintenance (or edit files / Preview in workshop) |
 | **Update/edit** | Maintenance cycle (repeatable) | **Accept update** | Chat / Plan / Edit; diffs reviewed; doc align on Accept update |
@@ -242,13 +242,9 @@ Manual `.md` edits by the user are allowed but uncommon; Eidos should not treat 
 
 Use when Preview shows wrong behavior, console errors, or bridge issues.
 
-With **Kimi K2.6** and Phase 3.6:
+Debug workflow uses the workshop **console buffer**, **`call_panel_function`**, and targeted runtime edits — not a remote JS sandbox.
 
-- Formula `moonshot/quickjs:latest` is exposed **only in Debug** (workshop scope).
-- Eidos can run small JS snippets in Moonshot’s sandbox to isolate logic bugs before proposing fixes.
-- When QuickJS passes but Preview fails, Eidos should classify **platform gap** (Kotlin ↔ JS bridge, WebView, bundling) vs panel bug — use `PanelPlatformSpec.platformIssueTemplate()` for gaps.
-
-See [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6.
+When logic looks correct in isolated reasoning but Preview/bridge still fails, Eidos should classify **platform gap** (Kotlin ↔ JS bridge, WebView, bundling) vs panel bug — use `PanelPlatformSpec.platformIssueTemplate()` for gaps.
 
 ---
 
@@ -258,7 +254,7 @@ After the first build, the project is **Complete**. To change it in the workshop
 
 1. **Plan** (optional): draft or revise `IMPLEMENTATION_PLAN.md` and spec `.md` files — no runtime writes.
 2. **Accept implementation plan** when the plan is ready (gate — **Phase 4.5**, see [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md#phase-45--implementation-plan-execution-update--plan-mode)).
-3. **Build plan** (chat banner / top bar): Eidos executes the accepted plan on runtime files (Edit kickoff); proposals go to **Diff Review**.
+3. **Build plan** (chat banner / top bar): One tap — Eidos executes the accepted plan on runtime files with **Auto-Continue** across plan phases (direct disk; review in Preview when done).
 4. **Chat** / **Edit** for ad-hoc discussion or fixes between plan batches.
 5. User tests in **Preview** as needed (workshop test only — not Gallery runtime).
 6. User taps **Accept update** when the batch is done (all diffs resolved; second tap confirms and starts doc align).
@@ -332,4 +328,5 @@ Chess-piece phases in `agent_loops/PANEL_WORKSHOP_LOOP.md` remain **deferred**. 
 | Version | Date | Notes |
 |---------|------|--------|
 | 1 | 2026-05-18 | Initial README-first workshop UX |
-| 2 | 2026-05-25 | Phased lifecycle: chat intake, design-before-logic, doc align on approval, remove Sync to code, Debug + QuickJS from logic build |
+| 2 | 2026-05-25 | Phased lifecycle: chat intake, design-before-logic, doc align on approval, remove Sync to code, Debug from logic build |
+| 3 | 2026-06-06 | Kimi Formula `quickjs` removed from product and codebase |

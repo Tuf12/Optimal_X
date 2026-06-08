@@ -26,8 +26,8 @@
 | [EidosModels.kt](../../src/main/java/com/example/optimalx/data/eidos/model/EidosModels.kt) | `EidosMessage.assistantReasoningContent` |
 | [EidosChatSendWorker.kt](../../src/main/java/com/example/optimalx/data/eidos/EidosChatSendWorker.kt) | Background send history rebuild |
 | [EidosChatViewModel.kt](../../src/main/java/com/example/optimalx/ui/eidos/EidosChatViewModel.kt) | Foreground send + chat UI |
-| [EidosLlmReasoningLogger.kt](../../src/main/java/com/example/optimalx/data/eidos/EidosLlmReasoningLogger.kt) | Legacy Reasoning-folder archive (to be chat-linked) |
-| [ChatMessage.kt](../../src/main/java/com/example/optimalx/data/model/ChatMessage.kt) | Persisted chat rows (no reasoning column yet) |
+| [ReasoningPersistPolicy.kt](../../src/main/java/com/example/optimalx/data/eidos/ReasoningPersistPolicy.kt) | Final-hop reasoning cap for `chat_messages` |
+| [ChatMessage.kt](../../src/main/java/com/example/optimalx/data/model/ChatMessage.kt) | Persisted chat rows incl. `assistantReasoningContent` |
 
 ---
 
@@ -92,13 +92,13 @@ Moonshot does **not** specify chat UI layout. Visibility of reasoning to the use
 | Parse `reasoning_content` | ✅ | |
 | Replay `reasoning_content` in tool-loop hops | 🟡 | only when assistant has `tool_calls` |
 | Replay on final assistant (no tools) | ❌ | `toKimiMessage()` gap |
-| Persist `reasoning_content` across user turns | ❌ | `ChatMessage` has no column |
+| Persist `reasoning_content` across user turns | ✅ | `ChatMessage.assistantReasoningContent` (final-hop preview; API load omits column) |
 | **Streaming** | ✅ | Kimi-only SSE via `postJsonStream`; no blocking fallback |
 | **Formula `web_search`** | ✅ | `KimiFormulaToolService` + `KimiProvider.buildTools()` + `EidosApiClient` Fiber dispatch |
 | **Formula `fetch`** | ✅ | `moonshot/fetch:latest` in `KIMI_FORMULA_URIS` |
 | **Builtin `$web_search`** | ❌ intentionally | would disable thinking — do not add |
 | System prompt Kimi web note | ✅ | Formula web_search called out in `assembleSystemPrompt` |
-| Reasoning linked to chat UI | ❌ | Reasoning folder only; disconnected from bubbles |
+| Reasoning linked to chat UI | ✅ | Collapsible Reasoning on assistant bubbles |
 | “Working / thinking” activity indicator | 🟡 | `isSending` only; no reasoning-phase signal |
 | Workshop write replay redaction | ✅ | `redactToolCallForKimiReplay()` |
 
@@ -122,30 +122,18 @@ Formula tools are `type: function` schemas loaded from `GET /formulas/{uri}/tool
 
 ## Reasoning UX (locked decision)
 
-### Problem today
-
-- Reasoning is written to **Reasoning system subfolders** via `EidosLlmReasoningLogger` but is **not tied to chat message IDs**.
-- Chat bubbles show only final `content` — no collapsible reasoning, no live “thinking” text.
-- Users cannot tell if Eidos is **still reasoning** vs **hung** during long Kimi turns.
-- Troubleshooting requires jumping between chat and Reasoning inbox with no shared anchor.
-
-This is **not** a Moonshot requirement — it is a product gap we will fix while implementing Phase 1–2.
-
-### Decision
-
 | Layer | Approach |
 |-------|----------|
-| **API (required)** | Persist full `assistantReasoningContent` on each assistant `ChatMessage`; replay in Kimi outbound `messages` (Phase 1). |
-| **Chat UI (primary)** | Collapsible **“Reasoning”** section on each assistant bubble, default **collapsed**; expand for troubleshooting. Same row stores API replay source. |
-| **Activity (Phase 2)** | While Kimi stream is active: show **“Thinking…”** (or stream reasoning preview) before final answer text arrives — uses `isSending` + stream deltas, not a silent spinner alone. |
-| **Reasoning system folder (secondary)** | Keep as optional **archive/export** only if still useful; entries must include `chatMessageId` / `turnId` linking back to the bubble. Do **not** treat Reasoning folders as the primary UX or as a substitute for API replay. |
+| **API (required)** | Replay `reasoning_content` in Kimi outbound `messages` during in-flight tool hops (`thinking` + `keep: all`). |
+| **Chat UI (primary)** | Collapsible **“Reasoning”** section on each assistant bubble, default **collapsed**; stores final-hop preview in `assistantReasoningContent`. |
+| **Activity (Phase 2)** | While Kimi stream is active: show **“Thinking…”** (or stream reasoning preview) before final answer text arrives — uses `isSending` + stream deltas. |
 
-We are **not** choosing “Reasoning folders instead of chat” or “API-only with no UI.” Chat-attached reasoning is the source of truth for humans; API replay is the source of truth for Kimi.
+**Removed (2026-06):** Reasoning system subfolders (`Eidos Reasoning`, per-parent **Reasoning** notes) and `EidosLlmReasoningLogger` — they caused SQLite row bloat and duplicated chat storage. Chat-attached reasoning is the only human-facing store.
 
 ### Explicit non-goal
 
 - Do **not** inline reasoning into the system prompt.
-- Do **not** leave reasoning only in disconnected Reasoning notes without chat linkage.
+- Do **not** persist multi-hop reasoning aggregates to `chat_messages` (final-hop preview only).
 
 ---
 
@@ -184,9 +172,7 @@ sequenceDiagram
 - [x] **Formula `web_search`**: load schemas, merge into Kimi tools, Fiber execution in `EidosApiClient`
 - [x] System prompt: Kimi Formula web_search note (not builtin)
 - [x] `redactToolCallForKimiReplay()` for workshop writes
-- [x] `EidosLlmReasoningLogger` (legacy; chat linkage added in Phase 1 UX)
-
-### Phase 1 — Preserved thinking + chat-linked reasoning 🔴 **next**
+### Phase 1 — Preserved thinking + chat-linked reasoning ✅
 
 **1a. Data model** ✅
 
@@ -200,8 +186,6 @@ sequenceDiagram
 - [x] Foreground: `EidosChatViewModel.callApiAndInsertReply`
 - [x] Background: `EidosChatSendWorker`
 - [x] Widget: `WidgetVoiceService` (general + quick notes)
-- [x] `EidosLlmReasoningLogger`: `chatMessageId` in archive header; final turn via `archiveLinkedProviderReasoningForChatMessage` (tool-hop rounds still logged during `send` without id)
-
 **1c. Read path (history → API)** ✅
 
 - [x] Shared mapper: [ChatMessageApiHistory.kt](../../src/main/java/com/example/optimalx/data/eidos/ChatMessageApiHistory.kt)
@@ -273,15 +257,17 @@ Moonshot recommends streaming for thinking models. Implement **streaming only** 
   - [ ] "What day is 60 days from 2026-01-15?" routes to `date`
   - [ ] Attach `.xlsx` to chat → Kimi calls `excel` (not `read_file`)
 
-### Phase 3.6 — Workshop debug-only QuickJS ✅
+### Phase 3.6 — Workshop QuickJS ❌ Removed
 
-**Scope:** Give Kimi a sandboxed JS evaluator strictly when the user is **debugging** a panel — never during normal build/edit/plan loops where it would add latency and cost without payoff.
+**Former scope (2026-05–2026-06):** Moonshot Formula `moonshot/quickjs:latest` was briefly wired for workshop DEBUG mode only.
 
-- [x] Add `moonshot/quickjs:latest` to `KIMI_FORMULA_URIS`
-- [x] Gate exposure: only include the `quickjs` tool schema in outbound `tools` when `WorkshopEidosMode == DEBUG` and phase allows debug (`LOGIC_BUILD` onward)
-  - Not in `BUILD`, `EDIT`, `PLAN`, `CHAT`, or general (non-workshop) Eidos chat
-- [x] System prompt (DEBUG only): QuickJS guidance in `PanelPlatformSpec.eidosDebugModeInstructions()`
-- [ ] Validation: trigger DEBUG mode on a broken panel → Kimi uses `quickjs` to reproduce the JS error before proposing the edit
+**Current (2026-06-06):** Removed from product. `KIMI_FORMULA_URIS` no longer includes quickjs; `workshopQuickJsExposureAllowed`, `kimiFormulaExcludeUris`, and QuickJS prompt blocks are gone. Workshop debug relies on console buffer, `call_panel_function`, and targeted edits — same as non-Kimi providers.
+
+Historical checklist (for archaeology only):
+
+- ~~Add `moonshot/quickjs:latest` to `KIMI_FORMULA_URIS`~~
+- ~~Gate exposure to DEBUG + logic-build phases~~
+- ~~QuickJS guidance in debug edit prompts~~
 
 ### Phase 3.7 — Deferred / explicitly rejected Formula tools
 
@@ -367,7 +353,7 @@ Preserved reasoning in API history applies **only when provider is Kimi**.
 | 9 | Kimi convert (Phase 3.5) | Unit/currency query uses `convert` tool |
 | 10 | Kimi date (Phase 3.5) | Date arithmetic uses `date` tool |
 | 11 | Kimi excel (Phase 3.5) | `.xlsx` attachment → `excel` tool, not flattened `read_file` |
-| 12 | Kimi quickjs (Phase 3.6) | DEBUG mode panel → `quickjs` used; not exposed in BUILD/EDIT/PLAN |
+| ~~12~~ | ~~Kimi quickjs (Phase 3.6)~~ | **Removed** — no Formula sandbox JS in workshop |
 
 ---
 
@@ -383,9 +369,8 @@ Preserved reasoning in API history applies **only when provider is Kimi**.
 
 ## Open questions
 
-1. **Storage cap:** truncate stored reasoning per row vs full fidelity for Moonshot replay?
-2. **Reasoning folder fate:** keep as linked archive, or migrate fully to chat-only after Phase 1e?
-3. **Formula `fetch` priority:** ship in Phase 3 immediately after streaming, or defer?
+1. **Storage cap:** final-hop preview (~24k) on `chat_messages` — sufficient for UI; in-chunk API replay uses in-memory hops.
+2. **Formula `fetch` priority:** ship in Phase 3 immediately after streaming, or defer?
 
 ---
 
@@ -398,6 +383,7 @@ Preserved reasoning in API history applies **only when provider is Kimi**.
 | 2026-05-24 | Phase 2: Kimi SSE streaming (`postJsonStream`, `KimiStreamAccumulator`), live preview bubble, extended OkHttp timeouts |
 | 2026-05-24 | Phase 3: Formula `fetch` (`moonshot/fetch:latest`), renamed formula API, fetch source URL citation header |
 | 2026-05-25 | Phase 3.5 planned: add `convert`, `date`, `excel` Formula tools; route `.xlsx`/`.csv` to Kimi `excel` instead of `FileTextExtractor` flatten. Phase 3.6 planned: `quickjs` exposed only in Workshop DEBUG mode. Phase 3.7: rejected list (`memory`, `rethink`, `code_runner`, `random-choice`, `mew`); `base64` deferred. |
+| 2026-06-06 | Phase 3.6 **removed**: Kimi Formula `quickjs` dropped from product and codebase; workshop debug uses console + bridge only. |
 | 2026-05-25 | Kimi declared primary LLM; other providers framed as fallbacks / future sub-LLMs Kimi will orchestrate. |
 | 2026-05-25 | Phase 3.5 in progress: `convert`, `date`, `excel` Formula URIs added; `read_file` now refuses `.xlsx`/`.xls`/`.csv` and emits a hint pointing at the `excel` tool; system prompt updated. |
 | 2026-05-25 | Phase 3.5 simplification: removed the `read_file` short-circuit. Spreadsheet routing is steered entirely by tool descriptions + system prompt. Trust the model with extensions; accept that a misrouted call still returns the legacy flatten. |

@@ -69,4 +69,14 @@ object EidosContextLimits {
         - Active location IDs in this prompt are authoritative for default create/write targets.
         - Stored summaries in prompt are orientation only; trust search_semantic chunks for facts.
     """.trimIndent()
+
+    /** Panel Workshop only — no folder/note tool prose (see PANEL_WORKSHOP_AUTO_CONTINUE_PLAN Phase 1). */
+    val WORKSHOP_TOOL_FIRST_CONTEXT_RULES: String = """
+        Panel Workshop context policy:
+        - Project files are listed by fileReferenceId only — runtime source is not inlined in full.
+        - Call search_semantic(query) first with scopeType=local_first and this project's subfolderId.
+        - Use workshop_read_file with query or line range before edits; workshop_replace_string for targeted changes.
+        - Open editor excerpt (when present) is orientation only — prefer workshop_read_file before large edits.
+        - Spec orientation: search_semantic or workshop_read_file on README/spec .md — no inlined project summary.
+    """.trimIndent()
 }

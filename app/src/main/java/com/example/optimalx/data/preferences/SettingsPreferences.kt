@@ -42,6 +42,10 @@ object SettingsKeys {
     val READ_ALOUD_INFO_DISMISSED = booleanPreferencesKey("read_aloud_info_dismissed")
     /** Developer: capture outbound LLM API payloads for the API Trace inspector. */
     val EIDOS_API_TRACE_ENABLED = booleanPreferencesKey("eidos_api_trace_enabled")
+    /** Panel Workshop Auto-Continue — chain LLM handoffs during build kickoffs. */
+    val WORKSHOP_AUTO_CONTINUE_ENABLED = booleanPreferencesKey("workshop_auto_continue_enabled")
+    /** When true, pause after each chunk instead of immediate synthetic resend. */
+    val WORKSHOP_PAUSE_BETWEEN_CHUNKS = booleanPreferencesKey("workshop_pause_between_chunks")
 }
 
 object SettingsDefaults {
@@ -58,6 +62,8 @@ object SettingsDefaults {
     const val CONVERSATION_MEMORY_DEPTH = "low"
     const val READ_ALOUD_INFO_DISMISSED = false
     const val EIDOS_API_TRACE_ENABLED = false
+    const val WORKSHOP_AUTO_CONTINUE_ENABLED = true
+    const val WORKSHOP_PAUSE_BETWEEN_CHUNKS = false
 }
 
 object ApiKeyNames {

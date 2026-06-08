@@ -113,6 +113,7 @@ fun EidosChatScreen(
     val messages by viewModel.messages.collectAsState()
     val input by viewModel.input.collectAsState()
     val isSending by viewModel.isSending.collectAsState()
+    val workshopAutoContinueActive by viewModel.workshopAutoContinueActive.collectAsState()
     val showKimiThinking by viewModel.showKimiThinkingIndicator.collectAsState()
     val streamPreview by viewModel.streamPreview.collectAsState()
     val readAloud by viewModel.readAloud.collectAsState()
@@ -375,6 +376,7 @@ fun EidosChatScreen(
                 ) {
                     items(messages, key = { it.id }) { message ->
                         val isUser = message.role == EidosRole.USER
+                        val isSyntheticHandoff = message.isSyntheticHandoff
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -383,7 +385,20 @@ fun EidosChatScreen(
                             val bubbleModifier = if (isUser) {
                                 Modifier
                                     .clip(bubbleShape)
-                                    .background(colors.messageBubbleUser)
+                                    .background(
+                                        if (isSyntheticHandoff) {
+                                            colors.accentDim.copy(alpha = 0.35f)
+                                        } else {
+                                            colors.messageBubbleUser
+                                        },
+                                    )
+                                    .then(
+                                        if (isSyntheticHandoff) {
+                                            Modifier.border(1.dp, colors.accent.copy(alpha = 0.45f), bubbleShape)
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
                             } else {
                                 Modifier
                                     .border(1.dp, colors.messageBubbleEidosBorder, bubbleShape)
@@ -399,6 +414,16 @@ fun EidosChatScreen(
                                     .fillMaxWidth(0.88f)
                                     .padding(horizontal = 11.dp, vertical = 9.dp),
                             ) {
+                                if (isUser && isSyntheticHandoff) {
+                                    Text(
+                                        text = "Auto-continue handoff",
+                                        color = colors.accent,
+                                        fontFamily = DmSansFamily,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                    )
+                                }
                                 val reasoningText = message.reasoningText
                                 if (!isUser && !reasoningText.isNullOrBlank()) {
                                     val reasoningExpanded = message.id in expandedReasoningIds
@@ -548,6 +573,18 @@ fun EidosChatScreen(
                         item(key = "build_plan_banner") {
                             BuildPlanBanner(
                                 onClick = { viewModel.sendWorkshopBuildFromPlanKickoff(pendingReviewSubId) },
+                            )
+                        }
+                    }
+
+                    if (workshopAutoContinueActive && isSending && !showKimiThinking) {
+                        item(key = "workshop_auto_continue") {
+                            Text(
+                                text = "Building — continuing workshop chunk…",
+                                color = colors.textDim,
+                                fontFamily = DmMonoFamily,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                             )
                         }
                     }
@@ -871,7 +908,7 @@ private fun AcceptPlanBanner(
                 fontSize = 14.sp,
             )
             Text(
-                text = "Lock IMPLEMENTATION_PLAN.md, then use Build plan to run each phase",
+                text = "Accept plan, then tap Build plan once — Auto-Continue runs all phases",
                 color = colors.textMid,
                 fontFamily = DmSansFamily,
                 fontSize = 12.sp,

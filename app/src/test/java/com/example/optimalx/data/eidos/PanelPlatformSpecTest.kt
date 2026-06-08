@@ -36,6 +36,19 @@ class PanelPlatformSpecTest {
     }
 
     @Test
+    fun eidosInstructionsForMode_includesRetrievalPolicyOnce() {
+        val instructions = PanelPlatformSpec.eidosInstructionsForMode(
+            WorkshopEidosMode.BUILD_DESIGN,
+            subfolderId = 1L,
+            phase = WorkshopProjectPhase.DESIGN_BUILD,
+            docAlignScope = null,
+            updateSection = null,
+        )
+        val marker = "Call search_semantic(query) first"
+        assertEquals(1, instructions.split(marker).size - 1)
+    }
+
+    @Test
     fun eidosContextSummary_mentionsPlatformVersion() {
         assertTrue(PanelPlatformSpec.eidosContextSummary().contains("v${PanelPlatformSpec.PLATFORM_VERSION}"))
     }

@@ -174,6 +174,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val WEB_PANEL_TAG = "WebPanel"
 
@@ -296,6 +297,7 @@ fun WebPanel(
     val colors = LocalOptimalXColors.current
     val scope = rememberCoroutineScope()
     var webView by remember { mutableStateOf<WebView?>(null) }
+    val webViewCallbacksActive = remember { AtomicBoolean(true) }
     // Key by initialUrl so a new widget search/URL does not reuse saved URL + "already restored" from a prior visit.
     var urlInput by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
     var currentUrl by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
@@ -764,17 +766,13 @@ fun WebPanel(
     }
 
     DisposableEffect(Unit) {
+        webViewCallbacksActive.set(true)
         onDispose {
+            webViewCallbacksActive.set(false)
             customViewCallback?.onCustomViewHidden()
             customView = null
             customViewCallback = null
             persistLastUrl(currentUrl.ifBlank { requestedUrl.ifBlank { urlInput } })
-            webView?.apply {
-                stopLoading()
-                webChromeClient = WebChromeClient()
-                webViewClient = WebViewClient()
-                destroy()
-            }
             webView = null
         }
     }
@@ -1201,12 +1199,14 @@ fun WebPanel(
                         }
                         view.webChromeClient = object : WebChromeClient() {
                             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                                if (!webViewCallbacksActive.get()) return
                                 (view.parent as? ViewGroup)?.removeView(view)
                                 customView = view
                                 customViewCallback = callback
                             }
 
                             override fun onHideCustomView() {
+                                if (!webViewCallbacksActive.get()) return
                                 customViewCallback?.onCustomViewHidden()
                                 customView = null
                                 customViewCallback = null
@@ -1263,6 +1263,7 @@ fun WebPanel(
                             }
 
                             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                                if (!webViewCallbacksActive.get()) return
                                 isLoading = true
                                 pageError = null
                                 lastFallbackSignature = ""
@@ -1274,6 +1275,7 @@ fun WebPanel(
                             }
 
                             override fun onPageFinished(view: WebView, url: String) {
+                                if (!webViewCallbacksActive.get()) return
                                 isLoading = false
                                 currentUrl = url
                                 persistLastUrl(url)
@@ -1286,6 +1288,7 @@ fun WebPanel(
                                 request: WebResourceRequest,
                                 error: WebResourceError,
                             ) {
+                                if (!webViewCallbacksActive.get()) return
                                 if (request.isForMainFrame) {
                                     val detail = error.description?.toString().orEmpty().ifBlank { "Page failed to load." }
                                     pageError = "Load error: $detail"
@@ -1303,6 +1306,10 @@ fun WebPanel(
                                 handler: SslErrorHandler,
                                 error: SslError,
                             ) {
+                                if (!webViewCallbacksActive.get()) {
+                                    handler.cancel()
+                                    return
+                                }
                                 handler.cancel()
                                 pageError = "SSL error: secure connection failed."
                                 promptFallback(error.url.orEmpty(), "This page has a certificate/security issue.")
@@ -1324,6 +1331,13 @@ fun WebPanel(
                     if (target.isNotBlank() && view.url != target) {
                         view.loadUrl(target)
                     }
+                },
+                onRelease = { view ->
+                    webViewCallbacksActive.set(false)
+                    if (webView === view) {
+                        webView = null
+                    }
+                    destroyWebViewSafely(view)
                 },
             )
 
@@ -1932,6 +1946,17 @@ fun WebPanel(
                 TextButton(onClick = { showHistory = false }) { Text("Done") }
             },
         )
+    }
+}
+
+private fun destroyWebViewSafely(view: WebView?) {
+    if (view == null) return
+    runCatching {
+        view.stopLoading()
+        view.webChromeClient = null
+        view.webViewClient = WebViewClient()
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.destroy()
     }
 }
 

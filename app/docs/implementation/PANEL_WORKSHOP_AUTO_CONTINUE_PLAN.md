@@ -98,7 +98,7 @@ The plan previously treated Diff Review as a blocker for **every** chunked run. 
 |------|-------------------|------------------------------|-------------------|
 | **Full build run** | Intake → Generate specs → Build design → Build logic (top-bar kickoffs) | **No** — runtime writes go **direct to disk** | **After** a slice completes: Preview, then **Accept specs / Accept design / Accept logic** (phase gates), not per-file diffs mid-loop |
 | **Simple edits** | “Fix the button color”, “enemy collision is wrong” (Edit in review/complete/update) | **Yes** — proposals queue per file | Diff Review screen before changes are “live”; user-driven, small deltas |
-| **Build plan execution** | UPDATE + accepted `IMPLEMENTATION_PLAN.md`, **Build plan** per phase | **Yes today** (`BUILD_PLAN` in UPDATE → `shouldReview`) | Accept proposals between phases (current code); auto-continue can still chain **tool hops within** one plan phase |
+| **Build plan execution** | UPDATE + accepted `IMPLEMENTATION_PLAN.md`, **Build plan** (one tap) | **No** — same build-run profile as design/logic (`BUILD_PLAN` → direct disk) | Preview when **all** plan phases finish; **Accept update** to sync specs |
 
 Code: [WorkshopReviewPolicy.kt](../../src/main/java/com/example/optimalx/data/revision/WorkshopReviewPolicy.kt) — `isBuildFamily` + `DESIGN_BUILD` / `LOGIC_BUILD` → `shouldReview == false`; `DESIGN_REVIEW`, `LOGIC_REVIEW`, `COMPLETE`, `UPDATE` (Edit) → `true`.
 
@@ -108,13 +108,15 @@ Code: [WorkshopReviewPolicy.kt](../../src/main/java/com/example/optimalx/data/re
 |---------|---------------------------|----------------------------------|
 | **Main build** (`BUILD_DESIGN`, `BUILD_LOGIC`, Generate specs `.md` only) | **Yes** — primary target for hands-off chunked run | **No** — not in this scenario; review the **whole** build at Accept / Preview |
 | **Simple edits** (Edit, post-complete fixes) | Optional — shorter caps; user often watches | **Yes** when `shouldReview` — do not claim “fixed on disk” until accepted; chaining across pending proposals is usually wrong |
-| **Build plan** (`BUILD_PLAN` kickoff) | **Yes** within one plan phase | **Between phases** if proposals pending (today’s `WorkshopEditorViewModel` blocks “Build plan again” until Diff Review cleared) |
+| **Build plan** (`BUILD_PLAN` kickoff) | **Yes** — tool-hop chunks **and** Auto-Continue **between plan phases** (handoff) | **No** — not during build plan run; user reviews in Preview after full plan |
 
 **Full build auto-continue** = run chunk → handoff → chunk → … until kickoff task completes or `WORKSHOP_MAX_CHUNKS`, **without** stopping for Diff Review. User reviews once the run finishes (or at existing Accept gates), not every few tool calls.
 
 **Simple edits** = keep Diff Review semantics; chunked continue is secondary and may stop when the queue is non-empty if we ever chain edits at all.
 
-Open product question: should **Build plan** execution match main build (direct disk, review after phase in Preview) or keep per-file Diff Review between plan phases? Current Kotlin uses review for `BUILD_PLAN`.
+Open product question: ~~should **Build plan** execution match main build~~ **Resolved (2026-06):** Build plan uses **build-run profile** — direct disk, Auto-Continue across plan phases, no Diff Review mid-run. Edit in UPDATE still uses Diff Review.
+
+**Build plan Auto-Continue:** One **Build plan** tap → run plan phases in order. Within each plan phase: ≤ `WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS` (12) tool hops per chunk, ≤ `MAX_CHUNKS_PER_KICKOFF` (6) chunks per plan phase. At plan phase boundary: `## Workshop handoff` → synthetic user → next phase (chunk counter resets). Stop when model declares **implementation plan complete** or `MAX_PLAN_PHASES_PER_RUN` (20).
 
 ---
 
@@ -256,7 +258,7 @@ Do **not** rely on code-only tickets for the happy path; the model should steer 
 
 Kickoffs (`sendWorkshopBuildLogicKickoff`, etc.) set `WorkshopBuildKickoff` and the first `userMessage`. Synthetic continue **resumes the same kickoff/mode** until the model finishes or guards fire — user does not tap the top bar again between chunks.
 
-**Main build:** chain freely during `DESIGN_BUILD` / `LOGIC_BUILD` kickoffs; human reviews at **Accept** / Preview after the run (or phase), not Diff Review mid-loop. **Edits / build plan:** respect `shouldReview` — see table above.
+**Main build / build plan:** chain freely during `DESIGN_BUILD` / `LOGIC_BUILD` / `BUILD_PLAN` kickoffs; human reviews at **Accept** / Preview after the run completes, not Diff Review mid-loop. **Edit in UPDATE:** respect `shouldReview`.
 
 ### Guardrails
 
@@ -330,7 +332,7 @@ The model only **can** call tools present in the request payload; prose about un
 |---------|----------|
 | `web_search`, `fetch` | Available (useful for API/docs debugging) |
 | `convert`, `date`, `excel` | Available globally today — rarely needed in workshop |
-| `quickjs` | **Excluded by default** (`kimiFormulaExcludeUris`); only exposed when `workshopQuickJsExposureAllowed` (Edit + logic-build phase onward). Product says **not needed** → Phase 1: **always exclude quickjs in workshop**; trim system prompt text that advertises QuickJS in non-debug phases. |
+| ~~`quickjs`~~ | **Removed (2026-06-06).** Was briefly shipped for workshop DEBUG; product dropped it — no Formula sandbox JS in workshop or general chat. |
 
 Workshop **does** allow Formula execution in `EidosApiClient` (Fiber dispatch) — same as general chat. The issue is **prompt bloat and unused tools**, not “code blocks Formula.”
 
@@ -435,12 +437,12 @@ Meant (optional, Phase 2+): when **re-sending history** on hop 8+, replace **old
 
 | # | Change | Risk | Files (likely) |
 |---|--------|------|----------------|
-| 1 | **Max tool rounds** for workshop Edit/Build/Plan (Chat keeps existing cap of 2) | Low if message is honest | `EidosApiClient` — new constant e.g. `WORKSHOP_MAX_TOOL_ROUNDS = 12`; on exceed return fixed assistant text |
+| 1 | **Max tool rounds** for workshop Edit/Build/Plan  | Low if message is honest | `EidosApiClient` — new constant e.g. `WORKSHOP_MAX_TOOL_ROUNDS = 12`; on exceed return fixed assistant text |
 | 2 | **Pause message content** (no fake “done”) | — | Template: list pending intent, files touched this turn, “Reply **continue** to resume” / “Start new chat if unrelated” |
 | 3 | **Drop duplicate** `EIDOS_WORKSHOP_RETRIEVAL_POLICY` in `buildWorkshopPanelContext` | Very low | `EidosApiClient.kt` |
 | 4 | **Omit project summary** from system prompt (keep manifest + mode + optional intake); model uses `search_semantic` / `workshop_read_file` on README/specs | Low–medium | `buildWorkshopPanelContext`; update PROMPT_SYSTEM workshop table |
 | 5 | **Workshop-scoped system prose** — shorter tool-first + Formula lines; drop general-folder tool mentions | Low | `EidosApiClient.assembleSystemPrompt` branch for `PANEL_WORKSHOP` |
-| 6 | **Always exclude QuickJS** Formula in workshop (`kimiFormulaExcludeUris` always includes quickjs URI) | Low | `EidosApiClient` / `workshopQuickJsExposureAllowed` policy |
+| ~~6~~ | ~~Always exclude QuickJS~~ | — | **Done / obsolete** — QuickJS Formula removed from codebase (2026-06-06) |
 | 7 | **Tests** | — | `EidosApiClient` or resolver tests for round cap; snapshot test that workshop system block does not contain duplicate retrieval heading twice |
 
 ### Max tool rounds — behavior spec
@@ -506,7 +508,7 @@ High cap “let the model decide only” does **not** replace a safety cap — l
 | Cap hit, no handoff | Fallback ticket → insert → resend; log fallback |
 | `toolCalls` empty, kickoff task complete | Clear `WorkshopBuildKickoff`, **no** synthetic resend |
 | Spec accept gate ready | Tell user Accept — **do not** chain writes |
-| Diff Review pending | **Stop** chain only when `shouldReview` (edits / build plan today) |
+| Diff Review pending | **Stop** chain only when `shouldReview` (**Edit** in UPDATE — not Build plan) |
 
 ### Modes in scope for 1.5
 
@@ -539,7 +541,7 @@ High cap “let the model decide only” does **not** replace a safety cap — l
 | Idea | Notes |
 |------|-------|
 | **Auto-advance after Accept** | User Accepts specs → app inserts synthetic “Start Build design” + kickoff — no top-bar tap |
-| **Build plan phase chain** | After each plan phase (accept Diff Review if policy requires) → synthetic “Next plan phase: …” + `sendWorkshopBuildFromPlanKickoff` |
+| **Build plan phase chain** | After each plan phase handoff → synthetic user → next phase (same kickoff; chunk budget resets). No Diff Review between phases. |
 | **Per-phase provider** | e.g. specs=OpenAI, logic=Kimi — `WorkshopOrchestratorProvider` table; handoff ticket stays short |
 | **Conductor model** | One cheap model plans next step; workers run kickoffs — aligns with Kimi spec “sub-LLMs” note |
 
@@ -551,14 +553,36 @@ High cap “let the model decide only” does **not** replace a safety cap — l
 
 ## Verification checklist
 
-### Phase 1
+### Phase 1 — automated (CI / local, no device)
 
-1. **Logcat** `OptimalX.Eidos.Usage` — one **chunk** should show `round` ≤ cap; final text mentions pause when capped.
-2. **Diff Review (edit path only)** — capped mid-write must not claim “live on disk” when `shouldReview`.
-3. **Kimi cache** — `cached_tokens` on system prefix still reported on hop 2+ (no regression).
-4. **Generate specs / Build design / Edit fix** — smoke on one real project.
-5. **System prompt diff** — grep assembled prompt for `Retrieval (all workshop modes)` — **once** only.
-6. **Tool list in API** — workshop send still exposes only workshop tools (no `write_note`).
+| Check | How | Status |
+|-------|-----|--------|
+| Pause message + marker | `WorkshopToolRoundPauseTest` | ✅ |
+| Workshop context rules scoped | `EidosContextLimitsTest.workshopToolFirstContextRules_areWorkshopScoped` | ✅ |
+| Retrieval policy once in mode instructions | `PanelPlatformSpecTest.eidosInstructionsForMode_includesRetrievalPolicyOnce` | ✅ |
+| No duplicate retrieval append in client | `buildWorkshopPanelContext` does not append `EIDOS_WORKSHOP_RETRIEVAL_POLICY` (mode block only) | ✅ |
+| No project summary inject | `buildWorkshopPanelContext` does not call `formatWorkshopSummaryForPrompt` | ✅ |
+| Tool-cap flag + kickoff guard | `EidosChatViewModel` logs `OptimalX.Workshop.Phase1`; does **not** clear `WorkshopBuildKickoff` when `workshopPausedForToolCap` | ✅ |
+
+Run: `./gradlew :app:testDebugUnitTest --tests 'com.example.optimalx.data.eidos.WorkshopToolRoundPauseTest' --tests 'com.example.optimalx.data.eidos.EidosContextLimitsTest' --tests 'com.example.optimalx.data.eidos.PanelPlatformSpecTest'`
+
+### Phase 1 — device smoke (manual, one real workshop project)
+
+Prereq: Kimi (or chosen provider) API key; workshop project past intake.
+
+1. **Generate specs** or **Build design** kickoff — let run until natural end or tool-cap pause.
+2. **Logcat** — filter `OptimalX.Eidos.Usage` and `OptimalX.Workshop.Phase1`:
+   - Usage: per-hop `round` ≤ 12 while tools run; on cap, `tool_cap_paused rounds=12`.
+   - Phase1: `tool_cap_pause persisted rounds=12 conv=…` when capped.
+3. **Chat** — if capped, assistant text includes `Paused after … tool steps`, `not finished`, `[workshop_tool_cap_paused]`; mode chip still shows build kickoff (kickoff **not** cleared on cap).
+4. **Diff Review (edit path only)** — in `DESIGN_REVIEW` + Edit with pending proposals, cap message may mention Diff Review; build kickoffs (`BUILD_DESIGN` / `BUILD_LOGIC`) must **not** mention Diff Review.
+5. **Kimi cache** — `cached_tokens` on hop 2+ in Usage log (no regression).
+6. **API Trace** (Settings → Developer) — assembled system prompt: `Retrieval (all workshop modes)` appears **once**; no inlined project summary block.
+7. **Tool list** — workshop send exposes workshop tools only (no `write_note`).
+
+```bash
+adb logcat -s OptimalX.Eidos.Usage OptimalX.Workshop.Phase1
+```
 
 ### Phase 1.5 (synthetic continue)
 
@@ -582,7 +606,7 @@ High cap “let the model decide only” does **not** replace a safety cap — l
 6. Phase 1 / 1.5 behind a single Settings “Workshop experiments” flag for dogfooding?
 7. Store synthetic handoff rows with DB flag (`isSyntheticHandoff`) for UI styling?
 8. Lean history on chunked chains — Phase 2 or required for 1.5?
-9. **Build plan:** keep Diff Review between phases, or align with main build (direct disk, review in Preview only)?
+9. **Build plan:** ~~keep Diff Review between phases~~ **Resolved** — build-run profile (direct disk + phase Auto-Continue). Diff Review only for **Edit** in UPDATE, not Build plan.
 
 ---
 

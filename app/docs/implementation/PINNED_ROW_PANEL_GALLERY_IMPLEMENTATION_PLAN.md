@@ -128,9 +128,9 @@ Hide from UI; do **not** delete rows on upgrade.
 | Object | Action |
 |--------|--------|
 | **Eidos Chats** parent | Remove from parent grid + pinned row; hide from folder navigation |
-| **Eidos Reasoning** parent | Hide; stop routing users to reasoning inbox UI |
+| **Eidos Reasoning** parent | Hidden; no new writes; reasoning inbox UI removed |
 | **Chats** system subfolder (per parent) | Stop creating on **new** parents; hide existing in subfolder lists |
-| `EidosLlmReasoningLogger` / reasoning inbox | Stop writing or redirect — no new reasoning folder entries |
+| Reasoning folder logger | Removed — provider thinking on `ChatMessage` only |
 | Chat directory | **Chat UI only** — conversations scoped via existing chat screens |
 
 Data remains in DB for safety; invisible folders are not discoverable in normal navigation.

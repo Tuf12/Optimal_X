@@ -15,13 +15,12 @@ import com.example.optimalx.data.eidos.model.EidosToolCall
 import com.example.optimalx.data.eidos.model.EidosToolDefinition
 import com.example.optimalx.data.eidos.model.ToolExecutionResult
 import com.example.optimalx.data.eidos.model.ToolExecutor
-import com.example.optimalx.data.eidos.model.persistableReasoningContent
 import com.example.optimalx.data.eidos.model.recordReasoningHop
 import com.example.optimalx.data.eidos.model.withReasoningTrace
 import com.example.optimalx.data.eidos.provider.AnthropicProvider
 import com.example.optimalx.data.eidos.provider.EidosProvider
 import com.example.optimalx.data.eidos.provider.KimiFormulaToolService
-import com.example.optimalx.data.eidos.provider.KIMI_FORMULA_QUICKJS_URI
+
 import com.example.optimalx.data.eidos.provider.KimiProvider
 import com.example.optimalx.data.eidos.provider.OpenAIProvider
 import com.example.optimalx.data.eidos.provider.ProviderHttpException
@@ -102,8 +101,6 @@ class EidosApiClient(
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
 
-    private val llmReasoningLogger by lazy { EidosLlmReasoningLogger(database) }
-
     suspend fun send(
         userMessage: String,
         currentSubfolderId: Long?,
@@ -147,22 +144,29 @@ class EidosApiClient(
             WorkshopProjectPreferences.getBuildKickoff(context, it)
         }
         val workshopMode = if (isPanelWorkshop) {
-            val base = workshopEidosMode ?: WorkshopEidosMode.EDIT
-            if (WorkshopEidosModeResolver.isBuildKickoffModeActive(
-                    base,
+            WorkshopEidosModeResolver.modeForDocAlign(workshopDocAlignScope)
+                ?: WorkshopEidosModeResolver.modeForActiveBuildKickoff(
                     resolvedWorkshopPhase,
                     activeBuildKickoff,
                 )
-            ) {
-                base
-            } else {
-                WorkshopEidosModeResolver.coerceModeForPhase(
-                    mode = base,
-                    phase = resolvedWorkshopPhase,
-                    docAlignScope = workshopDocAlignScope,
-                    activeBuildKickoff = activeBuildKickoff,
-                )
-            }
+                ?: run {
+                    val base = workshopEidosMode ?: WorkshopEidosMode.EDIT
+                    if (WorkshopEidosModeResolver.isBuildKickoffModeActive(
+                            base,
+                            resolvedWorkshopPhase,
+                            activeBuildKickoff,
+                        )
+                    ) {
+                        base
+                    } else {
+                        WorkshopEidosModeResolver.coerceModeForPhase(
+                            mode = base,
+                            phase = resolvedWorkshopPhase,
+                            docAlignScope = workshopDocAlignScope,
+                            activeBuildKickoff = activeBuildKickoff,
+                        )
+                    }
+                }
         } else {
             null
         }
@@ -176,16 +180,7 @@ class EidosApiClient(
                 )
                 else -> toolDefinitions
             }
-        }
-        val includeKimiQuickJs = KimiFormulaToolService.workshopQuickJsExposureAllowed(
-            isPanelWorkshop = isPanelWorkshop,
-            mode = workshopMode,
-            phase = resolvedWorkshopPhase,
-        )
-        val kimiFormulaExcludeUris = if (includeKimiQuickJs) {
-            emptySet()
-        } else {
-            setOf(KIMI_FORMULA_QUICKJS_URI)
+
         }
         val workshopUserTurns = if (isPanelWorkshop) {
             WorkshopEidosModeResolver.countUserTurns(conversationHistory) + 1
@@ -271,7 +266,6 @@ class EidosApiClient(
                 conversationId,
             )
         }
-        val llmReasoningTurnId = "llm_${System.currentTimeMillis()}"
         val reasoningHops = mutableListOf<EidosReasoningHop>()
         val traceRecorder = EidosApiTraceRecorder.createIfEnabled(context, database)
         val traceScopeType = currentScopeType ?: when {
@@ -310,7 +304,6 @@ class EidosApiClient(
             promptCacheKey = resolvedPromptCacheKey,
             phase = EidosRequestPhase.FULL,
             streamListener = streamListener,
-            kimiFormulaExcludeUris = kimiFormulaExcludeUris,
         )
 
         var attempts = 0
@@ -322,16 +315,6 @@ class EidosApiClient(
             try {
                 var response = provider.send(workingRequest)
                 recordReasoningHop(reasoningHops, response, providerRound, workingRequest.phase)
-                persistProviderReasoningIfPresent(
-                    activeProvider = providerConfig.activeProvider,
-                    response = response,
-                    turnId = llmReasoningTurnId,
-                    round = providerRound,
-                    phase = workingRequest.phase,
-                    currentSubfolderId = currentSubfolderId,
-                    currentParentFolderId = currentParentFolderId,
-                    currentScopeType = currentScopeType,
-                )
                 logProviderUsage(
                     providerName = providerName,
                     phase = workingRequest.phase,
@@ -349,16 +332,6 @@ class EidosApiClient(
                     response = provider.send(freshRequest)
                     providerRound += 1
                     recordReasoningHop(reasoningHops, response, providerRound, freshRequest.phase)
-                    persistProviderReasoningIfPresent(
-                        activeProvider = providerConfig.activeProvider,
-                        response = response,
-                        turnId = llmReasoningTurnId,
-                        round = providerRound,
-                        phase = freshRequest.phase,
-                        currentSubfolderId = currentSubfolderId,
-                        currentParentFolderId = currentParentFolderId,
-                        currentScopeType = currentScopeType,
-                    )
                     logProviderUsage(
                         providerName = providerName,
                         phase = freshRequest.phase,
@@ -369,19 +342,60 @@ class EidosApiClient(
                 }
                 var currentResponseId = response.providerResponseId
                 var workshopChatToolRound = 0
+                var workshopBuildToolRound = 0
 
                 while (response.toolCalls.isNotEmpty()) {
                     currentCoroutineContext().ensureActive()
                     // Tool continuations send conversationHistory only (userMessage is blank).
                     // Seed the current turn so the model is not one message behind.
                     ensureActiveUserTurnInHistory(mutableHistory, userMessage)
+                    if (isPanelWorkshop && workshopMode != WorkshopEidosMode.CHAT) {
+                        workshopBuildToolRound += 1
+                        if (workshopBuildToolRound > WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS) {
+                            val toolNames = WorkshopToolRoundPause.toolNamesInCurrentExchange(
+                                history = mutableHistory,
+                                pendingToolCalls = response.toolCalls,
+                            )
+                            if (logTokenUsage) {
+                                WorkshopToolRoundPause.logToolCapPaused(
+                                    roundsCompleted = workshopBuildToolRound - 1,
+                                    cap = WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS,
+                                    toolNames = toolNames,
+                                )
+                            }
+                            val pendingProposalCount = currentSubfolderId?.let { subId ->
+                                database.pendingChangeDao().findOpenSetForScope(
+                                    SCOPE_WORKSHOP_PROJECT,
+                                    subId,
+                                )?.let { database.pendingChangeDao().countPending(it.id) } ?: 0
+                            } ?: 0
+                            val pauseText = WorkshopToolRoundPause.buildPauseMessage(
+                                cap = WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS,
+                                roundsCompleted = workshopBuildToolRound - 1,
+                                toolNames = toolNames,
+                                lastAssistantText = response.textResponse,
+                                phase = resolvedWorkshopPhase,
+                                mode = workshopMode,
+                                activeKickoff = activeBuildKickoff,
+                                pendingProposalCount = pendingProposalCount,
+                            )
+                            return EidosResponse(
+                                textResponse = pauseText,
+                                toolCalls = emptyList(),
+                                providerResponseId = currentResponseId,
+                                assistantReasoningContent = response.assistantReasoningContent,
+                                workshopPausedForToolCap = true,
+                                workshopToolRoundsCompleted = workshopBuildToolRound - 1,
+                                workshopPausedForHandoff = true,
+                            ).withReasoningTrace(reasoningHops)
+                        }
+                    }
                     if (workshopMode == WorkshopEidosMode.CHAT) {
                         val disallowed = response.toolCalls.filter { call ->
                             !isAllowedToolName(
                                 name = call.name,
                                 effectiveToolDefinitions = effectiveToolDefinitions,
                                 kimiFormulaTools = kimiFormulaTools,
-                                kimiFormulaExcludeUris = kimiFormulaExcludeUris,
                             )
                         }
                         if (disallowed.isNotEmpty()) {
@@ -419,16 +433,6 @@ class EidosApiClient(
 
                     response.toolCalls.forEach { toolCall ->
                         if (kimiFormulaTools?.isFormulaTool(toolCall.name) == true) {
-                            val formulaUri = kimiFormulaTools.formulaUriForTool(toolCall.name)
-                            if (formulaUri != null && formulaUri in kimiFormulaExcludeUris) {
-                                mutableHistory += EidosMessage(
-                                    role = EidosRole.TOOL,
-                                    content = "Tool ${toolCall.name} is not available in this chat scope.",
-                                    toolCallId = toolCall.id,
-                                    toolName = toolCall.name,
-                                )
-                                return@forEach
-                            }
                             val toolResultText = kimiFormulaTools.executeFormulaTool(
                                 name = toolCall.name,
                                 argumentsJson = toolCall.argumentsJson,
@@ -525,22 +529,11 @@ class EidosApiClient(
                         promptCacheKey = resolvedPromptCacheKey,
                         phase = EidosRequestPhase.TOOL_CONTINUATION,
                         streamListener = streamListener,
-                        kimiFormulaExcludeUris = kimiFormulaExcludeUris,
                     )
                     currentCoroutineContext().ensureActive()
                     response = provider.send(workingRequest)
                     providerRound += 1
                     recordReasoningHop(reasoningHops, response, providerRound, workingRequest.phase)
-                    persistProviderReasoningIfPresent(
-                        activeProvider = providerConfig.activeProvider,
-                        response = response,
-                        turnId = llmReasoningTurnId,
-                        round = providerRound,
-                        phase = workingRequest.phase,
-                        currentSubfolderId = currentSubfolderId,
-                        currentParentFolderId = currentParentFolderId,
-                        currentScopeType = currentScopeType,
-                    )
                     logProviderUsage(
                         providerName = providerName,
                         phase = workingRequest.phase,
@@ -706,6 +699,12 @@ class EidosApiClient(
             return "$provider timed out at $endpoint.$retryLine The request may still be processing on the provider side. Try again, reduce request size, or switch to a faster model."
         }
 
+        if (ChatMessagePersistLimits.isCursorWindowRowTooLarge(error)) {
+            return "Local storage hit SQLite's row size limit (oversized chat message). " +
+                "The app will try to repair this on the next send; if it persists, tap New chat for this workshop.$retryLine " +
+                "Clearing build plan or deleting IMPLEMENTATION_PLAN.md does not remove old chat rows."
+        }
+
         val detail = error?.message?.take(220)?.trim().orEmpty()
         return if (detail.isNotBlank()) {
             "$provider is unavailable right now.$retryLine Details: $detail"
@@ -756,14 +755,36 @@ class EidosApiClient(
         activeProvider: String? = null,
         kimiFormulaToolsLoaded: Boolean = false,
     ): String {
+        val activeScope = currentScopeType ?: when {
+            currentSubfolderId != null -> "subfolder"
+            currentParentFolderId != null -> "parent"
+            else -> "general"
+        }
+        val isWorkshopScope = activeScope == ConversationScopes.PANEL_WORKSHOP
         val lines = mutableListOf(baseSystemPrompt)
-        lines += EidosContextLimits.TOOL_FIRST_CONTEXT_RULES
-        lines += """
-            Active location rule:
-            - Default all folder/note create/write actions to the current in-app location.
-            - Do not create or write in other folders unless the user explicitly names a different destination.
-        """.trimIndent()
+        lines += if (isWorkshopScope) {
+            EidosContextLimits.WORKSHOP_TOOL_FIRST_CONTEXT_RULES
+        } else {
+            EidosContextLimits.TOOL_FIRST_CONTEXT_RULES
+        }
+        if (!isWorkshopScope) {
+            lines += """
+                Active location rule:
+                - Default all folder/note create/write actions to the current in-app location.
+                - Do not create or write in other folders unless the user explicitly names a different destination.
+            """.trimIndent()
+        }
         when {
+            isWorkshopScope && activeProvider == "kimi" && kimiFormulaToolsLoaded -> lines += """
+                Kimi Formula (Panel Workshop): web_search and fetch for public docs/APIs when needed; cite URLs.
+                Workshop tools only in this scope — see mode instructions for the active allowlist.
+            """.trimIndent()
+            isWorkshopScope && activeProvider == "kimi" -> lines += """
+                Kimi Formula web_search/fetch did not load — use workshop tools and local context only.
+            """.trimIndent()
+            isWorkshopScope -> lines += """
+                Use the active provider's hosted web search when available for public facts; cite sources.
+            """.trimIndent()
             activeProvider == "kimi" && kimiFormulaToolsLoaded -> lines += """
                 Provider-native web access is enabled when the selected API provider supports it (xAI, OpenAI, Anthropic, Kimi).
                 Use provider web search for public web information when available; cite source links when present.
@@ -786,12 +807,6 @@ class EidosApiClient(
                 Use provider web search for public web information when available; cite source links when present.
                 Local Eidos tools handle OptimalX folders, notes, files, journal, log, and local search.
             """.trimIndent()
-        }
-
-        val activeScope = currentScopeType ?: when {
-            currentSubfolderId != null -> "subfolder"
-            currentParentFolderId != null -> "parent"
-            else -> "general"
         }
         lines += "Active scope: $activeScope"
 
@@ -1029,9 +1044,7 @@ class EidosApiClient(
             )
         }
 
-        val projectSummaryBlock = ContentSummaryService.formatWorkshopSummaryForPrompt(subfolder)
-        val specFallback = if (projectSummaryBlock.isNullOrBlank() &&
-            workshopEidosMode != WorkshopEidosMode.CHAT &&
+        val specFallback = if (workshopEidosMode != WorkshopEidosMode.CHAT &&
             phase != WorkshopProjectPhase.INTAKE
         ) {
             WorkshopSpecMarkdown.loadBounded(files)
@@ -1093,8 +1106,6 @@ class EidosApiClient(
             ))
             appendLine()
             appendLine(workshopContentPolicy(workshopEidosMode, phase, workshopDocAlignScope, updateSection))
-            appendLine()
-            appendLine(PanelPlatformSpec.EIDOS_WORKSHOP_RETRIEVAL_POLICY)
             if (intakeSummary.isNotBlank()) {
                 appendLine()
                 appendLine("Intake summary (chat alignment — authoritative for spec generation):")
@@ -1128,17 +1139,14 @@ class EidosApiClient(
                         "Spec .md writes and sync to code happen on Accept update (doc align), not per edit.",
                 )
             }
-            if (!projectSummaryBlock.isNullOrBlank()) {
+            if (specFallback.isNotBlank()) {
                 appendLine()
-                append(projectSummaryBlock)
-            } else if (specFallback.isNotBlank()) {
-                appendLine()
-                appendLine("Spec markdown (bounded; regenerate project summary to cache a stable version):")
+                appendLine("Spec markdown (bounded orientation — use search_semantic / workshop_read_file for full text):")
                 appendLine(specFallback)
-            } else {
+            } else if (workshopEidosMode != WorkshopEidosMode.CHAT && phase != WorkshopProjectPhase.INTAKE) {
                 appendLine()
                 appendLine(
-                    "No project summary yet. Use spec .md via workshop_read_file or ask the user to Generate Project Summary.",
+                    "Spec orientation: use search_semantic or workshop_read_file on README/spec .md files.",
                 )
             }
             if (WorkshopEidosModeResolver.shouldNudgeNewChat(workshopUserTurns)) {
@@ -1211,7 +1219,7 @@ class EidosApiClient(
     ): String {
         val chip = WorkshopEidosMode.normalizeToUserChip(mode)
         return when {
-        docAlignScope != null && mode == WorkshopEidosMode.PLAN ->
+        docAlignScope != null ->
             "Workshop content policy (Align docs / Plan): read runtime code and existing spec .md as needed; " +
                 "write spec .md only where out of date — no HTML/CSS/JS changes."
         phase == WorkshopProjectPhase.INTAKE ->
@@ -1243,7 +1251,7 @@ class EidosApiClient(
         phase == WorkshopProjectPhase.LOGIC_REVIEW && chip == WorkshopEidosMode.CHAT ->
             "Workshop content policy (Logic review / Chat): discuss only — no file writes."
         phase == WorkshopProjectPhase.LOGIC_REVIEW && chip == WorkshopEidosMode.EDIT && phase.allowsDebugMode ->
-            "Workshop content policy (Logic review / Edit): edit runtime files directly — optional Kimi quickjs; no .md writes until Accept logic."
+            "Workshop content policy (Logic review / Edit): edit runtime files directly — no .md writes until Accept logic."
         phase == WorkshopProjectPhase.LOGIC_REVIEW ->
             "Workshop content policy (Logic review / Edit): edit runtime files directly — no .md writes until Accept logic."
         phase == WorkshopProjectPhase.UPDATE && chip == WorkshopEidosMode.CHAT ->
@@ -1251,7 +1259,7 @@ class EidosApiClient(
         phase == WorkshopProjectPhase.UPDATE && chip == WorkshopEidosMode.PLAN ->
             "Workshop content policy (Update / Plan): .md spec files only — runtime edits in Edit mode."
         mode == WorkshopEidosMode.BUILD_PLAN && phase == WorkshopProjectPhase.UPDATE ->
-            "Workshop content policy (Update / Build plan): runtime files only — read IMPLEMENTATION_PLAN.md; do not write .md."
+            "Workshop content policy (Update / Build plan): build-run — runtime + ${PanelPlatformSpec.IMPLEMENTATION_PLAN_MD} phase markers; direct disk; Auto-Continue across plan phases."
         phase == WorkshopProjectPhase.UPDATE ->
             "Workshop content policy (Update / Edit): runtime writes in Edit; read any spec .md (incl. IMPLEMENTATION_PLAN.md); spec writes on Accept update only."
         chip == WorkshopEidosMode.CHAT ->
@@ -1279,13 +1287,8 @@ class EidosApiClient(
         name: String,
         effectiveToolDefinitions: List<EidosToolDefinition>,
         kimiFormulaTools: KimiFormulaToolService?,
-        kimiFormulaExcludeUris: Set<String>,
     ): Boolean {
-        if (kimiFormulaTools?.isFormulaTool(name) == true) {
-            val uri = kimiFormulaTools.formulaUriForTool(name)
-            if (uri != null && uri in kimiFormulaExcludeUris) return false
-            return true
-        }
+        if (kimiFormulaTools?.isFormulaTool(name) == true) return true
         return effectiveToolDefinitions.any { it.name == name }
     }
 
@@ -1355,64 +1358,8 @@ class EidosApiClient(
         )
     }
 
-    /**
-     * Archives final-turn provider reasoning linked to the persisted assistant [chatMessageId].
-     * Intermediate tool-hop reasoning is logged during [send] without a chat row id.
-     */
-    suspend fun archiveLinkedProviderReasoningForChatMessage(
-        response: EidosResponse,
-        chatMessageId: Long,
-        currentSubfolderId: Long?,
-        currentParentFolderId: Long?,
-        currentScopeType: String?,
-    ) {
-        val provider = getProviderConfig().activeProvider
-        if (provider !in REASONING_LOG_PROVIDERS) return
-        val reasoning = response.persistableReasoningContent() ?: return
-        llmReasoningLogger.appendProviderThinking(
-            provider = provider,
-            scopeType = currentScopeType,
-            subfolderId = currentSubfolderId,
-            parentFolderId = currentParentFolderId,
-            turnId = null,
-            round = 0,
-            phaseLabel = "chat_reply",
-            reasoningContent = reasoning,
-            toolNames = emptyList(),
-            chatMessageId = chatMessageId,
-        )
-    }
-
-    private suspend fun persistProviderReasoningIfPresent(
-        activeProvider: String,
-        response: EidosResponse,
-        turnId: String,
-        round: Int,
-        phase: EidosRequestPhase,
-        currentSubfolderId: Long?,
-        currentParentFolderId: Long?,
-        currentScopeType: String?,
-    ) {
-        if (activeProvider !in REASONING_LOG_PROVIDERS) return
-        // Final assistant turn is archived from the chat write path with chatMessageId.
-        if (response.toolCalls.isEmpty()) return
-        val reasoning = response.persistableReasoningContent() ?: return
-        llmReasoningLogger.appendProviderThinking(
-            provider = activeProvider,
-            scopeType = currentScopeType,
-            subfolderId = currentSubfolderId,
-            parentFolderId = currentParentFolderId,
-            turnId = turnId,
-            round = round,
-            phaseLabel = phase.name.lowercase(),
-            reasoningContent = reasoning,
-            toolNames = response.toolCalls.map { it.name },
-        )
-    }
-
     private companion object {
         const val WORKSHOP_CHAT_MAX_TOOL_ROUNDS = 2
-        val REASONING_LOG_PROVIDERS = setOf("kimi", "openai", "xai")
     }
 
     private fun buildTracedRequest(
@@ -1425,7 +1372,6 @@ class EidosApiClient(
         promptCacheKey: String?,
         phase: EidosRequestPhase,
         streamListener: EidosStreamListener?,
-        kimiFormulaExcludeUris: Set<String>,
     ): EidosRequest = EidosRequest(
         systemPrompt = systemPrompt,
         conversationHistory = conversationHistory,
@@ -1435,7 +1381,6 @@ class EidosApiClient(
         promptCacheKey = promptCacheKey,
         phase = phase,
         streamListener = streamListener,
-        kimiFormulaExcludeUris = kimiFormulaExcludeUris,
         onProviderExchange = traceRecorder?.let { recorder ->
             { body, response ->
                 recorder.recordExchange(phase, body, response)

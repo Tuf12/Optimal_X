@@ -10,20 +10,15 @@ This file describes how Eidos **continuity and context** work: which system fold
 
 ---
 
-## Navigation, chat scope, and reasoning (don’t conflate folders)
+## Navigation and chat scope
 
 **Surfaces (top → bottom):**
 
-1. **Main folder list** — User parent folders plus visible system parents (see [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt): **Eidos Chats**, **Quick Notes**, **Eidos Reasoning** appear here alongside non-system folders).
-2. **Inside a user parent folder** — **Subfolder list** (user subfolders + system **Chats** + system **Reasoning** + **Memory Cache**, etc.).
+1. **Main folder list** — User parent folders plus visible system parents (see [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt): **Quick Notes** and **Panel Workshop** appear here alongside non-system folders).
+2. **Inside a user parent folder** — **Subfolder list** (user subfolders + hidden system **Chats** + **Memory Cache**, etc.).
 3. **Inside a user subfolder** — **Editor** (panels + note). Opening chat from here uses **subfolder** conversation scope.
 
-**Conversations vs reasoning:**
-
-| Role | System locations |
-|------|------------------|
-| **Saved chat threads** (`scopeType` general / parent / subfolder) | **Eidos Chats** (general) → per-parent **Chats** system subfolder → subfolder-scoped lists from editor. Detail: [CHAT_UI.md](../architecture/CHAT_UI.md), [CONVERSATION_DIRECTORY.md](../architecture/CONVERSATION_DIRECTORY.md). |
-| **AgentByte reasoning traces** (`ABR1|` lines) | **Eidos Reasoning** (general / no parent) → dated notes under that parent; **Reasoning** system subfolder under each user parent for parent- or subfolder-derived scope. Implementation: [AgentByteReasoningLogger.kt](../../src/main/java/com/example/optimalx/data/eidos/agentbyte/AgentByteReasoningLogger.kt). |
+**Saved chat threads** (`scopeType` general / parent / subfolder) live in the chat UI and `chat_messages` table — not in a browsable Reasoning folder. Provider thinking for troubleshooting is stored on each assistant `ChatMessage` (`assistantReasoningContent`) and shown in the collapsible **Reasoning** section on chat bubbles. Detail: [CHAT_UI.md](../architecture/CHAT_UI.md), [CONVERSATION_DIRECTORY.md](../architecture/CONVERSATION_DIRECTORY.md).
 
 **Chat scope nuance:** On the **subfolder list** screen (inside a parent, before opening the editor), new chat still uses **parent** scope until the user opens the editor for a specific subfolder — see scope table in [CHAT_UI.md](../architecture/CHAT_UI.md).
 
@@ -41,10 +36,9 @@ Created in [DatabaseSeed.kt](../../src/main/java/com/example/optimalx/data/db/Da
 | Eidos Daily | Daily Memory (dated subfolder + note per day) |
 | Eidos Memory | Long-Term Memory (one or more notes under the parent) |
 | Eidos Index | **App-wide Tag & Hint** index storage (not inside Journal) |
-| Eidos Reasoning | AgentByte reasoning artifacts |
 | Quick Notes | Quick / voice capture |
 
-**UI:** [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt) exposes **Eidos Chats**, **Quick Notes**, and **Eidos Reasoning** on the main list. [DatabaseSeed.kt](../../src/main/java/com/example/optimalx/data/db/DatabaseSeed.kt) comments mention Chats + Quick Notes; Reasoning is included in the same DAO filter. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Index**, and **Eidos Memory** are **menu-only** (Eidos section), not mixed into the main grid.
+**UI:** [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt) exposes **Quick Notes** and **Panel Workshop** on the main list. Legacy **Eidos Chats** / **Eidos Reasoning** parent rows may still exist in the DB but are hidden from folder UI. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Index**, and **Eidos Memory** are **menu-only** (Eidos section), not mixed into the main grid.
 
 ---
 

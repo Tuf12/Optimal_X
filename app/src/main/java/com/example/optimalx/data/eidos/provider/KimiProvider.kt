@@ -93,7 +93,7 @@ class KimiProvider(
 
     private fun buildAllowedToolNames(request: EidosRequest): Set<String> {
         val names = request.toolDefinitions.map { it.name }.toMutableSet()
-        formulaToolService.formulaToolSchemas(request.kimiFormulaExcludeUris).forEach { tool ->
+        formulaToolService.formulaToolSchemas().forEach { tool ->
             tool["function"]?.jsonObject
                 ?.get("name")
                 ?.jsonPrimitive
@@ -105,7 +105,7 @@ class KimiProvider(
     }
 
     private fun buildTools(request: EidosRequest): kotlinx.serialization.json.JsonArray {
-        val formulaTools = formulaToolService.formulaToolSchemas(request.kimiFormulaExcludeUris)
+        val formulaTools = formulaToolService.formulaToolSchemas()
         val localTools = request.toolDefinitions.map { def ->
             buildJsonObject {
                 put("type", JsonPrimitive("function"))

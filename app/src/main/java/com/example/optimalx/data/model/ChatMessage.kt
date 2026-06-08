@@ -15,5 +15,7 @@ data class ChatMessage(
      * Persisted for Moonshot preserved-thinking replay; optional collapsible UI in chat.
      */
     val assistantReasoningContent: String? = null,
+    /** Auto-Continue synthetic user row (LLM handoff resend). */
+    val isSyntheticHandoff: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
 )

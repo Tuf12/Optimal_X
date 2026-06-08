@@ -254,7 +254,7 @@ Pinned row (shortcuts, not in grid)
     ├── Panel Workshop / Quick Notes → system parents (not in user grid)
 
 Eidos menu-only parents: Journal, Log, Daily, Memory, Index
-Hidden legacy (DB only): Eidos Chats, Eidos Reasoning, per-parent Chats subfolders
+Hidden legacy (DB only): Eidos Chats, Eidos Reasoning (no longer written), per-parent Chats/Reasoning subfolders
 
 HomePin → parent | subfolder | panel (shortcut targets)
 
