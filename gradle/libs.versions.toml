@@ -1,7 +1,7 @@
 [versions]
 agp = "8.10.0"
-kotlin = "2.0.21"
-ksp = "2.0.21-1.0.28"
+kotlin = "2.3.0" # LiteRT-LM litertlm-android requires Kotlin 2.3 metadata
+ksp = "2.3.0"
 coreKtx = "1.18.0"
 junit = "4.13.2"
 junitVersion = "1.3.0"
@@ -9,20 +9,19 @@ espressoCore = "3.7.0"
 appcompat = "1.7.1"
 material = "1.13.0"
 composeBom = "2024.12.01"
-room = "2.6.1"
+room = "2.7.2"
 datastore = "1.1.1"
 navigationCompose = "2.8.4"
 securityCrypto = "1.1.0-alpha06"
 lifecycleRuntimeKtx = "2.8.7"
 activityCompose = "1.9.3"
-richEditor = "1.0.0-rc06"
+richEditor = "1.0.0-rc13" # rc14+ needs Kotlin 2.3; round-trip gate: NoteContentCodecRoundTripTest # Note markdown round-trip validated in NoteContentCodecRoundTripTest (Phase 1)
 okhttp = "4.12.0"
 kotlinxSerializationJson = "1.7.3"
 pdfboxAndroid = "2.0.27.0"
 mediapipeTasksText = "0.10.32"
 workManager = "2.9.1"
-ktor = "3.0.3"
-zxing = "3.5.3"
+litertLm = "0.13.1" # requires Kotlin 2.3+ (see kotlin version)
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -68,20 +67,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 mediapipe-tasks-text = { group = "com.google.mediapipe", name = "tasks-text", version.ref = "mediapipeTasksText" }
 work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workManager" }
-
-# Ktor server (OptimalX Link, see app/docs/architecture/OPTIMALX_LINK.md)
-ktor-server-core = { group = "io.ktor", name = "ktor-server-core", version.ref = "ktor" }
-ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio", version.ref = "ktor" }
-ktor-server-auth = { group = "io.ktor", name = "ktor-server-auth", version.ref = "ktor" }
-ktor-server-status-pages = { group = "io.ktor", name = "ktor-server-status-pages", version.ref = "ktor" }
-ktor-server-content-negotiation = { group = "io.ktor", name = "ktor-server-content-negotiation", version.ref = "ktor" }
-ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
-ktor-server-test-host = { group = "io.ktor", name = "ktor-server-test-host", version.ref = "ktor" }
-ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor" }
-
-# ZXing core — pure-Java QR encoder used by the OptimalX Link screen to render
-# the pairing QR. We only need the encode side, no Android-specific module.
-zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertLm" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

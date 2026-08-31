@@ -4,11 +4,17 @@
 
     <cloud-backup>
         <include domain="database" path="optimalx.db" />
+        <include domain="database" path="optimalx.db-wal" />
+        <include domain="database" path="optimalx.db-shm" />
+
         <include domain="file" path="optimalx_files/" />
         <include domain="file" path="workshop/" />
+        <include domain="file" path="panel_releases/" />
         <include domain="file" path="datastore/" />
 
+        <include domain="sharedpref" path="." />
         <exclude domain="sharedpref" path="optimalx_api_keys.xml" />
+
         <exclude domain="file" path="models/" />
 
         <exclude domain="cache" path="." />
@@ -17,11 +23,17 @@
 
     <device-transfer>
         <include domain="database" path="optimalx.db" />
+        <include domain="database" path="optimalx.db-wal" />
+        <include domain="database" path="optimalx.db-shm" />
+
         <include domain="file" path="optimalx_files/" />
         <include domain="file" path="workshop/" />
+        <include domain="file" path="panel_releases/" />
         <include domain="file" path="datastore/" />
 
+        <include domain="sharedpref" path="." />
         <exclude domain="sharedpref" path="optimalx_api_keys.xml" />
+
         <exclude domain="file" path="models/" />
 
         <exclude domain="cache" path="." />

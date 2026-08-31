@@ -14,11 +14,6 @@
 .cxx
 local.properties
 
-# OptimalX Link desktop client — Python venv + build artifacts
-desktop/.venv/
-desktop/build/
-desktop/dist/
-desktop/**/__pycache__/
-desktop/**/*.egg-info/
-desktop/.pytest_cache/
-desktop/.ruff_cache/
+# Local Gradle/Kotlin caches (not project source)
+.gradle-home/
+.kotlin/
