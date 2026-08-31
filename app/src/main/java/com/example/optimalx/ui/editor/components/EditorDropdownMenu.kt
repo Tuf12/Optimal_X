@@ -15,15 +15,13 @@ fun EditorDropdownMenu(
     isViewMode: Boolean,
     isAiLocked: Boolean,
     isAiBlind: Boolean,
-    hasNoteSummary: Boolean = false,
-    summaryGenerating: Boolean = false,
     onDismiss: () -> Unit,
-    onToggleStrikethrough: () -> Unit,
     onToggleViewMode: () -> Unit,
     onToggleAiLock: () -> Unit,
     onToggleAiBlind: () -> Unit,
-    onGenerateSummary: () -> Unit = {},
-    onExport: () -> Unit,
+    onExportPdf: () -> Unit,
+    onExportMarkdown: () -> Unit,
+    onSharePdf: () -> Unit,
     onShare: () -> Unit,
 ) {
     val colors = LocalOptimalXColors.current
@@ -33,11 +31,6 @@ fun EditorDropdownMenu(
         onDismissRequest = onDismiss,
         containerColor = colors.surface2,
     ) {
-        DropdownMenuItem(
-            text = { MenuItem("Strikethrough") },
-            onClick = { onDismiss(); onToggleStrikethrough() },
-            colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
-        )
         DropdownMenuItem(
             text = { MenuItem(if (isViewMode) "Switch to Edit mode" else "Switch to View mode") },
             onClick = { onDismiss(); onToggleViewMode() },
@@ -64,34 +57,30 @@ fun EditorDropdownMenu(
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )
         DropdownMenuItem(
-            text = {
-                MenuItem(
-                    text = when {
-                        summaryGenerating -> "Generating summary…"
-                        hasNoteSummary -> "Regenerate Eidos summary"
-                        else -> "Generate Eidos summary"
-                    },
-                    color = if (summaryGenerating) colors.textDim else colors.textPrimary,
-                )
-            },
-            onClick = {
-                if (!summaryGenerating) {
-                    onDismiss()
-                    onGenerateSummary()
-                }
-            },
-            enabled = !summaryGenerating && !isAiBlind,
+            text = { MenuItem("Export as PDF") },
+            onClick = { onDismiss(); onExportPdf() },
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )
         DropdownMenuItem(
-            text = { MenuItem("Export note") },
-            onClick = { onDismiss(); onExport() },
+            text = { MenuItem("Share as PDF") },
+            onClick = { onDismiss(); onSharePdf() },
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )
         DropdownMenuItem(
-            text = { MenuItem("Share note") },
+            text = { MenuItem("Export as Markdown") },
+            onClick = { onDismiss(); onExportMarkdown() },
+            colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
+        )
+        DropdownMenuItem(
+            text = { MenuItem("Share rendered note") },
             onClick = { onDismiss(); onShare() },
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
+        )
+        DropdownMenuItem(
+            text = { MenuItem("Word / ODT export — desktop only", color = colors.textDim) },
+            onClick = { onDismiss() },
+            enabled = false,
+            colors = MenuDefaults.itemColors(textColor = colors.textDim),
         )
     }
 }

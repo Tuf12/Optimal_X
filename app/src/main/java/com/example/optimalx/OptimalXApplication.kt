@@ -2,20 +2,22 @@ package com.example.optimalx
 
 import android.app.Application
 import android.util.Log
+import com.example.optimalx.data.backup.AutoBackupNotifier
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.db.seedDatabaseIfNeeded
-import com.example.optimalx.data.eidos.EidosIndexFeature
-import com.example.optimalx.data.eidos.AppIndexMaterializer
-import com.example.optimalx.data.eidos.AppIndexSyncService
+import com.example.optimalx.data.preferences.DumpEditPreferences
+import com.example.optimalx.data.panel.PanelReleaseStore
 import com.example.optimalx.data.eidos.ContentSummaryService
 import com.example.optimalx.data.eidos.EidosApiClient
+import com.example.optimalx.data.eidos.EidosNetworkMonitor
+import com.example.optimalx.data.eidos.EidosLogWriter
+import com.example.optimalx.data.eidos.EidosSystemFeatureFlags
 import com.example.optimalx.data.eidos.MemoryRolloverScheduler
 import com.example.optimalx.data.eidos.MemoryRolloverService
 import com.example.optimalx.data.eidos.PanelBridgeRegistry
 import com.example.optimalx.data.eidos.RoomToolExecutor
-import com.example.optimalx.data.eidos.agentbyte.TagHintNotifierAndroid
-import com.example.optimalx.data.eidos.agentbyte.TagHintIndexingService
 import androidx.datastore.preferences.core.edit
+import com.example.optimalx.data.litert.applyLitertEngineWarmState
 import com.example.optimalx.data.preferences.ApiKeyNames
 import com.example.optimalx.data.preferences.SettingsDefaults
 import com.example.optimalx.data.preferences.SettingsKeys
@@ -24,8 +26,12 @@ import com.example.optimalx.data.preferences.settingsDataStore
 import com.example.optimalx.data.repository.FolderRepository
 import com.example.optimalx.data.repository.HomePinRepository
 import com.example.optimalx.data.repository.PanelStateRepository
+import com.example.optimalx.voice.NoteReadAloudSessionBridge
+import com.example.optimalx.voice.ReadAloudSession
 import com.example.optimalx.voice.WakeWordDetector
 import com.example.optimalx.data.eidos.FileTextExtractor
+import com.example.optimalx.data.litert.LitertLmEngineHolder
+import com.example.optimalx.data.litert.LitertLmWarmPoolLifecycle
 import com.example.optimalx.data.semantic.EmbeddingEngine
 import com.example.optimalx.data.semantic.SemanticChunkBuilder
 import com.example.optimalx.data.semantic.SemanticIndexer
@@ -48,6 +54,7 @@ class OptimalXApplication : Application() {
 
     val database get() = AppDatabase.getInstance(this)
     val embeddingEngine by lazy { EmbeddingEngine(this) }
+    val litertLmEngineHolder by lazy { LitertLmEngineHolder(this) }
     val semanticIndexer by lazy { SemanticIndexer(database, embeddingEngine) }
     val semanticChunkBuilder by lazy {
         SemanticChunkBuilder(
@@ -67,23 +74,20 @@ class OptimalXApplication : Application() {
         )
     }
     val semanticSyncService by lazy { SemanticSyncService(semanticMaterializer, appScope) }
-
-    // ON HOLD — Eidos Index (tag_hint_lines). Sync/materializer inactive while EidosIndexFeature is off.
-    private val appIndexMaterializer by lazy { AppIndexMaterializer(database, database.tagHintLineDao()) }
-    val appIndexSyncService by lazy { AppIndexSyncService(appIndexMaterializer, appScope) }
     val homePinRepository by lazy { HomePinRepository(database) }
     val panelStateRepository by lazy { PanelStateRepository(database) }
     val folderRepository by lazy {
         FolderRepository(
             database,
             semanticIndexer,
-            appIndexSyncService,
             semanticSyncService,
             semanticChunkBuilder,
             homePinRepository,
             panelStateRepository,
         )
     }
+    val readAloudSession by lazy { ReadAloudSession(this) }
+
     val wakeWordDetector by lazy { WakeWordDetector(this) }
     val panelBridgeRegistry by lazy { PanelBridgeRegistry() }
 
@@ -98,9 +102,11 @@ class OptimalXApplication : Application() {
     fun notifyWidgetChatSessionReset() {
         widgetChatSessionResetBus.tryEmit(Unit)
     }
-    val tagHintNotifier by lazy {
-        if (EidosIndexFeature.isActive) TagHintNotifierAndroid(this) else com.example.optimalx.data.eidos.agentbyte.TagHintNotifier.NoOp
+
+    val eidosNetworkMonitor by lazy {
+        EidosNetworkMonitor(this).also { it.start() }
     }
+
     val eidosApiClient by lazy {
         EidosApiClient(
             context = this,
@@ -111,17 +117,26 @@ class OptimalXApplication : Application() {
                 embeddingEngine = embeddingEngine,
                 semanticIndexer = semanticIndexer,
                 folderRepository = folderRepository,
-                tagHintNotifier = tagHintNotifier,
                 panelBridgeRegistry = panelBridgeRegistry,
+                semanticSync = semanticSyncService,
             ),
             panelBridgeRegistry = panelBridgeRegistry,
+            networkMonitor = eidosNetworkMonitor,
+        )
+    }
+    val eidosLogWriter by lazy {
+        EidosLogWriter(
+            db = database,
+            semanticIndexer = semanticIndexer,
+            semanticChunkBuilder = semanticChunkBuilder,
         )
     }
     val contentSummaryService by lazy {
         ContentSummaryService(
-            context = this,
             database = database,
             eidosApiClient = eidosApiClient,
+            semanticChunkBuilder = semanticChunkBuilder,
+            semanticIndexer = semanticIndexer,
         )
     }
     val memoryRolloverService by lazy {
@@ -131,32 +146,32 @@ class OptimalXApplication : Application() {
             eidosApiClient = eidosApiClient,
             embeddingEngine = embeddingEngine,
             semanticIndexer = semanticIndexer,
-            appIndexSync = appIndexSyncService,
-        )
-    }
-    // ON HOLD — TagHintIndexingService (background index enrichment). Not started while index is off.
-    val tagHintIndexingService by lazy {
-        TagHintIndexingService.fromApiClient(
-            db = database,
-            apiClient = eidosApiClient,
-            scope = appScope,
         )
     }
 
     override fun onCreate() {
         super.onCreate()
-        MemoryRolloverScheduler.ensureScheduled(this)
+        NoteReadAloudSessionBridge.register(readAloudSession)
+        AutoBackupNotifier.register(this)
+        LitertLmWarmPoolLifecycle.register(this)
+        if (EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+            MemoryRolloverScheduler.ensureScheduled(this)
+        } else {
+            MemoryRolloverScheduler.cancelScheduled(this)
+        }
         appScope.launch {
             migrateLegacySttPreferences()
             seedDatabaseIfNeeded(this@OptimalXApplication, database)
-            // ON HOLD — index bootstrap on startup (EidosIndexFeature). Use semantic embeddings instead.
-            if (EidosIndexFeature.isActive) {
-                appIndexSyncService.requestSync("startup_seed")
-            }
+            DumpEditPreferences.ensureSyncMetadata(this@OptimalXApplication)
+            PanelReleaseStore.ensureAllWorkshopReleasesFromSources(this@OptimalXApplication, database)
             // Load/embed probe before background semantic bootstrap — TextEmbedder JNI is not thread-safe.
             val diagnostics = embeddingEngine.diagnostics()
             Log.i("OptimalX.Semantic", "Embedding diagnostics: ${diagnostics.toLogMessage()}")
-            semanticSyncService.requestSync("startup_seed")
+            if (database.semanticChunkDao().count() == 0) {
+                semanticSyncService.requestSync("startup_seed")
+            } else {
+                Log.i("OptimalX.Semantic", "Semantic index present; skipping startup bootstrap")
+            }
         }
     }
 
@@ -189,17 +204,6 @@ class OptimalXApplication : Application() {
             }
             Log.i("OptimalX.Settings", "Whisper mic disabled — no OpenAI API key saved")
         }
-    }
-
-    // ON HOLD — manual index bootstrap for development when EidosIndexFeature is re-enabled.
-    fun bootstrapTagHintIndex() {
-        if (!EidosIndexFeature.isActive) {
-            Log.i("OptimalX.TagHintIndex", "Eidos Index on hold; bootstrap skipped")
-            return
-        }
-        appScope.launch {
-            val count = appIndexSyncService.syncNow("manual_bootstrap").upsertedCount
-            Log.i("OptimalX.TagHintIndex", "Bootstrap materialized $count index rows")
-        }
+        applyLitertEngineWarmState(this@OptimalXApplication)
     }
 }

@@ -18,11 +18,12 @@ fun DumpEditDropdownMenu(
     isAiBlind: Boolean,
     undoClearAvailable: Boolean,
     onDismiss: () -> Unit,
-    onToggleStrikethrough: () -> Unit,
     onToggleViewMode: () -> Unit,
     onToggleAiLock: () -> Unit,
     onToggleAiBlind: () -> Unit,
-    onExport: () -> Unit,
+    onExportPdf: () -> Unit,
+    onExportMarkdown: () -> Unit,
+    onSharePdf: () -> Unit,
     onShare: () -> Unit,
     onClear: () -> Unit,
     onUndoClear: () -> Unit,
@@ -35,11 +36,6 @@ fun DumpEditDropdownMenu(
         onDismissRequest = onDismiss,
         containerColor = colors.surface2,
     ) {
-        DropdownMenuItem(
-            text = { MenuItem("Strikethrough") },
-            onClick = { onDismiss(); onToggleStrikethrough() },
-            colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
-        )
         DropdownMenuItem(
             text = { MenuItem(if (isViewMode) "Switch to Edit mode" else "Switch to View mode") },
             onClick = { onDismiss(); onToggleViewMode() },
@@ -66,12 +62,22 @@ fun DumpEditDropdownMenu(
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )
         DropdownMenuItem(
-            text = { MenuItem("Export buffer") },
-            onClick = { onDismiss(); onExport() },
+            text = { MenuItem("Export as PDF") },
+            onClick = { onDismiss(); onExportPdf() },
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )
         DropdownMenuItem(
-            text = { MenuItem("Share buffer") },
+            text = { MenuItem("Share as PDF") },
+            onClick = { onDismiss(); onSharePdf() },
+            colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
+        )
+        DropdownMenuItem(
+            text = { MenuItem("Export as Markdown") },
+            onClick = { onDismiss(); onExportMarkdown() },
+            colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
+        )
+        DropdownMenuItem(
+            text = { MenuItem("Share rendered buffer") },
             onClick = { onDismiss(); onShare() },
             colors = MenuDefaults.itemColors(textColor = colors.textPrimary),
         )

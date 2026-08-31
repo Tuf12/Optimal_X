@@ -34,4 +34,21 @@ class TtsTextSanitizerTest {
         assertFalse(spoken.contains("example.com"))
         assertFalse(spoken.contains("("))
     }
+
+    @Test
+    fun speaksInlineBacktickTextWithoutSayingCode() {
+        val spoken = stripMarkdownForTts("Try the `Settings` menu, then tap `Sync now`.")
+
+        assertTrue(spoken.contains("Try the Settings menu, then tap Sync now."))
+        assertFalse(spoken.contains("code"))
+    }
+
+    @Test
+    fun speaksItalicAndBoldWithoutMarkupOrCode() {
+        val spoken = stripMarkdownForTts("**Short answer:** use *this option* for quick edits.")
+
+        assertTrue(spoken.contains("Short answer: use this option for quick edits."))
+        assertFalse(spoken.contains("code"))
+        assertFalse(spoken.contains("*"))
+    }
 }

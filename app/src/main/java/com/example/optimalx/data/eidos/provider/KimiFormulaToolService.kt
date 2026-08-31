@@ -1,5 +1,8 @@
 package com.example.optimalx.data.eidos.provider
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -26,22 +29,14 @@ const val KIMI_FORMULA_WEB_SEARCH_URI = "moonshot/web-search:latest"
 /** Moonshot Formula URI for URL → Markdown page extraction. */
 const val KIMI_FORMULA_FETCH_URI = "moonshot/fetch:latest"
 
-/** Moonshot Formula URI for unit/currency conversion. */
-const val KIMI_FORMULA_CONVERT_URI = "moonshot/convert:latest"
-
-/** Moonshot Formula URI for date/time arithmetic and formatting. */
-const val KIMI_FORMULA_DATE_URI = "moonshot/date:latest"
-
-/** Moonshot Formula URI for Excel/CSV structural analysis. */
-const val KIMI_FORMULA_EXCEL_URI = "moonshot/excel:latest"
-
-
 /**
  * Loads and executes Kimi K2.6 official Formula tools via the Moonshot Formula API.
  *
- * Shipped formulas: [KIMI_FORMULA_WEB_SEARCH_URI] (`web_search`), [KIMI_FORMULA_FETCH_URI] (`fetch`),
- * [KIMI_FORMULA_CONVERT_URI] (`convert`), [KIMI_FORMULA_DATE_URI] (`date`), [KIMI_FORMULA_EXCEL_URI] (`excel`),
- * Thinking stays enabled; unlike builtin `$web_search`, Formula tools are client-executed.
+ * Default set is deliberately lean — only [KIMI_FORMULA_WEB_SEARCH_URI] (`web_search`) and
+ * [KIMI_FORMULA_FETCH_URI] (`fetch`) load on every Kimi send. Other Moonshot Formula tools
+ * (convert/date/excel/etc.) are intentionally not attached; add them back per-scope only if a
+ * scope actually needs them. Thinking stays enabled; unlike builtin `$web_search`, Formula tools
+ * are client-executed.
  *
  * @see <a href="https://platform.kimi.ai/docs/guide/use-official-tools">Kimi official tools</a>
  */
@@ -64,16 +59,25 @@ class KimiFormulaToolService(
      * Widget/cold-start sends often hit DNS before the network stack is warm — retry instead of
      * proceeding with an empty tool list while the system prompt still advertises web_search/fetch.
      */
-    suspend fun ensureLoadedWithRetry(maxAttempts: Int = 4): Boolean {
+    suspend fun ensureLoadedWithRetry(
+        maxAttempts: Int = 2,
+        awaitValidatedInternet: (suspend () -> Boolean)? = null,
+    ): Boolean {
         if (cachedToolSchemas.isNotEmpty()) return true
         return loadMutex.withLock {
             if (cachedToolSchemas.isNotEmpty()) return true
+            if (awaitValidatedInternet != null && !awaitValidatedInternet()) {
+                return@withLock false
+            }
             repeat(maxAttempts) { attempt ->
                 try {
                     loadSchemasFromApi()
                     if (cachedToolSchemas.isNotEmpty()) return@withLock true
                 } catch (e: Throwable) {
                     if (!isTransientLoadFailure(e) || attempt == maxAttempts - 1) return@withLock false
+                    if (awaitValidatedInternet != null && !awaitValidatedInternet()) {
+                        return@withLock false
+                    }
                     delay((1_000L * (attempt + 1)).coerceAtMost(4_000L))
                 }
             }
@@ -81,15 +85,21 @@ class KimiFormulaToolService(
         }
     }
 
-    private suspend fun loadSchemasFromApi() {
+    private suspend fun loadSchemasFromApi() = coroutineScope {
+        // Formula schema GETs are independent — fetch them concurrently so cold-start latency is
+        // one round-trip, not one per URI. Order of [KIMI_FORMULA_URIS] is preserved for stable output.
+        val responses = KIMI_FORMULA_URIS.map { uri ->
+            async {
+                uri to getJson(
+                    client = client,
+                    url = "$MOONSHOT_API_BASE/formulas/$uri/tools",
+                    bearerToken = apiKey,
+                )
+            }
+        }.awaitAll()
         val schemas = mutableListOf<JsonObject>()
         val nameToUri = mutableMapOf<String, String>()
-        for (uri in KIMI_FORMULA_URIS) {
-            val responseText = getJson(
-                client = client,
-                url = "$MOONSHOT_API_BASE/formulas/$uri/tools",
-                bearerToken = apiKey,
-            )
+        for ((uri, responseText) in responses) {
             val root = json.parseToJsonElement(responseText).jsonObject
             root["tools"]?.jsonArray.orEmpty().forEach { element ->
                 val tool = element.jsonObject
@@ -100,7 +110,7 @@ class KimiFormulaToolService(
                     error("Kimi formula tool name conflict: $name")
                 }
                 nameToUri[name] = uri
-                schemas += tool
+                schemas += patchFormulaToolDescription(tool)
             }
         }
         cachedToolSchemas = schemas
@@ -182,12 +192,18 @@ class KimiFormulaToolService(
     }
 
     companion object {
+        /** Lean default Formula set loaded on every Kimi send. */
         val KIMI_FORMULA_URIS: List<String> = listOf(
             KIMI_FORMULA_WEB_SEARCH_URI,
             KIMI_FORMULA_FETCH_URI,
-            KIMI_FORMULA_CONVERT_URI,
-            KIMI_FORMULA_DATE_URI,
-            KIMI_FORMULA_EXCEL_URI,
+        )
+
+        /**
+         * OptimalX-owned Formula tool prose. Moonshot schema descriptions are verbose and can drift;
+         * we replace them at load time before caching. Execution still uses Moonshot fibers unchanged.
+         */
+        val FORMULA_TOOL_DESCRIPTION_OVERRIDES: Map<String, String> = mapOf(
+            "fetch" to "Fetch a URL and return page content as Markdown. Use after web_search to read a specific link.",
         )
 
         @Volatile
@@ -195,6 +211,41 @@ class KimiFormulaToolService(
 
         @Volatile
         private var cachedToolNameToUri: Map<String, String> = emptyMap()
+    }
+}
+
+/**
+ * Replaces Moonshot Formula tool descriptions with OptimalX-owned prose when configured.
+ */
+internal fun patchFormulaToolDescription(
+    tool: JsonObject,
+    overrides: Map<String, String> = KimiFormulaToolService.FORMULA_TOOL_DESCRIPTION_OVERRIDES,
+): JsonObject {
+    val func = tool["function"]?.jsonObject ?: return tool
+    val name = func["name"]?.jsonPrimitive?.contentOrNull ?: return tool
+    val overrideDescription = overrides[name] ?: return tool
+    return buildJsonObject {
+        tool.forEach { (key, value) ->
+            if (key == "function") {
+                put(
+                    key,
+                    buildJsonObject {
+                        func.forEach { (funcKey, funcValue) ->
+                            put(
+                                funcKey,
+                                if (funcKey == "description") {
+                                    JsonPrimitive(overrideDescription)
+                                } else {
+                                    funcValue
+                                },
+                            )
+                        }
+                    },
+                )
+            } else {
+                put(key, value)
+            }
+        }
     }
 }
 

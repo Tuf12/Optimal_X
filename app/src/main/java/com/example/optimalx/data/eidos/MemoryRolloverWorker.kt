@@ -44,7 +44,11 @@ class MemoryRolloverWorker(
                 MemoryRolloverScheduler.LOG_TAG,
                 "Rollover finished: status=${result.status} dailyCleared=${result.dailyCleared} message=${result.message}",
             )
-            MemoryRolloverScheduler.scheduleFollowingMidnight(applicationContext)
+            if (EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+                MemoryRolloverScheduler.scheduleFollowingMidnight(applicationContext)
+            } else {
+                MemoryRolloverScheduler.cancelScheduled(applicationContext)
+            }
             Result.success()
         } catch (t: Throwable) {
             Log.e(MemoryRolloverScheduler.LOG_TAG, "Rollover worker threw; WorkManager will retry", t)

@@ -93,4 +93,25 @@ class SemanticMaterializerTest {
         assertTrue(chunks.isNotEmpty())
         assertTrue(chunks.all { it.objectType == SemanticObjectType.NOTE && it.objectId == subfolderId })
     }
+
+    @Test
+    fun indexNote_includesWorkshopProjectSummaryChunk() = runBlocking {
+        val parentId = db.parentFolderDao().insert(
+            ParentFolder(name = "Panels", sortOrder = 0, isSystemFolder = false),
+        )
+        val subfolderId = db.subfolderDao().insert(
+            Subfolder(
+                parentFolderId = parentId,
+                name = "Stroke panel",
+                sortOrder = 0,
+                projectSummary = "Interactive drawing panel with stylus pressure and eraser modes.",
+            ),
+        )
+
+        materializer.indexNote(subfolderId)
+
+        val chunks = db.semanticChunkDao().getAll()
+        assertTrue(chunks.any { it.chunkType == SemanticChunkBuilder.CHUNK_TYPE_PROJECT_SUMMARY })
+        assertTrue(chunks.any { it.chunkText.contains("stylus pressure", ignoreCase = true) })
+    }
 }

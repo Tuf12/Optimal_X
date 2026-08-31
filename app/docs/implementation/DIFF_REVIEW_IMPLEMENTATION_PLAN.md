@@ -148,7 +148,7 @@ All workshop write tools route through a single `applyOrPropose(...)` helper tha
 | 3b | `workshop_create_file` → `applyOrPropose` (create-form) | Build-mode: direct create; review-mode: `proposeWorkshopCreate` (diff from empty) |
 | 3c | `workshop_replace_string` → `applyOrPropose` | Computes `proposedContent` first by string replacement, then policy decides |
 | 3d | Tool result strings: `"Updated <fileName>"` for direct writes (unchanged); `"Proposal queued for review: <fileName>"` for review-mode | LLM sees same messaging it does today in build modes |
-| 3e | Note tools (`write_note` / `append_note` / `edit_note_section`) — **unchanged in this phase** | Note pipeline lands in a separate phase later |
+| 3e | Note tools — **shipped separately (2026-06)** | See **Note Diff Review** section below; catalog consolidated to `write_note` + `note_replace_string` |
 
 **Deliverable:** All workshop write tools converge on one policy + one applier. Build phases still feel as fast as today; review phases queue.
 
@@ -189,7 +189,7 @@ All workshop write tools route through a single `applyOrPropose(...)` helper tha
 |----|------|-------|
 | 6a | `WorkshopHistorySheet` (Modal bottom sheet) reachable from a History icon button on `WorkshopTopBar` (visible only when a file is open and not in preview mode). Lists checkpoints (newest first) with author badge (BASE / YOU / EIDOS / BUILD), label, timestamp, sequence, and per-row line-delta vs working copy. Tap a row to expand its diff inline; **Restore** writes the checkpoint blob back via `DirectWriteApplier` so a fresh `user`-authored `"Restored to seq N (<original label>)"` checkpoint is appended | `WorkshopEditorViewModel.checkpointsForCurrentFile` (flow from `contentCheckpointDao.observeForSource`) + `restoreCheckpoint(checkpointId)`; auto-reload reuses the existing `reloadOpenFileFromDisk()` path |
 | 6b | `WorkshopWriteRouter.resolveAutoAcceptAttribution(...)` switches the auto-accept author/label based on `phaseProvider()`: `DESIGN_BUILD` → `system` + `"Design build"`, `LOGIC_BUILD` → `system` + `"Logic build"`. All other auto-accept paths preserve the prior `eidos` author + caller label (or fall back to a default like `"Initial create"`). | Pre-build state is preserved automatically because `DirectWriteApplier` already snapshots the prior on-disk content as the sequence-0 baseline before writing the new content |
-| 6c | Note checkpoint history wired end-to-end. Added `SOURCE_TYPE_NOTE` constant. Promoted `WorkshopHistorySheet` → `ContentHistorySheet` under `ui/workshop/components/` (workshop file name → `sourceLabel`). `EditorViewModel` now exposes `noteCheckpoints: StateFlow<List<ContentCheckpoint>>` and a `restoreNoteCheckpoint(checkpointId)` that writes the blob back via `EditorRepository.saveNoteContent`, emits to `restoreContent`, and appends a `user`-authored `"Restored to seq N"` checkpoint. `EditorTopBar` shows a History icon (note page only); `EditorScreen` renders the shared sheet + a restore-feedback `AlertDialog`. | `snapshotNoteCheckpoint(...)` is called on every `onContentSave` (and from `undo`/`redo`); deduped by hash so identical saves don't churn. Pending-review for notes is still deferred (data layer is ready, but `write_note` / `append_note` still apply directly). |
+| 6c | Note checkpoint history wired end-to-end. … | `snapshotNoteCheckpoint(...)` deduped by hash. **Note Diff Review queue** shipped 2026-06 (see Note Diff Review section). |
 
 **Shared infrastructure introduced:** `ui/workshop/components/DiffBlock.kt` (extracted from `DiffReviewScreen`) and `ui/workshop/components/ContentHistorySheet.kt` (renamed from `WorkshopHistorySheet`, source-agnostic) — both the workshop file editor and the note editor render identical history + diff UI.
 
@@ -251,7 +251,19 @@ All workshop write tools route through a single `applyOrPropose(...)` helper tha
 1. **`call_panel_function`:** runs at runtime, no disk write — skip review pipeline entirely. *Confirmed: skip.*
 2. **`UPDATE` mode review scope:** review per section (specs/design/logic) or per file? *Tentative: per file; section scoping is enforced upstream by the existing Update section picker.*
 3. **Build-mode checkpoint cadence:** one checkpoint per tool call, or one per build turn? *Tentative: one per accepted set / one per kickoff turn — multiple writes in a single Eidos turn collapse to one checkpoint labelled by phase.*
-4. **Future note pipeline:** which note tools land first when notes are wired in? *Out of scope for this plan.*
+4. **Note pipeline:** shipped 2026-06 — markdown in DB, `NoteWriteRouter`, `SCOPE_SUBFOLDER` queue, shared `DiffReviewScreen`, editor + chat banners. See [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md).
+
+---
+
+## Note Diff Review — **shipped 2026-06**
+
+| Phase | Deliverable |
+|-------|-------------|
+| 0 | Editor sync: flush before Eidos send, reload after, guarded dispose |
+| 1 | Catalog: `write_note` (set-or-append) + `note_replace_string`; removed `append_note`, `edit_note_section` |
+| 2 | `NoteWriteRouter`, `DirectWriteApplier.applyNoteWrite`, `PendingChangeService.proposeNote`, `SCOPE_SUBFOLDER` |
+| 3 | Shared `DiffReviewScreen` / `DiffReviewViewModel` (`scopeType`); `note_diff_review` route; editor + Eidos chat badges; reload on accept |
+| 4 | Docs + `EidosSystemPromptLayers.NOTE_WRITE_RULES` |
 
 ---
 
@@ -293,5 +305,5 @@ All workshop write tools route through a single `applyOrPropose(...)` helper tha
 | 2026-05-26 | Initial plan combining DIFF_REVIEW spec with patch-style workshop tools |
 | 2026-05-26 | Narrowed scope: workshop only in v1; notes deferred. Broadened auto-accept to all build-phase writes. Added `WorkshopReviewPolicy` + `DirectWriteApplier`. Architecture `DIFF_REVIEW.md` flagged for rewrite after Phase 7. |
 | 2026-05-26 | Phases 0–5 shipped: schema + diff util, propose/accept pipeline, `workshop_replace_string`, tools routed through `WorkshopWriteRouter`, prompt updates, review UI (per-file accept/reject + accept all / reject all). |
-| 2026-05-26 | Phase 6 shipped: shared `ContentHistorySheet` reachable from workshop and note editors; restore via `CheckpointRepository`; build-mode auto-accept now produces `system`-authored `"Design build"` / `"Logic build"` checkpoints. Notes participate in the timeline (review queue still deferred). |
-| 2026-05-26 | Phase 7 shipped: `DIFF_REVIEW.md` rewritten to **Shipped**; `TOOL_FUNCTIONS.md` gained a Panel Workshop tools section; `PANEL_WORKSHOP_OVERHAUL_PLAN.md` Phase 10 expanded and marked ✅; extended `RoomToolExecutorWorkshopWriteTest` to cover the Phase 6b system-author behavior. |
+| 2026-05-26 | Phase 6 shipped: shared `ContentHistorySheet` reachable from workshop and note editors; restore via `CheckpointRepository`; build-mode auto-accept now produces `system`-authored `"Design build"` / `"Logic build"` checkpoints. Notes participate in the timeline; review queue landed 2026-06. |
+| 2026-06-20 | Note Diff Review shipped: `write_note` / `note_replace_string` through `NoteWriteRouter`; `SCOPE_SUBFOLDER` queue; `note_diff_review` route; docs + prompt layer `NOTE_WRITE_RULES`. |

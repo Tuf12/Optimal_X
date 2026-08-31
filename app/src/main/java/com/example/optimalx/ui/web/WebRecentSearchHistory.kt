@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Same key as [com.example.optimalx.ui.web.WebPanel] `WEB_RECENT_SEARCHES_KEY`. */
 val webPanelRecentSearchesKey = stringPreferencesKey("web_panel_recent_searches_json")
 
-private const val SEARCH_ENGINE_URL = "https://duckduckgo.com/?q="
+private const val SEARCH_ENGINE_URL = "https://search.brave.com/search?q="
 
 data class WebRecentSearchItem(
     val scopeKey: String,

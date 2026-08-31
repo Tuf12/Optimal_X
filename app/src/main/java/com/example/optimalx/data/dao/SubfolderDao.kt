@@ -94,4 +94,18 @@ interface SubfolderDao {
 
     @Query("SELECT * FROM subfolders WHERE deletedAt IS NULL")
     suspend fun getAllActiveOnce(): List<Subfolder>
+
+    @Query("SELECT * FROM subfolders")
+    suspend fun getAllForSyncLookup(): List<Subfolder>
+
+    @Query("SELECT * FROM subfolders WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): Subfolder?
+
+    @Query(
+        """
+        SELECT * FROM subfolders
+        WHERE updatedAt > :since OR (deletedAt IS NOT NULL AND deletedAt > :since)
+        """,
+    )
+    suspend fun getChangedSince(since: Long): List<Subfolder>
 }

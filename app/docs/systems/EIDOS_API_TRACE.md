@@ -74,6 +74,7 @@ Each time the user sends a message (or Auto-Continue triggers a send), one **run
 - Directory key + human label
 - Scope type, active provider, user message preview (≤240 chars)
 - Start/finish timestamps, final status, round count
+- **`sectionCharCountsJson`** on the run — prompt section sizes including prefetch metrics when applicable (`prefetchPassCount`, `prefetchHitCount`, `prefetchChars`, `prefetchTopScoreMilli`, `prefetchDailyHits`, `prefetchNoteHits`, `prefetchSkipped`)
 
 ### One round per provider HTTP call
 

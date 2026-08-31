@@ -27,7 +27,6 @@ class QuickNotesViewModel(
     private val editorRepo = EditorRepository(
         db = appRef.database,
         semanticIndexer = appRef.semanticIndexer,
-        appIndexSync = appRef.appIndexSyncService,
         semanticSync = appRef.semanticSyncService,
         semanticChunkBuilder = appRef.semanticChunkBuilder,
     )

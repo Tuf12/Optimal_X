@@ -7,15 +7,18 @@ import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.eidos.ContentSummaryResult
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.model.FileReference
-import com.example.optimalx.data.eidos.ImplementationPlanGate
 import com.example.optimalx.data.eidos.WorkshopDocAlignGate
 import com.example.optimalx.data.eidos.WorkshopDocAlignScope
 import com.example.optimalx.data.eidos.WorkshopEidosMode
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
+import com.example.optimalx.data.eidos.WorkshopProjectSummaryAutomation
+import com.example.optimalx.data.sync.SyncCallResult
+import com.example.optimalx.data.sync.SyncFilePathResolver
+import com.example.optimalx.data.sync.WorkshopDiskCheck
+import com.example.optimalx.data.sync.SyncFileService
+import com.example.optimalx.data.sync.WorkshopBackupProgress
 import com.example.optimalx.data.eidos.PanelPlatformSpec
 import com.example.optimalx.data.eidos.WorkshopSpecValidation
-import com.example.optimalx.data.revision.PENDING_ITEM_STATUS_PENDING
-import com.example.optimalx.data.revision.SOURCE_TYPE_WORKSHOP_FILE
 import android.util.Log
 import com.example.optimalx.data.panel.PanelReleaseStore
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
@@ -56,6 +59,7 @@ class WorkshopEditorViewModel(
     private val appRef = app as OptimalXApplication
     private val db: AppDatabase = appRef.database
     private val ctx = app.applicationContext
+    private val syncFileService = SyncFileService(ctx, db)
 
     val files: StateFlow<List<FileReference>> = db.fileReferenceDao()
         .getBySubfolder(subfolderId)
@@ -120,6 +124,7 @@ class WorkshopEditorViewModel(
         com.example.optimalx.data.revision.CheckpointRepository(
             checkpointDao = db.contentCheckpointDao(),
             patchDao = db.contentPatchDao(),
+            pendingChangeDao = db.pendingChangeDao(),
         )
     }
     private val directWriteApplier by lazy {
@@ -129,6 +134,7 @@ class WorkshopEditorViewModel(
             indexer = com.example.optimalx.data.revision.WorkshopFileIndexer { ref, content ->
                 appRef.semanticChunkBuilder.indexFile(appRef.semanticIndexer, ref, content)
             },
+            noteDao = db.noteDao(),
             workshopFilePath = { subId, fileName ->
                 val dir = File(appRef.filesDir, "workshop/$subId").also { it.mkdirs() }
                 File(dir, fileName)
@@ -159,6 +165,24 @@ class WorkshopEditorViewModel(
 
     private val _restoreFeedback = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val restoreFeedback: SharedFlow<String> = _restoreFeedback.asSharedFlow()
+
+    private val _workshopBackupBusy = MutableStateFlow(false)
+    val workshopBackupBusy: StateFlow<Boolean> = _workshopBackupBusy.asStateFlow()
+
+    private val _workshopRestoreInProgress = MutableStateFlow(false)
+    val workshopRestoreInProgress: StateFlow<Boolean> = _workshopRestoreInProgress.asStateFlow()
+
+    private val _workshopBackupProgress = MutableStateFlow<WorkshopBackupProgress?>(null)
+    val workshopBackupProgress: StateFlow<WorkshopBackupProgress?> = _workshopBackupProgress.asStateFlow()
+
+    private val _workshopBackupMessage = MutableStateFlow<String?>(null)
+    val workshopBackupMessage: StateFlow<String?> = _workshopBackupMessage.asStateFlow()
+
+    private val _needsDesktopFileRestore = MutableStateFlow(false)
+    val needsDesktopFileRestore: StateFlow<Boolean> = _needsDesktopFileRestore.asStateFlow()
+
+    private val _workshopRestoreMessage = MutableStateFlow<String?>(null)
+    val workshopRestoreMessage: StateFlow<String?> = _workshopRestoreMessage.asStateFlow()
 
     /**
      * Restore the currently open file's content to [checkpointId]. Writes via
@@ -206,43 +230,9 @@ class WorkshopEditorViewModel(
     private val _fileContent = MutableStateFlow("")
     val fileContent: StateFlow<String> = _fileContent.asStateFlow()
 
-    /** Latest proposed bytes per [FileReference.id] while Diff Review is open. */
-    val pendingProposalsByFileId: StateFlow<Map<Long, String>> = openPendingSet
-        .flatMapLatest { set ->
-            if (set == null) {
-                flowOf(emptyMap())
-            } else {
-                db.pendingChangeDao().observeItems(set.id).map { items ->
-                    items.filter {
-                        it.status == PENDING_ITEM_STATUS_PENDING &&
-                            it.sourceType == SOURCE_TYPE_WORKSHOP_FILE
-                    }.associate { it.sourceId to it.proposedContent }
-                }
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
-
-    /** True when Preview composites pending proposals instead of on-disk files. */
-    val isPreviewingProposedChanges: StateFlow<Boolean> = pendingProposalsByFileId
-        .map { it.isNotEmpty() }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    /** Composite HTML for Preview — uses pending proposals when queued. */
-    val previewHtml: StateFlow<String> = combine(
-        files,
-        pendingProposalsByFileId,
-        _fileContent,
-        _currentFileId,
-    ) { fileList, proposedByFileId, editorContent, currentId ->
-        buildCompositeHtml(fileList, proposedByFileId, editorContent, currentId)
-    }.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
-        "<html><body><p>Loading preview…</p></body></html>",
-    )
-
     /** True when the user edited the open file locally; cleared on open/reload from disk. */
     private val _isDirty = MutableStateFlow(false)
+    val isDirty: StateFlow<Boolean> = _isDirty.asStateFlow()
 
     /** Bumped when workshop files change on disk outside the editor (e.g. Eidos tool writes). */
     private val _diskRevision = MutableStateFlow(0)
@@ -293,28 +283,45 @@ class WorkshopEditorViewModel(
     fun refreshProjectPhase() {
         syncPhaseFromPreferences()
         viewModelScope.launch {
+            refreshProjectSummaryState()
             reconcileBuildPhaseFromDisk()
         }
+    }
+
+    private suspend fun refreshProjectSummaryState() {
+        val sf = withContext(Dispatchers.IO) { db.subfolderDao().getById(subfolderId) }
+        _hasProjectSummary.value = !sf?.projectSummary.isNullOrBlank()
     }
 
     private suspend fun reconcileBuildPhaseFromDisk() {
         val list = files.value
         val phase = _projectPhase.value
         val designReadyFlag = _designLayoutReady.value
+        val logicReadyFlag = _logicBehaviorReady.value
 
         val designInferred = withContext(Dispatchers.IO) {
             phase == WorkshopProjectPhase.DESIGN_BUILD &&
+                pendingDesignReviewAfterBuild &&
                 !designReadyFlag &&
                 inferDesignLayoutReadyFromFiles(list)
         }
+        val logicInferred = withContext(Dispatchers.IO) {
+            phase == WorkshopProjectPhase.LOGIC_BUILD &&
+                pendingLogicReviewAfterBuild &&
+                !logicReadyFlag &&
+                inferLogicBehaviorReadyFromFiles(list)
+        }
+
         if (designInferred) {
             markDesignLayoutReady()
         } else {
             reconcileDesignPhaseAfterLayoutReady()
         }
-        // Logic behavior ready is set explicitly when Build logic kickoff completes — not inferred
-        // from disk (Build design already changes script.js stubs and would skip Build logic).
-        reconcileLogicPhaseAfterBehaviorReady()
+        if (logicInferred) {
+            markLogicBehaviorReady()
+        } else {
+            reconcileLogicPhaseAfterBehaviorReady()
+        }
     }
 
     private fun markDesignLayoutReady() {
@@ -325,7 +332,16 @@ class WorkshopEditorViewModel(
         reconcileDesignPhaseAfterLayoutReady()
     }
 
+    /**
+     * "Design ready" = the design runtime files changed since **Build design** was kicked off.
+     * Falls back to the legacy scaffold heuristic only for in-flight builds started before baselines
+     * existed (no baseline recorded).
+     */
     private fun inferDesignLayoutReadyFromFiles(list: List<FileReference>): Boolean {
+        val baseline = WorkshopProjectPreferences.getDesignBuildBaseline(ctx, subfolderId)
+        if (baseline.isNotBlank()) {
+            return computeRuntimeDigest(list, DESIGN_RUNTIME_FILES) != baseline
+        }
         fun read(ref: FileReference?) =
             ref?.let { runCatching { File(it.filePath).readText() }.getOrDefault("") }.orEmpty()
         val title = _subfolderName.value.ifBlank { "Project" }
@@ -350,13 +366,6 @@ class WorkshopEditorViewModel(
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.EDIT)
     }
 
-    private fun resetLogicBehaviorProgressForNewLogicBuild() {
-        pendingLogicReviewAfterBuild = false
-        WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(ctx, subfolderId, false)
-        WorkshopProjectPreferences.setLogicBehaviorReady(ctx, subfolderId, false)
-        _logicBehaviorReady.value = false
-    }
-
     private fun markLogicBehaviorReady() {
         if (!_logicBehaviorReady.value) {
             WorkshopProjectPreferences.setLogicBehaviorReady(ctx, subfolderId, true)
@@ -365,11 +374,61 @@ class WorkshopEditorViewModel(
         reconcileLogicPhaseAfterBehaviorReady()
     }
 
+    /**
+     * "Logic ready" = the logic runtime files (script.js/bridge.js) changed since **Build logic** was
+     * kicked off. Falls back to the legacy scaffold heuristic only when no baseline was recorded.
+     */
+    private fun inferLogicBehaviorReadyFromFiles(list: List<FileReference>): Boolean {
+        val baseline = WorkshopProjectPreferences.getLogicBuildBaseline(ctx, subfolderId)
+        if (baseline.isNotBlank()) {
+            return computeRuntimeDigest(list, LOGIC_RUNTIME_FILES) != baseline
+        }
+        fun read(ref: FileReference?) =
+            ref?.let { runCatching { File(it.filePath).readText() }.getOrDefault("") }.orEmpty()
+        val bridgeScaffold = FolderRepository.WORKSHOP_BRIDGE_JS_SCAFFOLD.trimIndent().trim()
+        val scriptScaffold = FolderRepository.WORKSHOP_SCRIPT_JS_SCAFFOLD.trimIndent().trim()
+        val bridge = list.firstOrNull { it.fileName.equals("bridge.js", ignoreCase = true) }
+        val script = list.firstOrNull { it.fileName.equals("script.js", ignoreCase = true) }
+        val bridgeText = read(bridge).trim()
+        val scriptText = read(script).trim()
+        if (bridgeText != bridgeScaffold) return true
+        return scriptText != scriptScaffold && scriptText.length > scriptScaffold.length + 300
+    }
+
+    /** SHA-256 over the given runtime files (in-memory content for the open file), name-tagged. */
+    private fun computeRuntimeDigest(list: List<FileReference>, fileNames: List<String>): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        for (name in fileNames) {
+            val ref = list.firstOrNull { it.fileName.equals(name, ignoreCase = true) }
+            val text = when {
+                ref == null -> ""
+                ref.id == _currentFileId.value -> _fileContent.value
+                else -> runCatching { File(ref.filePath).readText() }.getOrDefault("")
+            }
+            md.update(name.toByteArray(Charsets.UTF_8))
+            md.update(0)
+            md.update(text.toByteArray(Charsets.UTF_8))
+        }
+        return md.digest().joinToString("") { b -> "%02x".format(b) }
+    }
+
     private fun reconcileLogicPhaseAfterBehaviorReady() {
         if (_projectPhase.value != WorkshopProjectPhase.LOGIC_BUILD || !_logicBehaviorReady.value) return
         pendingLogicReviewAfterBuild = false
         WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(ctx, subfolderId, false)
         setProjectPhase(WorkshopProjectPhase.LOGIC_REVIEW)
+        WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.EDIT)
+    }
+
+    /**
+     * Accept design → Logic build, only from DESIGN_REVIEW. Called when the design doc-align finishes
+     * (or is skipped). Resets the logic-build readiness so a fresh Build logic cycle starts clean.
+     */
+    private fun advanceToLogicBuildAfterDesignAlign() {
+        if (_projectPhase.value != WorkshopProjectPhase.DESIGN_REVIEW) return
+        WorkshopProjectPreferences.setLogicBehaviorReady(ctx, subfolderId, false)
+        _logicBehaviorReady.value = false
+        setProjectPhase(WorkshopProjectPhase.LOGIC_BUILD)
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.EDIT)
     }
 
@@ -463,6 +522,9 @@ class WorkshopEditorViewModel(
         viewModelScope.launch {
             files.collect { list ->
                 if (list.isEmpty()) return@collect
+                repairWorkshopFilePaths(list)
+                promoteImportedWorkshopPhaseIfNeeded(list)
+                _needsDesktopFileRestore.value = WorkshopDiskCheck.needsRestoreFromDesktop(ctx, subfolderId)
                 if (WorkshopProjectPreferences.isInitialBuildSent(ctx, subfolderId) &&
                     WorkshopProjectPreferences.getDocDigestAtLastCodeSync(ctx, subfolderId).isEmpty()
                 ) {
@@ -497,14 +559,78 @@ class WorkshopEditorViewModel(
         }
     }
 
+    private suspend fun repairWorkshopFilePaths(list: List<FileReference>) {
+        list.forEach { ref ->
+            val canonical = SyncFilePathResolver.resolve(ctx, db, subfolderId, ref.fileName)
+            if (canonical.isNotEmpty() && ref.filePath != canonical) {
+                db.fileReferenceDao().insert(ref.copy(filePath = canonical))
+            }
+        }
+    }
+
+    /**
+     * Re-imported projects get a new local subfolder id after permanent delete + pull, so
+     * [WorkshopProjectPreferences] defaults to INTAKE even when desktop already shipped a panel.
+     */
+    private suspend fun promoteImportedWorkshopPhaseIfNeeded(list: List<FileReference>) {
+        if (_projectPhase.value != WorkshopProjectPhase.INTAKE) return
+        val sf = db.subfolderDao().getById(subfolderId) ?: return
+        val looksComplete = list.any { it.fileName.equals("index.html", ignoreCase = true) } &&
+            list.count { it.fileName.endsWith(".md", ignoreCase = true) } >= 3
+        val syncedPanel = !sf.projectSummary.isNullOrBlank() ||
+            sf.originDeviceId.orEmpty().startsWith("desktop")
+        if (!looksComplete || !syncedPanel) return
+        WorkshopProjectPreferences.setProjectPhase(ctx, subfolderId, WorkshopProjectPhase.COMPLETE)
+        WorkshopProjectPreferences.setInitialBuildSent(ctx, subfolderId, true)
+        _projectPhase.value = WorkshopProjectPhase.COMPLETE
+        _initialBuildSent.value = true
+        val readme = list.firstOrNull { it.fileName.equals("README.md", ignoreCase = true) }
+        if (_currentFileId.value == null) {
+            openFile((readme ?: list.first()).id)
+        }
+    }
+
     fun openFile(fileId: Long) {
         _currentFileId.value = fileId
         _isPreviewMode.value = false
         _isMarkdownEditMode.value = false
         viewModelScope.launch {
             val ref = db.fileReferenceDao().getById(fileId) ?: return@launch
-            _fileContent.value = runCatching { File(ref.filePath).readText() }.getOrDefault("")
+            val canonical = SyncFilePathResolver.resolve(ctx, db, subfolderId, ref.fileName)
+            val path = if (canonical.isNotEmpty()) {
+                if (ref.filePath != canonical) {
+                    db.fileReferenceDao().insert(ref.copy(filePath = canonical))
+                }
+                canonical
+            } else {
+                ref.filePath
+            }
+            val file = File(path)
+            file.parentFile?.mkdirs()
+            if (!file.isFile) {
+                file.writeText("")
+            }
+            _fileContent.value = runCatching { file.readText() }.getOrDefault("")
             _isDirty.value = false
+        }
+    }
+
+    fun openFileByRelativePath(relativePath: String) {
+        viewModelScope.launch {
+            val normalized = relativePath.trim().trimStart('/').replace('\\', '/')
+            if (normalized.isEmpty()) return@launch
+            val list = db.fileReferenceDao().getBySubfolderOnce(subfolderId)
+            val exact = list.firstOrNull { ref ->
+                ref.fileName.replace('\\', '/').equals(normalized, ignoreCase = true)
+            }
+            val byLeaf = list.firstOrNull { ref ->
+                ref.fileName.substringAfterLast('/').equals(
+                    normalized.substringAfterLast('/'),
+                    ignoreCase = true,
+                )
+            }
+            val match = exact ?: byLeaf ?: return@launch
+            openFile(match.id)
         }
     }
 
@@ -521,10 +647,6 @@ class WorkshopEditorViewModel(
             runCatching { File(ref.filePath).writeText(_fileContent.value) }
                 .onSuccess {
                     _isDirty.value = false
-                    if (ref.fileName.equals(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD, ignoreCase = true)) {
-                        invalidateImplementationPlanAcceptanceIfNeeded(eidos = null)
-                        refreshImplementationPlanState()
-                    }
                 }
         }
     }
@@ -536,7 +658,6 @@ class WorkshopEditorViewModel(
     fun reloadFromDiskAfterExternalWrite() {
         viewModelScope.launch {
             _diskRevision.value += 1
-            refreshImplementationPlanState()
             if (_isDirty.value) return@launch
             reloadOpenFileFromDisk()
         }
@@ -549,7 +670,6 @@ class WorkshopEditorViewModel(
     fun reloadFromDiskAfterDiffAccept() {
         viewModelScope.launch {
             _diskRevision.value += 1
-            refreshImplementationPlanState()
             _isDirty.value = false
             reloadOpenFileFromDisk()
         }
@@ -613,6 +733,76 @@ class WorkshopEditorViewModel(
         }
     }
 
+    fun backupWorkshopToPc() {
+        if (_workshopBackupBusy.value) return
+        viewModelScope.launch {
+            _workshopBackupBusy.value = true
+            _workshopRestoreInProgress.value = false
+            _workshopBackupMessage.value = null
+            _workshopBackupProgress.value = null
+            when (
+                val result = syncFileService.backupWorkshopToDesktop(subfolderId) { progress ->
+                    _workshopBackupProgress.value = progress
+                }
+            ) {
+                is SyncCallResult.Failure ->
+                    _workshopBackupMessage.value = result.message
+                is SyncCallResult.Success -> {
+                    val summary = result.value
+                    _workshopBackupMessage.value = if (summary.filesUploaded == 0) {
+                        "No workshop files on device to sync."
+                    } else {
+                        "Synced ${summary.filesUploaded} file(s) to desktop " +
+                            "(${summary.bytesUploaded / 1024} KB)."
+                    }
+                }
+            }
+            _workshopBackupBusy.value = false
+            _workshopBackupProgress.value = null
+        }
+    }
+
+    fun restoreWorkshopFromPc() {
+        if (_workshopBackupBusy.value) return
+        viewModelScope.launch {
+            _workshopBackupBusy.value = true
+            _workshopRestoreInProgress.value = true
+            _workshopRestoreMessage.value = null
+            _workshopBackupProgress.value = null
+            when (
+                val result = syncFileService.restoreWorkshopFromDesktop(subfolderId) { progress ->
+                    _workshopBackupProgress.value = progress
+                }
+            ) {
+                is SyncCallResult.Failure ->
+                    _workshopRestoreMessage.value = result.message
+                is SyncCallResult.Success -> {
+                    val summary = result.value
+                    reloadFromDiskAfterDiffAccept()
+                    _needsDesktopFileRestore.value = WorkshopDiskCheck.needsRestoreFromDesktop(ctx, subfolderId)
+                    _workshopRestoreMessage.value =
+                        buildString {
+                            append("Synced ${summary.filesUploaded} file(s) from desktop")
+                            if (summary.filesSkipped > 0) {
+                                append(" (${summary.filesSkipped} missing on PC skipped)")
+                            }
+                            append(" (${summary.bytesUploaded / 1024} KB).")
+                        }
+                }
+            }
+            _workshopBackupBusy.value = false
+            _workshopBackupProgress.value = null
+        }
+    }
+
+    fun clearWorkshopBackupMessage() {
+        _workshopBackupMessage.value = null
+    }
+
+    fun clearWorkshopRestoreMessage() {
+        _workshopRestoreMessage.value = null
+    }
+
     fun deleteFile(fileId: Long) {
         viewModelScope.launch {
             val ref = db.fileReferenceDao().getById(fileId) ?: return@launch
@@ -625,32 +815,19 @@ class WorkshopEditorViewModel(
         }
     }
 
-    fun getCompositeHtml(): String = buildCompositeHtml(
-        fileList = files.value,
-        proposedByFileId = pendingProposalsByFileId.value,
-        editorContent = _fileContent.value,
-        currentFileId = _currentFileId.value,
-    )
-
-    private fun buildCompositeHtml(
-        fileList: List<FileReference>,
-        proposedByFileId: Map<Long, String>,
-        editorContent: String,
-        currentFileId: Long?,
-    ): String {
+    fun getCompositeHtml(): String {
+        val fileList = files.value
         val htmlFile = fileList.firstOrNull {
             it.fileType.equals("html", ignoreCase = true)
         } ?: return "<html><body><p>No HTML file found. Create an index.html to preview.</p></body></html>"
 
-        val htmlContent = readWorkshopFileText(htmlFile, proposedByFileId, editorContent, currentFileId)
+        val htmlContent = readWorkshopFileText(htmlFile)
         val cssContents = fileList
             .filter { it.fileType.equals("css", ignoreCase = true) }
-            .map { readWorkshopFileText(it, proposedByFileId, editorContent, currentFileId) }
+            .map { readWorkshopFileText(it) }
         val jsContents = fileList
             .filter { it.fileType.equals("js", ignoreCase = true) }
-            .map { ref ->
-                ref.fileName to readWorkshopFileText(ref, proposedByFileId, editorContent, currentFileId)
-            }
+            .map { ref -> ref.fileName to readWorkshopFileText(ref) }
 
         return PanelHtmlComposer.buildCompositeHtml(
             htmlContent = htmlContent,
@@ -659,15 +836,9 @@ class WorkshopEditorViewModel(
         )
     }
 
-    private fun readWorkshopFileText(
-        ref: FileReference,
-        proposedByFileId: Map<Long, String> = pendingProposalsByFileId.value,
-        editorContent: String = _fileContent.value,
-        currentFileId: Long? = _currentFileId.value,
-    ): String {
-        proposedByFileId[ref.id]?.let { return it }
-        if (currentFileId == ref.id) {
-            return editorContent
+    private fun readWorkshopFileText(ref: FileReference): String {
+        if (_currentFileId.value == ref.id) {
+            return _fileContent.value
         }
         return runCatching { File(ref.filePath).readText() }.getOrDefault("")
     }
@@ -745,47 +916,6 @@ class WorkshopEditorViewModel(
             (phase == WorkshopProjectPhase.LOGIC_BUILD && behaviorReady)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    private val _implementationPlanTick = MutableStateFlow(0)
-
-    fun refreshImplementationPlanState() {
-        _implementationPlanTick.value += 1
-    }
-
-    val implementationPlanContent: StateFlow<String?> = combine(
-        files,
-        _diskRevision,
-        _implementationPlanTick,
-    ) { list, _, _ ->
-        readImplementationPlanFromFiles(list, _currentFileId.value, _fileContent.value)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-
-    val implementationPlanAcceptedValid: StateFlow<Boolean> = combine(
-        implementationPlanContent,
-        _implementationPlanTick,
-    ) { content, _ ->
-        val accepted = WorkshopProjectPreferences.isImplementationPlanAccepted(ctx, subfolderId)
-        val hash = WorkshopProjectPreferences.getImplementationPlanAcceptedContentHash(ctx, subfolderId)
-        ImplementationPlanGate.acceptanceMatchesContent(accepted, hash, content)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    val canAcceptImplementationPlan: StateFlow<Boolean> = combine(
-        _projectPhase,
-        implementationPlanContent,
-        implementationPlanAcceptedValid,
-    ) { phase, content, acceptedValid ->
-        phase == WorkshopProjectPhase.UPDATE &&
-            ImplementationPlanGate.isSubstantive(content) &&
-            !acceptedValid
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    val canBuildFromImplementationPlan: StateFlow<Boolean> = combine(
-        _projectPhase,
-        implementationPlanAcceptedValid,
-        pendingChangeCount,
-    ) { phase, acceptedValid, pending ->
-        phase == WorkshopProjectPhase.UPDATE && acceptedValid && pending == 0
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
     private fun readSpecContentsFromFiles(
         list: List<FileReference>,
         currentId: Long?,
@@ -835,13 +965,10 @@ class WorkshopEditorViewModel(
         WorkshopProjectPreferences.setUpdateSection(ctx, subfolderId, null)
         setProjectPhase(WorkshopProjectPhase.UPDATE)
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.CHAT)
-        refreshImplementationPlanState()
         eidos.refreshWorkshopProjectPhase()
-        eidos.refreshImplementationPlanGate()
         viewModelScope.launch {
             _summaryFeedback.emit(
-                "Update/edit — Chat, Plan, or Edit. Accept plan when IMPLEMENTATION_PLAN.md is ready, " +
-                    "then tap Build plan once (Auto-Continue runs all phases). Verify in Preview, then Accept update.",
+                "Update/edit — Chat, Plan, or Edit. Review diffs in Diff Review, then Accept update to sync specs and return to Complete.",
             )
         }
     }
@@ -921,8 +1048,8 @@ class WorkshopEditorViewModel(
         flushCurrentFileToDisk()
         advancePhase?.let { setProjectPhase(it) }
         eidos.refreshWorkshopProjectPhase()
-        val skip = withContext(Dispatchers.IO) {
-            WorkshopDocAlignGate.shouldSkipAlign(
+        val staleSpecs = withContext(Dispatchers.IO) {
+            WorkshopDocAlignGate.staleSpecs(
                 context = ctx,
                 db = db,
                 subfolderId = subfolderId,
@@ -931,13 +1058,23 @@ class WorkshopEditorViewModel(
                 inMemoryContent = _fileContent.value,
             )
         }
-        if (skip) {
+        if (staleSpecs.isEmpty()) {
             handleDocAlignSkipped(scope, eidos)
             return false
         }
+        val inlinePayload = withContext(Dispatchers.IO) {
+            WorkshopDocAlignGate.buildInlinePayload(
+                db = db,
+                subfolderId = subfolderId,
+                scope = scope,
+                staleSpecs = staleSpecs,
+                currentFileId = _currentFileId.value,
+                inMemoryContent = _fileContent.value,
+            )
+        }
         pendingDocAlignTelemetry = true
         openEidosSheet()
-        eidos.sendWorkshopAlignDocsFromCode(subfolderId, scope)
+        eidos.sendWorkshopAlignDocsFromCode(subfolderId, scope, staleSpecs, inlinePayload)
         emitDocAlignStartedFeedback(scope)
         return true
     }
@@ -949,10 +1086,13 @@ class WorkshopEditorViewModel(
                     "Specs already match code — no doc sync needed. " +
                         panelAvailableOutsideWorkshopMessage(),
                 )
-            WorkshopDocAlignScope.DESIGN ->
+            WorkshopDocAlignScope.DESIGN -> {
+                advanceToLogicBuildAfterDesignAlign()
+                eidos.refreshWorkshopProjectPhase()
                 _summaryFeedback.emit(
                     "Specs already match code — no doc sync needed. Tap Build logic when ready.",
                 )
+            }
             WorkshopDocAlignScope.UPDATE -> {
                 WorkshopProjectPreferences.setPendingUpdateAwaitingAlign(ctx, subfolderId, false)
                 WorkshopProjectPreferences.setPendingUpdateDocAlignDone(ctx, subfolderId, true)
@@ -987,15 +1127,12 @@ class WorkshopEditorViewModel(
                 WorkshopUpdateCompletion.tryFinishPendingUpdate(ctx, db, subfolderId)
             }
             syncPhaseFromPreferences()
-            if (_projectPhase.value == WorkshopProjectPhase.DESIGN_BUILD && pendingDesignReviewAfterBuild) {
-                pendingDesignReviewAfterBuild = false
-                WorkshopProjectPreferences.setPendingDesignReviewAfterBuild(ctx, subfolderId, false)
-            }
+            refreshProjectSummaryState()
+            // Do not clear the pending build-kickoff flags here — reconcileBuildPhaseFromDisk clears
+            // them only when it actually advances to review (once code diverged from the kickoff
+            // baseline). Clearing early would suppress the auto-advance.
             reconcileBuildPhaseFromDisk()
-            invalidateImplementationPlanAcceptanceIfNeeded(eidos)
-            refreshImplementationPlanState()
             eidos?.refreshWorkshopProjectPhase()
-            eidos?.refreshImplementationPlanGate()
             if (isPendingFinishUpdate() && pendingChangeCount.value > 0) {
                 _summaryFeedback.emit(
                     "Review pending changes — then Accept update will sync spec docs and return to Complete.",
@@ -1015,6 +1152,7 @@ class WorkshopEditorViewModel(
             return
         }
         WorkshopProjectPreferences.setIntakeSummary(ctx, subfolderId, summary)
+        WorkshopProjectPreferences.setPendingProjectSummaryAfterSpecGenerate(ctx, subfolderId, true)
         setProjectPhase(WorkshopProjectPhase.SPEC_REVIEW)
         eidos.refreshWorkshopProjectPhase()
         openEidosSheet()
@@ -1047,20 +1185,25 @@ class WorkshopEditorViewModel(
         flushCurrentFileToDisk()
         pendingDesignReviewAfterBuild = true
         WorkshopProjectPreferences.setPendingDesignReviewAfterBuild(ctx, subfolderId, true)
+        WorkshopProjectPreferences.setDesignBuildBaseline(
+            ctx,
+            subfolderId,
+            withContext(Dispatchers.IO) { computeRuntimeDigest(files.value, DESIGN_RUNTIME_FILES) },
+        )
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.BUILD_DESIGN)
         openPreview()
         openEidosSheet()
         eidos.sendWorkshopBuildDesignKickoff(subfolderId)
         _summaryFeedback.emit(
-            "Building layout shell — watch Preview. When Eidos finishes, iterate in Edit mode, then tap Accept design.",
+            "Building design — watch Preview. When Eidos finishes, verify every FLOW screen, then tap Accept design.",
         )
     }
 
     private suspend fun applyAcceptDesignAction(openEidosSheet: () -> Unit, eidos: EidosChatViewModel) {
         flushCurrentFileToDisk()
-        resetLogicBehaviorProgressForNewLogicBuild()
-        setProjectPhase(WorkshopProjectPhase.LOGIC_BUILD)
-        eidos.refreshWorkshopProjectPhase()
+        // Stay in DESIGN_REVIEW while the align runs; advance to LOGIC_BUILD only when it finishes
+        // (WorkshopUpdateCompletion on success, or handleDocAlignSkipped when nothing needs syncing).
+        // A cancelled align therefore leaves the phase in DESIGN_REVIEW — no Build-logic skip.
         val started = alignDocsFromCode(
             scope = WorkshopDocAlignScope.DESIGN,
             openEidosSheet = openEidosSheet,
@@ -1069,7 +1212,7 @@ class WorkshopEditorViewModel(
         )
         if (started) {
             _summaryFeedback.emit(
-                "Design accepted. Tap Build logic when Eidos finishes syncing specs (if any).",
+                "Design accepted — syncing specs. When Eidos finishes, tap Build logic.",
             )
         }
     }
@@ -1078,6 +1221,11 @@ class WorkshopEditorViewModel(
         flushCurrentFileToDisk()
         pendingLogicReviewAfterBuild = true
         WorkshopProjectPreferences.setPendingLogicReviewAfterBuild(ctx, subfolderId, true)
+        WorkshopProjectPreferences.setLogicBuildBaseline(
+            ctx,
+            subfolderId,
+            withContext(Dispatchers.IO) { computeRuntimeDigest(files.value, LOGIC_RUNTIME_FILES) },
+        )
         WorkshopProjectPreferences.setEidosModeOverride(ctx, subfolderId, WorkshopEidosMode.BUILD_LOGIC)
         openPreview()
         openEidosSheet()
@@ -1158,50 +1306,6 @@ class WorkshopEditorViewModel(
         "To run this panel: open **Panel Gallery**, or add it as a custom panel tab in any subfolder. " +
             "To change the project later, tap **Update** in the workshop."
 
-    suspend fun applyAcceptImplementationPlanAction(eidos: EidosChatViewModel) {
-        flushCurrentFileToDisk()
-        if (_projectPhase.value != WorkshopProjectPhase.UPDATE) return
-        val content = readImplementationPlanFromFiles(
-            files.value,
-            _currentFileId.value,
-            _fileContent.value,
-        )
-        if (!ImplementationPlanGate.isSubstantive(content)) {
-            _summaryFeedback.emit(
-                "Draft IMPLEMENTATION_PLAN.md in Plan mode first — then accept when it lists concrete phases.",
-            )
-            return
-        }
-        WorkshopProjectPreferences.setImplementationPlanAccepted(
-            ctx,
-            subfolderId,
-            accepted = true,
-            contentHash = ImplementationPlanGate.contentHash(content!!),
-        )
-        refreshImplementationPlanState()
-        eidos.refreshImplementationPlanGate()
-        _summaryFeedback.emit(
-            "Implementation plan accepted. Tap **Build plan** once — Eidos will run all phases with Auto-Continue.",
-        )
-    }
-
-    suspend fun applyBuildFromPlanAction(openEidosSheet: () -> Unit, eidos: EidosChatViewModel) {
-        flushCurrentFileToDisk()
-        if (_projectPhase.value != WorkshopProjectPhase.UPDATE) return
-        if (pendingChangeCount.value > 0) {
-            _summaryFeedback.emit(
-                "Clear pending Diff Review changes from a prior Edit session first — then tap Build plan.",
-            )
-            return
-        }
-        if (!implementationPlanAcceptedValid.value) {
-            _summaryFeedback.emit("Accept the implementation plan first, then tap Build plan.")
-            return
-        }
-        openEidosSheet()
-        eidos.sendWorkshopBuildFromPlanKickoff(subfolderId)
-    }
-
     private suspend fun applyAcceptUpdateAction(openEidosSheet: () -> Unit, eidos: EidosChatViewModel) {
         flushCurrentFileToDisk()
         if (_projectPhase.value != WorkshopProjectPhase.UPDATE) return
@@ -1250,7 +1354,7 @@ class WorkshopEditorViewModel(
             WorkshopProjectPreferences.setPendingUpdateDocAlignDone(ctx, subfolderId, true)
             finishUpdateCycleToComplete(eidos)
             _summaryFeedback.emit(
-                "Returned to Complete without spec sync. Tap Update when you want a new edit session or plan.",
+                "Returned to Complete without spec sync. Tap Update when you want a new edit session.",
             )
         }
     }
@@ -1265,6 +1369,7 @@ class WorkshopEditorViewModel(
             _summaryGenerating.value = false
             if (result is ContentSummaryResult.Success) {
                 _hasProjectSummary.value = true
+                WorkshopProjectSummaryAutomation.recordDigestAfterManualGenerate(ctx, db, subfolderId)
             }
             val message = when (result) {
                 ContentSummaryResult.Success ->
@@ -1275,37 +1380,13 @@ class WorkshopEditorViewModel(
         }
     }
 
-    private fun readImplementationPlanFromFiles(
-        list: List<FileReference>,
-        currentId: Long?,
-        inMemory: String,
-    ): String? {
-        val ref = list.firstOrNull {
-            it.fileName.equals(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD, ignoreCase = true)
-        } ?: return ImplementationPlanGate.readContent(ctx, subfolderId)
-        val text = if (ref.id == currentId) {
-            inMemory
-        } else {
-            runCatching { File(ref.filePath).readText() }.getOrDefault("")
-        }
-        return text.ifBlank { null }
-    }
-
-    private fun invalidateImplementationPlanAcceptanceIfNeeded(eidos: EidosChatViewModel?) {
-        if (!WorkshopProjectPreferences.isImplementationPlanAccepted(ctx, subfolderId)) return
-        val content = readImplementationPlanFromFiles(
-            files.value,
-            _currentFileId.value,
-            _fileContent.value,
-        )
-        val hash = WorkshopProjectPreferences.getImplementationPlanAcceptedContentHash(ctx, subfolderId)
-        if (!ImplementationPlanGate.acceptanceMatchesContent(true, hash, content)) {
-            WorkshopProjectPreferences.clearImplementationPlanAcceptance(ctx, subfolderId)
-            eidos?.refreshImplementationPlanGate()
-        }
-    }
-
     private companion object {
         const val TAG = "WorkshopEditor"
+
+        /** Runtime files the design build owns (static layout and visuals). */
+        val DESIGN_RUNTIME_FILES = listOf("index.html", "style.css", "script.js")
+
+        /** Runtime files the logic build owns (behavior + bridge). */
+        val LOGIC_RUNTIME_FILES = listOf("script.js", "bridge.js")
     }
 }

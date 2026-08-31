@@ -2,6 +2,7 @@ package com.example.optimalx.data.panel
 
 import android.content.Context
 import com.example.optimalx.data.db.AppDatabase
+import com.example.optimalx.data.db.SystemFolderNames
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
 import com.example.optimalx.ui.workshop.PanelHtmlComposer
@@ -77,6 +78,30 @@ object PanelReleaseStore {
             return
         }
         publishFromWorkshop(context, db, workshopSubfolderId)
+    }
+
+    /**
+     * Rebuilds a missing release from workshop runtime files when index.html is present.
+     * Used after backup/restore: workshop sources are backed up but [panel_releases/] and
+     * workshop phase prefs may not be, which otherwise leaves panels stuck as Draft.
+     */
+    suspend fun ensurePublishedFromWorkshopSources(
+        context: Context,
+        db: AppDatabase,
+        workshopSubfolderId: Long,
+    ) {
+        if (hasRelease(context, workshopSubfolderId)) return
+        publishFromWorkshop(context, db, workshopSubfolderId)
+    }
+
+    /** Republish every active Panel Workshop project that still has workshop runtime files. */
+    suspend fun ensureAllWorkshopReleasesFromSources(context: Context, db: AppDatabase) {
+        val parent = db.parentFolderDao().getSystemFolderByName(SystemFolderNames.PANEL_WORKSHOP) ?: return
+        db.subfolderDao().getAllByParentOnce(parent.id)
+            .filter { it.deletedAt == null && !it.isSystemSubfolder }
+            .forEach { subfolder ->
+                ensurePublishedFromWorkshopSources(context, db, subfolder.id)
+            }
     }
 
     fun buildCompositeHtml(context: Context, workshopSubfolderId: Long): String? {

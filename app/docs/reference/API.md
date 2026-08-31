@@ -34,14 +34,17 @@ The provider is a setting the user controls.
 
 **Fallback providers:** xAI, OpenAI, and Anthropic remain selectable in Settings; they share the same Eidos tool catalog.
 
+**On-device provider:** Local Gemma 4 (LiteRT-LM) runs `gemma-4-E4B-it.litertlm` with no API key. See [LITERT_LM.md](../LITERT_LM.md).
+
 | Provider | Model | Model ID | Tool calling | Transport family |
 |---|---|---|---|---|
 | **Kimi (Moonshot)** | **Kimi K2.6** | `kimi-k2.6` | Yes — local Eidos tools + Formula `web_search` / `fetch` / etc. | `MESSAGES_CACHED` (Chat Completions) |
 | xAI | Grok 4.3 | `grok-4.3` (Settings) | Yes — hosted `web_search` + local tools | `RESPONSES_CHAINED` |
-| OpenAI | GPT-5.4 mini | `gpt-5.4-mini-2026-03-17` | Yes — hosted `web_search` + local tools | `RESPONSES_CHAINED` |
+| OpenAI | GPT-5.6 Luna | `gpt-5.6-luna` | Yes — hosted `web_search` + local tools | `RESPONSES_CHAINED` |
 | Anthropic | Claude Sonnet 4.6 | `claude-sonnet-4-6` | Yes — hosted `web_search` / `web_fetch` + local tools | `MESSAGES_CACHED` |
+| **Local (LiteRT-LM)** | **Gemma 4 E4B-it** | `gemma-4-E4B-it.litertlm` (path on device) | Yes — scoped local Eidos tools only (no hosted web) | `LOCAL_CONVERSATION` |
 
-All four providers support the tool functions defined in TOOL_FUNCTIONS.md (provider adapters add hosted web tools separately).
+All five providers support scoped tool functions from `EidosToolCatalog` (cloud adapters add hosted web tools separately; local has no provider web search).
 
 The user selects the active provider in **Settings → Provider**. Fresh installs default to **xAI** in `SettingsDefaults`; choose **Kimi (Moonshot K2.6)** for the primary path.
 
@@ -68,14 +71,15 @@ The app wraps all four providers in a single abstraction layer.
 
 ## API Keys
 
-Each provider requires its own API key.
+Each cloud provider requires its own API key. **Local Gemma** uses a model file on device storage — no API key.
 
-| Provider | Where to get key |
+| Provider | Where to get key / model |
 |---|---|
 | Kimi (Moonshot) | [platform.kimi.ai/console/api-keys](https://platform.kimi.ai/console/api-keys) |
 | xAI | console.x.ai |
 | OpenAI | platform.openai.com |
 | Anthropic | console.anthropic.com |
+| **Local Gemma** | Download `gemma-4-E4B-it.litertlm` from [litert-community/gemma-4-E4B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm) or copy from Google AI Edge Gallery; set path in Settings → Local Gemma |
 
 ### Key storage
 - API keys are stored in Android EncryptedSharedPreferences
@@ -97,7 +101,7 @@ The full message history for the current session.
 Oldest messages are trimmed first if the context window limit approaches (`trimHistoryIfNeeded` in `EidosApiClient`).
 
 ### 3. Tool definitions
-All tool functions defined in TOOL_FUNCTIONS.md (from `EidosToolCatalog.all`) are passed to the model on every request. **NotE** this will change as agentbyte loops are implemented. 
+All tool functions defined in TOOL_FUNCTIONS.md (from `EidosToolCatalog.all`) are passed to the model on every request.
 The model decides which tools to call based on the user's message and context.
 
 ### 4. User message
@@ -111,7 +115,7 @@ Context is built in `EidosApiClient.assembleSystemPrompt` plus the rest of the p
 
 ### Target contract vs implementation
 
-**Target steady-state** (what should eventually be in the default chat system prompt) is documented in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) — e.g. Tag & Hint and subfolder memory cache are **tool-driven**, not inlined as full text.
+**Target steady-state** (what should eventually be in the default chat system prompt) is documented in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) — LTM, journal, and subfolder memory cache are **tool-driven**, not inlined as full text.
 
 **Current implementation** may still inject extra excerpts (Long-Term Memory, recent journal) until the pipeline matches that contract; see the implementation note in MEMORY_SYSTEM.md.
 
@@ -136,10 +140,9 @@ Fetch via tools when needed (names from `EidosToolCatalog`):
 
 | Need | Tools |
 |---|---|
-| App-wide Tag & Hint index (full) | `read_tag_hints`, `upsert_tag_hint`, `remove_tag_hint` |
-| Subfolder operating ruleset (“memory cache”) | `read_subfolder_memory_cache`, `update_subfolder_memory_cache` |
+| Per-note folder memory ([Memory]) | `write_note_summary`; subfolder inject + editor panel |
 | Full LTM / journal / log / chat beyond excerpts | `read_long_term_memory`, `read_journal`, `read_log`, `search_chat_history`, `read_conversation`, etc. |
-| File bodies | `read_file`, `describe_image`, … |
+| File bodies | `read_file`, `describe_image`, `workshop_read_file`, … |
 | Semantic retrieval | `search_semantic` |
 
 ### Session-attached (not part of the system prompt string)
@@ -155,16 +158,15 @@ Fetch via tools when needed (names from `EidosToolCatalog`):
 |---|---|
 | Full journal or full log | Too large — search/read tools |
 | All files in folder | Only names in context; content on demand |
-| Full Tag & Hint index | Routing layer — use `read_tag_hints` |
 | Notes from other subfolders | Unless user asks or search finds them |
 
 ---
 
 ## Rollover — separate system prompts
 
-Memory rollover does **not** use the normal chat system prompt. [`MemoryRolloverService`](../../src/main/java/com/example/optimalx/data/eidos/MemoryRolloverService.kt) builds phase-specific prompts (`buildRolloverSystemPrompt`, task prompts) and runs an AgentByte-orchestrated loop (read daily → journal/LTM/Tag steps → synthesis). The same entry point is used for **Settings → Force memory rollover**; a future scheduler should call `runMemoryRollover()` identically.
+Memory rollover does **not** use the normal chat system prompt. [`MemoryRolloverService`](../../src/main/java/com/example/optimalx/data/eidos/MemoryRolloverService.kt) builds phase-specific prompts and runs [`RolloverOrchestrator`](../../src/main/java/com/example/optimalx/data/eidos/RolloverOrchestrator.kt). The same entry point is used for **Settings → Force memory rollover**; the scheduler calls `runMemoryRollover()` identically.
 
-Behavioral overview and folder roles: [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md). Phase/tool wiring detail: [ROLLOVER_ENGINE.md](../agent_loops/ROLLOVER_ENGINE.md) and Kotlin in `MemoryRolloverService`.
+Canonical doc: [ROLLOVER.md](../systems/ROLLOVER.md). Folder roles: [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md).
 
 ---
 
@@ -185,9 +187,9 @@ Tool calling is the mechanism by which Eidos takes action inside the app.
 
 Only tools with **`requiresConfirmation == true`** in `EidosToolCatalog` trigger the UI confirmation handler in `EidosApiClient`. The catalog flag **`isModifying`** is separate metadata (e.g. logging); it does **not** gate confirmation.
 
-**Tools that require confirmation today:** `move_to_trash`, `edit_note_section`, `prune_long_term_memory`.
+**Tools that require confirmation today:** `move_to_trash`, `prune_long_term_memory`.
 
-**`write_note`** has `requiresConfirmation = false` but **overwrites** the full note body in the executor. There is no conditional confirmation for empty vs non-empty prior content yet.
+**Note writes** (`write_note`, `note_replace_string`) do **not** use the catalog confirmation handler. When the note body is non-empty, proposals queue for **Diff Review** (`SCOPE_SUBFOLDER`); the user accepts on `DiffReviewScreen` (editor badge or chat banner). **Empty notes** auto-apply on first `write_note`. Uncommitted user edits are **auto-committed** before Eidos tools run when working copy ≠ HEAD. Manual **Commit** advances HEAD without Diff Review. See [NOTE_PERSISTENCE_MODEL.md](../architecture/NOTE_PERSISTENCE_MODEL.md).
 
 For tools that require confirmation:
 
@@ -212,7 +214,7 @@ Each model has a context window limit. OptimalX manages this to avoid hitting th
 |---|---|
 | Kimi K2.6 | See [Moonshot model docs](https://platform.kimi.ai/docs/api/models-overview.md); `max_tokens` 32_384 per request in app |
 | Grok 4.3 | Check xAI documentation for current limit |
-| GPT-5.4 mini | See OpenAI documentation for current limit |
+| GPT-5.6 Luna | 128,000 tokens (typical); see OpenAI docs for long-context pricing |
 | Claude Sonnet 4.6 | 200,000 tokens (typical) |
 
 In-chat history trim is **disabled** until tool-round-safe trimming exists; memory tier UI remains for future use ([EIDOS_LLM_CONTEXT_CLEANUP.md](../implementation/EIDOS_LLM_CONTEXT_CLEANUP.md)).
@@ -247,7 +249,7 @@ Per-call field mapping: [LLM_API_REFERENCE.md](./LLM_API_REFERENCE.md) (Kimi row
 
 ## OpenAI / xAI / Anthropic notes
 
-**OpenAI (GPT-5.4 mini)** — Responses API (`reasoning.effort: medium`, `text.verbosity: low`). `previous_response_id` + incremental `input` on tool continuations.
+**OpenAI (GPT-5.6 Luna)** — Responses API (`reasoning.effort: medium`, `text.verbosity: low`). `prompt_cache_key` per conversation; stable system prefix (identity, rules, static location prose) cached via explicit breakpoint; volatile location/note/prefetch/memory in a second developer block; `previous_response_id` + incremental `input` on tool continuations.
 
 **xAI (Grok 4.3)** — Responses API; `reasoning_effort: medium`; same chained continuation pattern as OpenAI.
 
@@ -261,7 +263,7 @@ Prompt caching reduces cost by reusing previously processed parts of the prompt.
 
 ### How it helps
 
-If stable sections of the system prompt stay the same across turns, caching means those tokens are processed once. **Kimi** and **Anthropic** use `cache_control` + `prompt_cache_key` on a stable prefix; **OpenAI** and **xAI** use Responses API prefix caching and `prompt_cache_key` where applicable.
+If stable sections of the system prompt stay the same across turns, caching means those tokens are processed once. **Kimi** and **Anthropic** use `cache_control` + `prompt_cache_key` on a stable prefix; **OpenAI** (GPT-5.6 Luna) uses `prompt_cache_key`, `prompt_cache_options` (`explicit`, `30m`), and an explicit breakpoint after the stable system block (tools + instructions); **xAI** uses `prompt_cache_key` with Responses prefix caching.
 
 ### What to cache (provider-dependent)
 
@@ -297,7 +299,7 @@ If a request to the selected provider fails:
 |---|---|
 | Primary LLM (product) | **Kimi K2.6** — see [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) |
 | Settings default (fresh install) | xAI — user selects Kimi in Settings → Provider |
-| Fallback providers | Grok 4.3, GPT-5.4 mini, Claude Sonnet 4.6 |
+| Fallback providers | Grok 4.3, GPT-5.6 Luna, Claude Sonnet 4.6 |
 | API key storage | Android EncryptedSharedPreferences (per provider) |
 | Provider switching | User controlled in settings |
 | Transport detail | [LLM_API_REFERENCE.md](./LLM_API_REFERENCE.md), [EIDOS_LLM_CONTEXT_CLEANUP.md](../implementation/EIDOS_LLM_CONTEXT_CLEANUP.md) |

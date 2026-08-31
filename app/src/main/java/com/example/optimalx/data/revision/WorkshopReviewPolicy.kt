@@ -9,9 +9,8 @@ import com.example.optimalx.data.eidos.WorkshopProjectPhase
  *
  * Rules (mirrors `app/docs/implementation/DIFF_REVIEW_IMPLEMENTATION_PLAN.md` Phase 1c):
  *
- * - **Build kickoffs** (`BUILD_DESIGN` / `BUILD_LOGIC` / `BUILD_PLAN`, or `DESIGN_BUILD` /
- *   `LOGIC_BUILD` phases) auto-accept. The user reviews via Preview / Accept gates, not per-file diffs mid-run.
- * - **Edit in UPDATE** (non-build-plan) queues proposals in Diff Review.
+ * - **Build kickoffs** (`BUILD_DESIGN` / `BUILD_LOGIC`, or `DESIGN_BUILD` /
+ *   `LOGIC_BUILD` phases) auto-accept. The user reviews via Preview, not per-file diffs.
  * - **Intake / Spec review** never produce runtime file writes; if they ever did,
  *   no review baseline exists, so we let them through.
  * - **Everything else** — `DESIGN_REVIEW`, `LOGIC_REVIEW`, `COMPLETE`, `UPDATE` —

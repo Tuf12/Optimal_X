@@ -180,5 +180,6 @@ class ContentDiffTest {
         val content = "alpha\nbeta\ngamma\n"
         val snippet = ContentDiff.snippetAround(content, "zeta")
         assertEquals(1, snippet.startLine)
+        assertFalse(snippet.needleFound)
     }
 }

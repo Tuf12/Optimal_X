@@ -1,11 +1,8 @@
 package com.example.optimalx.data.eidos.model
 
-import com.example.optimalx.data.eidos.ReasoningPersistPolicy
-
 /**
  * One provider thinking block from a user turn — initial call, a tool hop, or the final answer.
- * Collected in-memory during [com.example.optimalx.data.eidos.EidosApiClient.send] for hop count
- * and final-hop chat preview; intermediate hops are not persisted to chat.
+ * Aggregated into [ChatMessage.assistantReasoningContent] for the chat Reasoning dropdown.
  */
 data class EidosReasoningHop(
     val round: Int,
@@ -23,14 +20,15 @@ data class EidosReasoningHop(
     }
 }
 
-/** Attach collected hops to the outgoing response (in-memory only until chat persist). */
+/** Attach collected hops to the outgoing response for chat persistence. */
 fun EidosResponse.withReasoningTrace(hops: List<EidosReasoningHop>): EidosResponse =
     copy(reasoningTrace = hops)
 
 /**
- * Full multi-hop trace for diagnostics — not for chat_messages.
+ * Builds chat-persistable reasoning: single-hop turns stay plain text;
+ * multi-hop turns get section headers for the dropdown.
  */
-fun formatArchivedReasoningTrace(
+fun formatPersistableReasoning(
     hops: List<EidosReasoningHop>,
     finalFallback: String?,
 ): String? {
@@ -38,7 +36,7 @@ fun formatArchivedReasoningTrace(
         hop.reasoning.trim().takeIf { it.isNotBlank() }?.let { hop to it }
     }
     if (sections.isEmpty()) {
-        return finalFallback?.trim()?.takeIf { it.isNotBlank() }?.let { ReasoningPersistPolicy.capHopText(it) }
+        return finalFallback?.trim()?.takeIf { it.isNotBlank() }
     }
     if (sections.size == 1 && sections.first().first.isFinal) {
         return sections.first().second
@@ -60,7 +58,7 @@ fun recordReasoningHop(
         round = round,
         phase = phase,
         toolNames = if (isFinal) emptyList() else response.toolCalls.map { it.name },
-        reasoning = ReasoningPersistPolicy.capHopText(reasoning),
+        reasoning = reasoning,
         isFinal = isFinal,
     )
 }

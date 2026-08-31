@@ -2,6 +2,7 @@ package com.example.optimalx.data.eidos
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.eidos.model.ConfirmationHandler
 import com.example.optimalx.data.eidos.model.EidosMessage
@@ -15,28 +16,43 @@ import com.example.optimalx.data.eidos.model.EidosToolCall
 import com.example.optimalx.data.eidos.model.EidosToolDefinition
 import com.example.optimalx.data.eidos.model.ToolExecutionResult
 import com.example.optimalx.data.eidos.model.ToolExecutor
+import com.example.optimalx.data.eidos.model.persistableReasoningContent
 import com.example.optimalx.data.eidos.model.recordReasoningHop
 import com.example.optimalx.data.eidos.model.withReasoningTrace
+import com.example.optimalx.data.eidos.EidosNavigationCodec
+import com.example.optimalx.data.eidos.EidosNavigationLookup
+import com.example.optimalx.data.eidos.EidosNavigationResolver
+import com.example.optimalx.data.eidos.EidosNavigationScope
+import com.example.optimalx.data.eidos.EidosNavigationTarget
 import com.example.optimalx.data.eidos.provider.AnthropicProvider
 import com.example.optimalx.data.eidos.provider.EidosProvider
 import com.example.optimalx.data.eidos.provider.KimiFormulaToolService
-
 import com.example.optimalx.data.eidos.provider.KimiProvider
+import com.example.optimalx.data.eidos.provider.LitertLmProvider
 import com.example.optimalx.data.eidos.provider.OpenAIProvider
 import com.example.optimalx.data.eidos.provider.ProviderHttpException
 import com.example.optimalx.data.eidos.provider.XAIProvider
 import com.example.optimalx.data.eidos.provider.XAI_MODEL_CHOICES
 
-import com.example.optimalx.OptimalXApplication
-import com.example.optimalx.data.dumpedit.DumpEditContext
+import com.example.optimalx.data.eidos.prompt.ComposedPrompt
+import com.example.optimalx.data.eidos.prompt.EidosEntrySurface
+import com.example.optimalx.data.eidos.prompt.EidosIdentityPrompt
+import com.example.optimalx.data.eidos.prompt.EidosPromptComposeContext
+import com.example.optimalx.data.eidos.prompt.EidosPromptComposer
+import com.example.optimalx.data.eidos.prompt.EidosScopeProfileIds
+import com.example.optimalx.data.eidos.prompt.EidosScopeProfileRegistry
+import com.example.optimalx.data.eidos.prompt.EidosPromptTrace
+import com.example.optimalx.data.eidos.prompt.EidosScopeRouter
+import com.example.optimalx.data.eidos.prompt.EidosSendContext
+import com.example.optimalx.data.eidos.prompt.EidosSystemPromptLayers
 import com.example.optimalx.data.model.ConversationScopes
-import com.example.optimalx.data.semantic.ContentSectionRetriever
-import com.example.optimalx.data.model.Subfolder
 import com.example.optimalx.data.preferences.ApiKeyNames
 import com.example.optimalx.data.preferences.EncryptedSettingKeys
+import com.example.optimalx.data.litert.GemmaLocalPolicy
+import com.example.optimalx.data.litert.GemmaLocalPrompt
+import com.example.optimalx.data.litert.LitertLmBackend
+import com.example.optimalx.data.litert.LitertLmDefaults
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
-import com.example.optimalx.data.revision.SCOPE_WORKSHOP_PROJECT
-import com.example.optimalx.data.revision.WorkshopReviewPolicy
 import com.example.optimalx.data.preferences.SettingsDefaults
 import com.example.optimalx.data.preferences.SettingsKeys
 import com.example.optimalx.data.preferences.getEncryptedPrefs
@@ -50,7 +66,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.io.InterruptedIOException
@@ -59,6 +77,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -76,22 +95,69 @@ private object Ipv4PreferredDns : Dns {
     }
 }
 
+private fun buildInteractiveHttpClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(180, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .dns(Ipv4PreferredDns)
+        .build()
+
+private fun buildInternalHttpClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .dns(Ipv4PreferredDns)
+        .build()
+
 class EidosApiClient(
     private val context: Context,
     private val database: AppDatabase,
     private val toolExecutor: ToolExecutor,
     private val panelBridgeRegistry: PanelBridgeRegistry? = null,
     private val confirmationHandler: ConfirmationHandler? = null,
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(300, TimeUnit.SECONDS)
-        .callTimeout(600, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .dns(Ipv4PreferredDns)
-        .build(),
+    private val networkMonitor: EidosNetworkMonitor? = null,
+    private val interactiveHttpClient: OkHttpClient = buildInteractiveHttpClient(),
+    private val internalHttpClient: OkHttpClient = buildInternalHttpClient(),
     private val json: Json = Json { ignoreUnknownKeys = true; explicitNulls = false },
 ) {
+    private val resolvedNetworkMonitor: EidosNetworkMonitor? by lazy {
+        networkMonitor ?: (context.applicationContext as? OptimalXApplication)?.eidosNetworkMonitor
+    }
+
+    private val onNetworkLostListener = { resetConnections() }
+
+    private val connectionPoolResetExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "eidos-okhttp-reset").apply { isDaemon = true }
+    }
+
+    init {
+        resolvedNetworkMonitor?.addOnNetworkLostListener(onNetworkLostListener)
+    }
+
+    /** Abort in-flight calls and evict pooled sockets after cancel, handoff, or retry. */
+    fun resetConnections() {
+        interactiveHttpClient.dispatcher.cancelAll()
+        internalHttpClient.dispatcher.cancelAll()
+        // evictAll() closes sockets and must not run on the main thread (NetworkOnMainThreadException).
+        connectionPoolResetExecutor.execute {
+            runCatching {
+                interactiveHttpClient.connectionPool.evictAll()
+                internalHttpClient.connectionPool.evictAll()
+            }
+        }
+    }
+
+    fun hasValidatedInternetOrUnknown(): Boolean =
+        resolvedNetworkMonitor?.hasValidatedInternetNow() ?: true
+
+    private fun httpClientFor(entrySurface: EidosEntrySurface): OkHttpClient =
+        if (entrySurface == EidosEntrySurface.INTERNAL) internalHttpClient else interactiveHttpClient
     private data class ProviderConfig(
         val activeProvider: String,
         val apiKey: String?,
@@ -108,7 +174,8 @@ class EidosApiClient(
         currentScopeType: String? = null,
         conversationHistory: List<EidosMessage>,
         toolDefinitions: List<EidosToolDefinition> = EidosToolCatalog.all,
-        baseSystemPrompt: String,
+        baseSystemPrompt: String = EidosIdentityPrompt.TEXT,
+        entrySurface: EidosEntrySurface = EidosEntrySurface.APP_CHAT,
         previousResponseId: String? = null,
         confirmationHandler: ConfirmationHandler? = this.confirmationHandler,
         /** Which editor tab/panel the user has open (note, files list, web, or a specific file viewer). */
@@ -122,10 +189,18 @@ class EidosApiClient(
         workshopProjectPhase: WorkshopProjectPhase? = null,
         workshopDocAlignScope: WorkshopDocAlignScope? = null,
         workshopUpdateSection: WorkshopUpdateSection? = null,
-        /** When set, xAI uses this as `prompt_cache_key` for sticky prompt-cache routing. */
+        /** When set, Responses providers use this as `prompt_cache_key` for sticky prompt-cache routing. */
         conversationId: Long? = null,
         promptCacheKey: String? = null,
         streamListener: EidosStreamListener? = null,
+        attachedImagePaths: List<String> = emptyList(),
+        imageStudioHub: Boolean? = null,
+        imageStudioSaveSubfolderId: Long? = null,
+        imageStudioActivePreviewFileName: String? = null,
+        /** Phase-specific instructions for internal.memory_rollover sends. */
+        internalVolatilePrompt: String? = null,
+        /** When set, replaces profile-derived tools (rollover synthesis steps). */
+        toolDefinitionsOverride: List<EidosToolDefinition>? = null,
     ): EidosResponse {
         val isPanelWorkshop = currentScopeType == ConversationScopes.PANEL_WORKSHOP
         val resolvedWorkshopPhase = if (isPanelWorkshop) {
@@ -144,101 +219,174 @@ class EidosApiClient(
             WorkshopProjectPreferences.getBuildKickoff(context, it)
         }
         val workshopMode = if (isPanelWorkshop) {
-            WorkshopEidosModeResolver.modeForDocAlign(workshopDocAlignScope)
-                ?: WorkshopEidosModeResolver.modeForActiveBuildKickoff(
+            val base = workshopEidosMode ?: WorkshopEidosMode.EDIT
+            if (WorkshopEidosModeResolver.isBuildKickoffModeActive(
+                    base,
                     resolvedWorkshopPhase,
                     activeBuildKickoff,
                 )
-                ?: run {
-                    val base = workshopEidosMode ?: WorkshopEidosMode.EDIT
-                    if (WorkshopEidosModeResolver.isBuildKickoffModeActive(
-                            base,
-                            resolvedWorkshopPhase,
-                            activeBuildKickoff,
-                        )
-                    ) {
-                        base
-                    } else {
-                        WorkshopEidosModeResolver.coerceModeForPhase(
-                            mode = base,
-                            phase = resolvedWorkshopPhase,
-                            docAlignScope = workshopDocAlignScope,
-                            activeBuildKickoff = activeBuildKickoff,
-                        )
-                    }
-                }
+            ) {
+                base
+            } else {
+                WorkshopEidosModeResolver.coerceModeForPhase(
+                    mode = base,
+                    phase = resolvedWorkshopPhase,
+                    docAlignScope = workshopDocAlignScope,
+                    activeBuildKickoff = activeBuildKickoff,
+                )
+            }
         } else {
             null
         }
-        val effectiveToolDefinitions = when (currentScopeType) {
-            ConversationScopes.PANEL_RUNNER -> EidosToolCatalog.toolsForPanelRunner()
-            ConversationScopes.PANEL_GALLERY -> EidosToolCatalog.toolsForPanelGallery()
-            else -> when {
-                workshopMode != null -> EidosToolCatalog.toolsForWorkshopMode(
-                    workshopMode,
-                    resolvedWorkshopPhase,
-                )
-                else -> toolDefinitions
-            }
-
+        val sendContext = EidosSendContext(
+            userMessage = userMessage,
+            conversationId = conversationId,
+            scopeType = currentScopeType,
+            entrySurface = entrySurface,
+            subfolderId = currentSubfolderId,
+            parentFolderId = currentParentFolderId,
+            conversationHistory = conversationHistory,
+            workshopEidosMode = workshopMode,
+            workshopProjectPhase = resolvedWorkshopPhase,
+            workshopDocAlignScope = if (isPanelWorkshop) workshopDocAlignScope else null,
+            imageStudioHub = imageStudioHub,
+            imageStudioSaveSubfolderId = imageStudioSaveSubfolderId,
+            imageStudioActivePreviewFileName = imageStudioActivePreviewFileName,
+        )
+        val resolvedScope = EidosScopeRouter.resolve(sendContext)
+        val resolvedProfile = EidosScopeProfileRegistry.require(resolvedScope.profileId)
+        val workshopHostLink = if (
+            resolvedScope.profileId == EidosScopeProfileIds.WORKSHOP_CHAT &&
+            currentSubfolderId != null
+        ) {
+            WorkshopHostLinkContext.resolve(database, currentSubfolderId)
+        } else {
+            null
+        }
+        val providerConfig = resolveProviderConfig(entrySurface)
+        val isLocalProvider = providerConfig.activeProvider == LitertLmDefaults.PROVIDER_ID
+        val localToolsEnabled = if (isLocalProvider) {
+            GemmaLocalPolicy.toolsEnabled(context)
+        } else {
+            true
+        }
+        val effectiveToolDefinitions = when {
+            toolDefinitionsOverride != null -> toolDefinitionsOverride
+            isLocalProvider -> GemmaLocalPolicy.toolDefinitions(toolsEnabled = localToolsEnabled)
+            else -> EidosToolCatalog.toolsForProfile(
+                profileId = resolvedScope.profileId,
+                scopeType = currentScopeType,
+                workshopMode = workshopMode,
+                workshopPhase = resolvedWorkshopPhase,
+            )
         }
         val workshopUserTurns = if (isPanelWorkshop) {
             WorkshopEidosModeResolver.countUserTurns(conversationHistory) + 1
         } else {
             0
         }
-        val settingsMemoryDepth = context.settingsDataStore.data.first()[SettingsKeys.CONVERSATION_MEMORY_DEPTH]
-            ?: SettingsDefaults.CONVERSATION_MEMORY_DEPTH
-        val conversationStoredDepth = conversationId?.let { id ->
-            database.conversationDao().getById(id)?.memoryDepth
-        }
-        val memoryDepth = EidosContextLimits.effectiveMemoryDepth(
-            conversationStored = conversationStoredDepth,
-            settingsDefault = settingsMemoryDepth,
-        )
-        val historyBudget = EidosContextLimits.historyBudget(memoryDepth)
-        val trimmedHistory = EidosHistoryTrimmer.trimHistoryIfNeeded(conversationHistory, historyBudget)
 
-        val providerConfig = getProviderConfig()
         val providerName = providerDisplayName(providerConfig.activeProvider)
-        val apiKey = providerConfig.apiKey
-        if (apiKey.isNullOrBlank()) {
-            return EidosResponse(
-                textResponse = "No API key is saved for $providerName. Open Settings > API Keys, add the key, and send again.",
-                toolCalls = emptyList(),
-            )
+        if (!isLocalProvider) {
+            val apiKey = providerConfig.apiKey
+            if (apiKey.isNullOrBlank()) {
+                return EidosResponse(
+                    textResponse = "No API key is saved for $providerName. Open Settings > API Keys, add the key, and send again.",
+                    toolCalls = emptyList(),
+                )
+            }
+            val monitor = resolvedNetworkMonitor
+            if (monitor != null &&
+                !monitor.awaitValidatedInternet(EidosTransportRetryPolicy.initialAwaitMs(entrySurface))
+            ) {
+                return offlineTransportResponse()
+            }
         }
+
+        val activeHttpClient = if (isLocalProvider) interactiveHttpClient else httpClientFor(entrySurface)
 
         EidosSendForegroundService.acquire(context)
         try {
-        val kimiFormulaTools = if (providerConfig.activeProvider == "kimi") {
-            KimiFormulaToolService(apiKey = apiKey, client = httpClient, json = json).also {
-                it.ensureLoadedWithRetry()
+        val apiKey = providerConfig.apiKey
+        val kimiFormulaTools = if (providerConfig.activeProvider == "kimi" && !apiKey.isNullOrBlank()) {
+            KimiFormulaToolService(apiKey = apiKey, client = activeHttpClient, json = json).also {
+                it.ensureLoadedWithRetry(
+                    maxAttempts = EidosTransportRetryPolicy.TRANSIENT_MAX_ATTEMPTS,
+                    awaitValidatedInternet = {
+                        resolvedNetworkMonitor?.awaitValidatedInternet(
+                            timeoutMs = EidosTransportRetryPolicy.RETRY_REVALIDATE_WAIT_MS,
+                        ) ?: true
+                    },
+                )
             }
         } else {
             null
         }
 
-        val assembledSystemPrompt = assembleSystemPrompt(
-            baseSystemPrompt = baseSystemPrompt,
-            currentSubfolderId = currentSubfolderId,
-            currentParentFolderId = currentParentFolderId,
-            currentScopeType = currentScopeType,
-            subfolderEditorSurfaceHint = subfolderEditorSurfaceHint,
-            webPanelPageUrl = webPanelPageUrl,
-            workshopOpenFileName = workshopOpenFileName,
-            workshopOpenFileContent = workshopOpenFileContent,
-            workshopEidosMode = workshopMode,
-            workshopProjectPhase = resolvedWorkshopPhase,
-            workshopDocAlignScope = if (isPanelWorkshop) workshopDocAlignScope else null,
-            workshopUpdateSection = resolvedUpdateSection,
-            workshopUserTurns = workshopUserTurns,
-            chatHistoryTrimmed = trimmedHistory.size < conversationHistory.size,
-            conversationMemoryDepth = memoryDepth,
-            dumpEditUserMessage = if (currentScopeType == ConversationScopes.DUMP_EDIT) userMessage else null,
-            activeProvider = providerConfig.activeProvider,
-            kimiFormulaToolsLoaded = kimiFormulaTools?.isLoaded() == true,
-        )
+        val semanticIndexer = (context.applicationContext as? OptimalXApplication)?.semanticIndexer
+
+        val composedPrompt = if (isLocalProvider) {
+            ComposedPrompt(
+                systemPrompt = GemmaLocalPrompt.compose(
+                    scopeType = currentScopeType,
+                    subfolderId = currentSubfolderId,
+                    parentFolderId = currentParentFolderId,
+                    toolsEnabled = localToolsEnabled,
+                ),
+                profileId = resolvedScope.profileId,
+                entrySurface = resolvedScope.entrySurface,
+            )
+        } else {
+            EidosPromptComposer.compose(
+                resolved = resolvedScope,
+                ctx = EidosPromptComposeContext(
+                    androidContext = context,
+                    database = database,
+                    scopeType = currentScopeType,
+                    currentSubfolderId = currentSubfolderId,
+                    currentParentFolderId = currentParentFolderId,
+                    subfolderEditorSurfaceHint = subfolderEditorSurfaceHint,
+                    webPanelPageUrl = webPanelPageUrl,
+                    panelBridgeRegistry = panelBridgeRegistry,
+                    workshopOpenFileName = workshopOpenFileName,
+                    workshopOpenFileContent = workshopOpenFileContent,
+                    workshopEidosMode = workshopMode,
+                    workshopProjectPhase = resolvedWorkshopPhase,
+                    workshopDocAlignScope = if (isPanelWorkshop) workshopDocAlignScope else null,
+                    workshopUpdateSection = resolvedUpdateSection,
+                    workshopUserTurns = workshopUserTurns,
+                    dumpEditUserMessage = if (currentScopeType == ConversationScopes.DUMP_EDIT) userMessage else null,
+                    userMessage = userMessage,
+                    conversationId = conversationId,
+                    semanticIndexer = semanticIndexer,
+                    internalVolatilePrompt = internalVolatilePrompt,
+                    imageStudioHub = imageStudioHub,
+                    imageStudioSaveSubfolderId = imageStudioSaveSubfolderId,
+                    imageStudioActivePreviewFileName = imageStudioActivePreviewFileName,
+                    legacyAssembler = {
+                        assembleSystemPrompt(
+                            baseSystemPrompt = baseSystemPrompt,
+                            currentSubfolderId = currentSubfolderId,
+                            currentParentFolderId = currentParentFolderId,
+                            currentScopeType = currentScopeType,
+                            subfolderEditorSurfaceHint = subfolderEditorSurfaceHint,
+                            webPanelPageUrl = webPanelPageUrl,
+                            workshopOpenFileName = workshopOpenFileName,
+                            workshopOpenFileContent = workshopOpenFileContent,
+                            workshopEidosMode = workshopMode,
+                            workshopProjectPhase = resolvedWorkshopPhase,
+                            workshopDocAlignScope = if (isPanelWorkshop) workshopDocAlignScope else null,
+                            workshopUpdateSection = resolvedUpdateSection,
+                            workshopUserTurns = workshopUserTurns,
+                        )
+                    },
+                ),
+            )
+        }
+        val assembledSystemPrompt = composedPrompt.systemPrompt
+        val stableSystemPrefix = composedPrompt.stableSystemPrefix.takeIf { it.isNotBlank() }
+        val volatileSystemSuffix = composedPrompt.volatileSystemSuffix.takeIf { it.isNotBlank() }
+        val toolAllowlistHash = EidosPromptTrace.toolAllowlistHash(effectiveToolDefinitions.map { it.name })
 
         val storedXaiModel = context.settingsDataStore.data.first()[SettingsKeys.XAI_MODEL]
         val xaiModel = when {
@@ -246,16 +394,31 @@ class EidosApiClient(
             XAI_MODEL_CHOICES.any { it.modelId == storedXaiModel } -> storedXaiModel
             else -> SettingsDefaults.XAI_MODEL
         }
-        val provider = getProvider(
-            activeProvider = providerConfig.activeProvider,
-            apiKey = apiKey,
-            xaiModel = xaiModel,
-            kimiFormulaTools = kimiFormulaTools,
+        val provider = if (isLocalProvider) {
+            buildLitertLmProvider()
+        } else {
+            getProvider(
+                activeProvider = providerConfig.activeProvider,
+                apiKey = apiKey.orEmpty(),
+                xaiModel = xaiModel,
+                httpClient = activeHttpClient,
+                kimiFormulaTools = kimiFormulaTools,
+            )
+        }
+        val userThinkingLevel = EidosThinkingLevel.fromWire(
+            context.settingsDataStore.data.first()[SettingsKeys.EIDOS_THINKING_LEVEL]
+                ?: SettingsDefaults.EIDOS_THINKING_LEVEL,
+        )
+        val resolvedThinking = EidosThinkingResolver.resolve(
+            scopeAllowsThinking = resolvedProfile.thinkingEnabled,
+            userLevel = userThinkingLevel,
+            provider = providerConfig.activeProvider,
         )
         val family = providerFamily(providerConfig.activeProvider)
         val resolvedPromptCacheKey = promptCacheKey
             ?: conversationId?.let { "optimalx-conv-$it" }
-        val mutableHistory = trimmedHistory.toMutableList()
+        val transportMetrics = EidosContextTransportMetrics(providerName, enabled = logTokenUsage)
+        val mutableHistory = conversationHistory.toMutableList()
 
         if (workshopMode != null) {
             WorkshopEidosSession.begin(
@@ -267,6 +430,15 @@ class EidosApiClient(
             )
         }
         val reasoningHops = mutableListOf<EidosReasoningHop>()
+        val navigationTargets = mutableListOf<EidosNavigationTarget>()
+        val navigationLookup = EidosNavigationLookup(
+            database.subfolderDao(),
+            database.parentFolderDao(),
+        )
+        val navigationScope = EidosNavigationScope(
+            subfolderId = currentSubfolderId,
+            workshopSubfolderId = if (isPanelWorkshop) currentSubfolderId else null,
+        )
         val traceRecorder = EidosApiTraceRecorder.createIfEnabled(context, database)
         val traceScopeType = currentScopeType ?: when {
             currentSubfolderId != null -> "subfolder"
@@ -290,6 +462,11 @@ class EidosApiClient(
                 scopeType = traceScopeType,
                 provider = providerConfig.activeProvider,
                 userMessage = userMessage,
+                resolvedProfileId = resolvedScope.profileId,
+                entrySurface = resolvedScope.entrySurface.name,
+                toolAllowlistHash = toolAllowlistHash,
+                stablePrefixSha256 = composedPrompt.stablePrefixSha256,
+                sectionCharCountsJson = composedPrompt.sectionCharCountsJson,
             )
         }
         var traceStatus = "completed"
@@ -297,6 +474,8 @@ class EidosApiClient(
         var workingRequest = buildTracedRequest(
             traceRecorder = traceRecorder,
             systemPrompt = assembledSystemPrompt,
+            stableSystemPrefix = stableSystemPrefix,
+            volatileSystemSuffix = volatileSystemSuffix,
             conversationHistory = mutableHistory,
             toolDefinitions = effectiveToolDefinitions,
             userMessage = userMessage,
@@ -304,10 +483,18 @@ class EidosApiClient(
             promptCacheKey = resolvedPromptCacheKey,
             phase = EidosRequestPhase.FULL,
             streamListener = streamListener,
+            thinkingEnabled = resolvedThinking.thinkingEnabled,
+            reasoningEffort = resolvedThinking.reasoningEffort,
+            toolResultReplayRounds = resolvedProfile.transportHints.toolResultReplayRounds,
+            localGemma = isLocalProvider,
+            attachedImagePaths = attachedImagePaths,
         )
 
         var attempts = 0
-        var maxAttempts = 2
+        var maxAttempts = EidosTransportRetryPolicy.maxAttempts(
+            isTransientNetwork = false,
+            isInternal = EidosTransportRetryPolicy.isFailFastSurface(entrySurface),
+        )
         var lastError: Throwable? = null
         var providerRound = 0
         while (attempts < maxAttempts) {
@@ -321,6 +508,7 @@ class EidosApiClient(
                     round = providerRound,
                     response = response,
                 )
+                transportMetrics.record(providerRound, response.usage?.inputTokens)
                 // Some provider response chains can get "stale" after tool configuration changes
                 // (for example, switching to hosted web tools). If a chained turn returns no text
                 // and no tool calls, retry once without previous_response_id.
@@ -338,58 +526,18 @@ class EidosApiClient(
                         round = providerRound,
                         response = response,
                     )
+                    transportMetrics.record(providerRound, response.usage?.inputTokens)
                     workingRequest = freshRequest
                 }
                 var currentResponseId = response.providerResponseId
-                var workshopChatToolRound = 0
-                var workshopBuildToolRound = 0
+                var toolRound = 0
+                val maxToolRounds = resolvedProfile.loopPolicy.maxToolRounds
 
                 while (response.toolCalls.isNotEmpty()) {
                     currentCoroutineContext().ensureActive()
                     // Tool continuations send conversationHistory only (userMessage is blank).
                     // Seed the current turn so the model is not one message behind.
                     ensureActiveUserTurnInHistory(mutableHistory, userMessage)
-                    if (isPanelWorkshop && workshopMode != WorkshopEidosMode.CHAT) {
-                        workshopBuildToolRound += 1
-                        if (workshopBuildToolRound > WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS) {
-                            val toolNames = WorkshopToolRoundPause.toolNamesInCurrentExchange(
-                                history = mutableHistory,
-                                pendingToolCalls = response.toolCalls,
-                            )
-                            if (logTokenUsage) {
-                                WorkshopToolRoundPause.logToolCapPaused(
-                                    roundsCompleted = workshopBuildToolRound - 1,
-                                    cap = WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS,
-                                    toolNames = toolNames,
-                                )
-                            }
-                            val pendingProposalCount = currentSubfolderId?.let { subId ->
-                                database.pendingChangeDao().findOpenSetForScope(
-                                    SCOPE_WORKSHOP_PROJECT,
-                                    subId,
-                                )?.let { database.pendingChangeDao().countPending(it.id) } ?: 0
-                            } ?: 0
-                            val pauseText = WorkshopToolRoundPause.buildPauseMessage(
-                                cap = WorkshopToolRoundPause.WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS,
-                                roundsCompleted = workshopBuildToolRound - 1,
-                                toolNames = toolNames,
-                                lastAssistantText = response.textResponse,
-                                phase = resolvedWorkshopPhase,
-                                mode = workshopMode,
-                                activeKickoff = activeBuildKickoff,
-                                pendingProposalCount = pendingProposalCount,
-                            )
-                            return EidosResponse(
-                                textResponse = pauseText,
-                                toolCalls = emptyList(),
-                                providerResponseId = currentResponseId,
-                                assistantReasoningContent = response.assistantReasoningContent,
-                                workshopPausedForToolCap = true,
-                                workshopToolRoundsCompleted = workshopBuildToolRound - 1,
-                                workshopPausedForHandoff = true,
-                            ).withReasoningTrace(reasoningHops)
-                        }
-                    }
                     if (workshopMode == WorkshopEidosMode.CHAT) {
                         val disallowed = response.toolCalls.filter { call ->
                             !isAllowedToolName(
@@ -404,19 +552,23 @@ class EidosApiClient(
                                 toolCalls = emptyList(),
                                 providerResponseId = currentResponseId,
                             ).withReasoningTrace(reasoningHops)
+                                .withNavigationTargets(navigationTargets)
                         }
-                        workshopChatToolRound += 1
-                        if (workshopChatToolRound > WORKSHOP_CHAT_MAX_TOOL_ROUNDS) {
-                            return EidosResponse(
-                                textResponse = response.textResponse.ifBlank {
-                                    "I'm in Chat mode and have read enough context. Reply with your question, " +
-                                        "or switch to Edit mode if you want file changes."
-                                },
-                                toolCalls = emptyList(),
-                                providerResponseId = currentResponseId,
-                                assistantReasoningContent = response.assistantReasoningContent,
-                            ).withReasoningTrace(reasoningHops)
-                        }
+                    }
+                    // Circuit breaker: stop before executing another round past the profile cap.
+                    toolRound += 1
+                    if (toolRound > maxToolRounds) {
+                        return EidosResponse(
+                            textResponse = EidosToolLoopPause.message(
+                                priorText = response.textResponse,
+                                toolRounds = toolRound - 1,
+                                pendingToolNames = response.toolCalls.map { it.name }.distinct(),
+                            ),
+                            toolCalls = emptyList(),
+                            providerResponseId = currentResponseId,
+                            assistantReasoningContent = response.assistantReasoningContent,
+                        ).withReasoningTrace(reasoningHops)
+                            .withNavigationTargets(navigationTargets)
                     }
                     val replayToolCalls = response.toolCalls.map { call ->
                         redactToolCallForKimiReplay(
@@ -484,18 +636,34 @@ class EidosApiClient(
                                     toolCalls = emptyList(),
                                     providerResponseId = currentResponseId,
                                 ).withReasoningTrace(reasoningHops)
+                                    .withNavigationTargets(navigationTargets)
                             }
                         }
 
+                        val enrichedArgumentsJson = enrichToolArguments(
+                            toolName = toolCall.name,
+                            argumentsJson = toolCall.argumentsJson,
+                            currentSubfolderId = currentSubfolderId,
+                            currentParentFolderId = currentParentFolderId,
+                            currentScopeType = currentScopeType,
+                            workshopHostLink = workshopHostLink,
+                            imageStudioHub = imageStudioHub,
+                            imageStudioSaveSubfolderId = imageStudioSaveSubfolderId,
+                        )
                         val toolResult = toolExecutor.execute(
                             toolCall.name,
-                            enrichToolArguments(
-                                toolName = toolCall.name,
-                                argumentsJson = toolCall.argumentsJson,
-                                currentSubfolderId = currentSubfolderId,
-                                currentScopeType = currentScopeType,
-                            ),
+                            enrichedArgumentsJson,
                         )
+                        if (toolResult is ToolExecutionResult.Success) {
+                            // Resolve from enriched args (scope-injected ids) so chips match what ran.
+                            EidosNavigationResolver.resolve(
+                                toolName = toolCall.name,
+                                args = EidosNavigationResolver.parseToolArguments(enrichedArgumentsJson),
+                                result = toolResult,
+                                lookup = navigationLookup,
+                                scope = navigationScope,
+                            )?.let { navigationTargets += it }
+                        }
                         val toolResultText = when (toolResult) {
                             is ToolExecutionResult.Success -> toolResult.content
                             is ToolExecutionResult.Failure -> "Tool execution failed: ${toolResult.message}"
@@ -511,13 +679,21 @@ class EidosApiClient(
                     }
 
                     val continuationSlice = lastToolRoundMessages(mutableHistory)
-                    // Workshop multi-tool runs need full system + history every hop (file manifest, mode, IDs).
-                    val useIncremental = !isPanelWorkshop &&
+
+                    // RESPONSES_CHAINED (xAI/OpenAI): chain via previous_response_id + empty system +
+                    // last tool round only. Never opt workshop out of this — that was the token-burn bug.
+                    val useIncremental = resolvedProfile.transportHints.incrementalContinuation &&
                         providerFamilyUsesIncrementalToolContinuation(family) &&
                         !currentResponseId.isNullOrBlank()
+                    // MESSAGES_CACHED (Kimi/Anthropic): keep growing history but drop the cached
+                    // system block on hop 2+ instead of re-sending the full prose every hop.
+                    val omitSystemForMessages = resolvedProfile.transportHints.omitSystemOnContinuation &&
+                        providerFamilyOmitsSystemOnToolContinuation(family)
                     workingRequest = buildTracedRequest(
                         traceRecorder = traceRecorder,
-                        systemPrompt = if (useIncremental) "" else assembledSystemPrompt,
+                        systemPrompt = if (useIncremental || omitSystemForMessages) "" else assembledSystemPrompt,
+                        stableSystemPrefix = if (useIncremental || omitSystemForMessages) null else stableSystemPrefix,
+                        volatileSystemSuffix = if (useIncremental || omitSystemForMessages) null else volatileSystemSuffix,
                         conversationHistory = if (useIncremental) {
                             continuationSlice
                         } else {
@@ -529,6 +705,11 @@ class EidosApiClient(
                         promptCacheKey = resolvedPromptCacheKey,
                         phase = EidosRequestPhase.TOOL_CONTINUATION,
                         streamListener = streamListener,
+                        thinkingEnabled = resolvedThinking.thinkingEnabled,
+                        reasoningEffort = resolvedThinking.reasoningEffort,
+                        toolResultReplayRounds = resolvedProfile.transportHints.toolResultReplayRounds,
+                        localGemma = isLocalProvider,
+                        attachedImagePaths = emptyList(),
                     )
                     currentCoroutineContext().ensureActive()
                     response = provider.send(workingRequest)
@@ -540,43 +721,76 @@ class EidosApiClient(
                         round = providerRound,
                         response = response,
                     )
+                    transportMetrics.record(providerRound, response.usage?.inputTokens)
                     currentResponseId = response.providerResponseId
                 }
 
-                return response.withReasoningTrace(reasoningHops)
+                return response
+                    .withReasoningTrace(reasoningHops)
+                    .withNavigationTargets(navigationTargets)
             } catch (t: CancellationException) {
                 traceStatus = "cancelled"
                 throw t
             } catch (t: Throwable) {
+                currentCoroutineContext().ensureActive()
+                if (EidosTransportRetryPolicy.isCanceledCall(t)) {
+                    traceStatus = "cancelled"
+                    throw CancellationException("Provider call canceled", t)
+                }
                 attempts += 1
                 lastError = t
-                val isDns = isDnsError(t)
-                if (isTransientNetworkError(t)) {
-                    // DNS failures get more attempts — the foreground service may need
-                    // several seconds to re-elevate network priority after app minimise.
-                    maxAttempts = maxOf(maxAttempts, if (isDns) 5 else 4)
+                val isTransient = isTransientNetworkError(t)
+                val stillOnline = if (isTransient) {
+                    resolvedNetworkMonitor?.awaitValidatedInternet(
+                        timeoutMs = EidosTransportRetryPolicy.retryRevalidateWaitMs(entrySurface),
+                    ) ?: true
+                } else {
+                    resolvedNetworkMonitor?.hasValidatedInternetNow() ?: true
                 }
-                if (attempts < maxAttempts) {
-                    delay(
-                        when {
-                            isDns -> (2_000L shl (attempts - 1).coerceAtMost(3)).coerceAtMost(15_000L)
-                            isTransientNetworkError(t) -> 2_500L
-                            else -> 700L
-                        },
+                maxAttempts = EidosTransportRetryPolicy.maxAttempts(
+                    isTransientNetwork = isTransient,
+                    isInternal = EidosTransportRetryPolicy.isFailFastSurface(entrySurface),
+                )
+                if (!EidosTransportRetryPolicy.shouldRetry(
+                        attemptsUsed = attempts,
+                        maxAttempts = maxAttempts,
+                        hasValidatedInternet = stillOnline,
                     )
+                ) {
+                    break
                 }
+                delay(
+                    when {
+                        isDnsError(t) -> EidosTransportRetryPolicy.retryDelayMs(
+                            isDns = true,
+                            attemptsUsed = attempts,
+                        )
+                        isTransient -> EidosTransportRetryPolicy.retryDelayMs(
+                            isDns = false,
+                            attemptsUsed = attempts,
+                        )
+                        else -> 700L
+                    },
+                )
             }
         }
 
         traceStatus = "error"
+        if (resolvedNetworkMonitor?.hasValidatedInternetNow() == false) {
+            return offlineTransportResponse()
+                .withReasoningTrace(reasoningHops)
+                .withNavigationTargets(navigationTargets)
+        }
         return EidosResponse(
             textResponse = buildProviderErrorMessage(
                 activeProvider = providerConfig.activeProvider,
                 error = lastError,
-                attemptedRetry = true,
+                attemptedRetry = attempts > 1,
             ),
             toolCalls = emptyList(),
+            transportFailure = true,
         ).withReasoningTrace(reasoningHops)
+            .withNavigationTargets(navigationTargets)
         } finally {
             traceRecorder?.finishRun(traceStatus)
             if (workshopMode != null) {
@@ -596,13 +810,15 @@ class EidosApiClient(
     suspend fun preloadKimiFormulaTools() {
         val config = getProviderConfig()
         if (config.activeProvider != "kimi" || config.apiKey.isNullOrBlank()) return
-        EidosSendForegroundService.acquire(context)
-        try {
-            KimiFormulaToolService(apiKey = config.apiKey, client = httpClient, json = json)
-                .ensureLoadedWithRetry()
-        } finally {
-            EidosSendForegroundService.release(context)
-        }
+        KimiFormulaToolService(apiKey = config.apiKey, client = interactiveHttpClient, json = json)
+            .ensureLoadedWithRetry(
+                maxAttempts = EidosTransportRetryPolicy.TRANSIENT_MAX_ATTEMPTS,
+                awaitValidatedInternet = {
+                    resolvedNetworkMonitor?.awaitValidatedInternet(
+                        timeoutMs = EidosTransportRetryPolicy.PRELOAD_AWAIT_MS,
+                    ) ?: true
+                },
+            )
     }
 
     private suspend fun getProviderConfig(): ProviderConfig {
@@ -612,20 +828,59 @@ class EidosApiClient(
             ?: SettingsDefaults.ACTIVE_PROVIDER
 
         val keyName = when (activeProvider) {
+            LitertLmDefaults.PROVIDER_ID -> null
             "openai" -> ApiKeyNames.OPENAI
             "anthropic" -> ApiKeyNames.ANTHROPIC
             "kimi" -> ApiKeyNames.KIMI
             else -> ApiKeyNames.XAI
         }
 
-        val apiKey = encryptedPrefs.getString(keyName, null)
+        val apiKey = keyName?.let { encryptedPrefs.getString(it, null) }
         return ProviderConfig(activeProvider = activeProvider, apiKey = apiKey)
+    }
+
+    private suspend fun buildLitertLmProvider(): LitertLmProvider {
+        val prefs = context.settingsDataStore.data.first()
+        val modelPath = LitertLmDefaults.resolveModelPath(
+            context,
+            prefs[SettingsKeys.LITERT_MODEL_PATH].orEmpty(),
+        )
+        val backend = LitertLmBackend.fromWire(
+            prefs[SettingsKeys.LITERT_BACKEND] ?: SettingsDefaults.LITERT_BACKEND,
+        )
+        val app = context.applicationContext as OptimalXApplication
+        return LitertLmProvider(
+            engineHolder = app.litertLmEngineHolder,
+            modelPath = modelPath,
+            backend = backend,
+        )
+    }
+
+    /**
+     * Background/summary work ([EidosEntrySurface.INTERNAL] — conversation and note rolling
+     * summaries, content summaries, memory rollover) is farmed out to xAI when an xAI key is saved.
+     * This keeps the user's active provider (e.g. Kimi) focused on the user-facing reply, cuts
+     * first-token latency, and avoids extra provider round-trips after every save. Falls back to the
+     * active provider when no xAI key is present.
+     */
+    private suspend fun resolveProviderConfig(entrySurface: EidosEntrySurface): ProviderConfig {
+        if (entrySurface == EidosEntrySurface.INTERNAL) {
+            getXaiProviderConfig()?.let { return it }
+        }
+        return getProviderConfig()
+    }
+
+    private suspend fun getXaiProviderConfig(): ProviderConfig? {
+        val apiKey = getEncryptedPrefs(context).getString(ApiKeyNames.XAI, null)
+        if (apiKey.isNullOrBlank()) return null
+        return ProviderConfig(activeProvider = "xai", apiKey = apiKey)
     }
 
     private fun getProvider(
         activeProvider: String,
         apiKey: String,
         xaiModel: String,
+        httpClient: OkHttpClient,
         kimiFormulaTools: KimiFormulaToolService? = null,
     ): EidosProvider {
         return when (activeProvider) {
@@ -640,6 +895,12 @@ class EidosApiClient(
             else -> XAIProvider(apiKey = apiKey, client = httpClient, json = json, model = xaiModel)
         }
     }
+
+    private fun offlineTransportResponse(): EidosResponse = EidosResponse(
+        textResponse = "No internet connection right now. Check your signal and try again.",
+        toolCalls = emptyList(),
+        transportFailure = true,
+    )
 
     private fun isDnsError(error: Throwable): Boolean {
         var current: Throwable? = error
@@ -699,12 +960,6 @@ class EidosApiClient(
             return "$provider timed out at $endpoint.$retryLine The request may still be processing on the provider side. Try again, reduce request size, or switch to a faster model."
         }
 
-        if (ChatMessagePersistLimits.isCursorWindowRowTooLarge(error)) {
-            return "Local storage hit SQLite's row size limit (oversized chat message). " +
-                "The app will try to repair this on the next send; if it persists, tap New chat for this workshop.$retryLine " +
-                "Clearing build plan or deleting IMPLEMENTATION_PLAN.md does not remove old chat rows."
-        }
-
         val detail = error?.message?.take(220)?.trim().orEmpty()
         return if (detail.isNotBlank()) {
             "$provider is unavailable right now.$retryLine Details: $detail"
@@ -714,6 +969,7 @@ class EidosApiClient(
     }
 
     private fun providerDisplayName(activeProvider: String): String = when (activeProvider) {
+        LitertLmDefaults.PROVIDER_ID -> "Local Gemma (LiteRT-LM)"
         "openai" -> "OpenAI"
         "anthropic" -> "Anthropic"
         "kimi" -> "Kimi (Moonshot)"
@@ -721,6 +977,7 @@ class EidosApiClient(
     }
 
     private fun providerEndpoint(activeProvider: String): String = when (activeProvider) {
+        LitertLmDefaults.PROVIDER_ID -> "on-device litertlm"
         "openai" -> "https://api.openai.com/v1/responses"
         "anthropic" -> "https://api.anthropic.com/v1/messages"
         "kimi" -> "https://api.moonshot.ai/v1/chat/completions"
@@ -749,161 +1006,38 @@ class EidosApiClient(
         workshopDocAlignScope: WorkshopDocAlignScope? = null,
         workshopUpdateSection: WorkshopUpdateSection? = null,
         workshopUserTurns: Int = 0,
-        chatHistoryTrimmed: Boolean = false,
-        conversationMemoryDepth: String = SettingsDefaults.CONVERSATION_MEMORY_DEPTH,
-        dumpEditUserMessage: String? = null,
-        activeProvider: String? = null,
-        kimiFormulaToolsLoaded: Boolean = false,
     ): String {
-        val activeScope = currentScopeType ?: when {
-            currentSubfolderId != null -> "subfolder"
-            currentParentFolderId != null -> "parent"
-            else -> "general"
-        }
-        val isWorkshopScope = activeScope == ConversationScopes.PANEL_WORKSHOP
-        val lines = mutableListOf(baseSystemPrompt)
-        lines += if (isWorkshopScope) {
-            EidosContextLimits.WORKSHOP_TOOL_FIRST_CONTEXT_RULES
-        } else {
-            EidosContextLimits.TOOL_FIRST_CONTEXT_RULES
-        }
-        if (!isWorkshopScope) {
-            lines += """
-                Active location rule:
-                - Default all folder/note create/write actions to the current in-app location.
-                - Do not create or write in other folders unless the user explicitly names a different destination.
-            """.trimIndent()
-        }
-        when {
-            isWorkshopScope && activeProvider == "kimi" && kimiFormulaToolsLoaded -> lines += """
-                Kimi Formula (Panel Workshop): web_search and fetch for public docs/APIs when needed; cite URLs.
-                Workshop tools only in this scope — see mode instructions for the active allowlist.
-            """.trimIndent()
-            isWorkshopScope && activeProvider == "kimi" -> lines += """
-                Kimi Formula web_search/fetch did not load — use workshop tools and local context only.
-            """.trimIndent()
-            isWorkshopScope -> lines += """
-                Use the active provider's hosted web search when available for public facts; cite sources.
-            """.trimIndent()
-            activeProvider == "kimi" && kimiFormulaToolsLoaded -> lines += """
-                Provider-native web access is enabled when the selected API provider supports it (xAI, OpenAI, Anthropic, Kimi).
-                Use provider web search for public web information when available; cite source links when present.
-                Kimi uses Moonshot Formula web_search and fetch with thinking enabled (not Kimi builtin_function search).
-                For Kimi: use web_search to discover sources, then fetch to read specific URLs when page content is needed.
-                When fetch or search returns URLs, cite them in your reply (markdown links when helpful).
-                Kimi also has Formula utility tools — use them instead of in-thought math or flattened reads:
-                • convert — unit and currency conversions (length, mass, volume, temperature, currency, etc.)
-                • date — date/time arithmetic, weekday, timezone math, formatting
-                • excel — Excel/CSV structural analysis. Prefer this over read_file for .xlsx/.xls/.csv (read_file flattens cells).
-                Local Eidos tools handle OptimalX folders, notes, files, journal, log, and local search.
-            """.trimIndent()
-            activeProvider == "kimi" -> lines += """
-                Kimi Formula web tools (web_search, fetch) are unavailable this turn — the Moonshot Formula API did not load.
-                Answer from local knowledge and OptimalX tools only; tell the user live web lookup failed if they asked for current web data.
-                Local Eidos tools handle OptimalX folders, notes, files, journal, log, and local search.
-            """.trimIndent()
-            else -> lines += """
-                Provider-native web access is enabled when the selected API provider supports it (xAI, OpenAI, Anthropic, Kimi).
-                Use provider web search for public web information when available; cite source links when present.
-                Local Eidos tools handle OptimalX folders, notes, files, journal, log, and local search.
-            """.trimIndent()
-        }
-        lines += "Active scope: $activeScope"
+        val lines = mutableListOf<String>()
+        val activeScope = EidosSystemPromptLayers.resolveActiveScope(
+            currentScopeType = currentScopeType,
+            currentSubfolderId = currentSubfolderId,
+            currentParentFolderId = currentParentFolderId,
+        )
+        lines += EidosSystemPromptLayers.universalIdentityAndRetrieval(baseSystemPrompt, activeScope)
 
-        val isWebChatScope = activeScope == "web_editor" || activeScope == "web_widget"
-        val loadedWebUrl = webPanelPageUrl?.trim().orEmpty()
-        if (loadedWebUrl.isNotEmpty()) {
-            lines += """
-                In-app web browser (OptimalX Web panel):
-                Loaded page URL: $loadedWebUrl
-                The WebView renders this page for the user, but page HTML/text is NOT in this prompt.
-                When they refer to "this page", "this site", "the article", "here", or visible page content, they mean this URL — call Kimi Formula fetch on it (or web_search then fetch) before answering; do not guess page content.
-            """.trimIndent()
-        }
-        if (isWebChatScope) {
-            val webToolNote = if (activeProvider == "kimi" && kimiFormulaToolsLoaded) {
-                """
-                - Kimi Formula web_search and fetch are available — use them for live web facts and to read page bodies (including the loaded tab URL).
-                - web_search: discover sources and current public information; fetch: read a specific URL's content for grounding and citations.
-                """.trimIndent()
-            } else if (activeProvider == "kimi") {
-                """
-                - Kimi Formula web_search/fetch did not load this turn — say live web lookup is unavailable if the user needs off-device facts or page text.
-                """.trimIndent()
-            } else {
-                """
-                - Use the active provider's hosted web search/fetch when available for live facts and URL content.
-                """.trimIndent()
-            }
-            lines += """
-                Web-scoped chat rules:
-                - The loaded tab URL (when present) is focus metadata only — you cannot see the WebView; retrieve page text via tools.
-                $webToolNote
-                - Use prior messages in this same search thread only when they help answer about the current page or the active search topic.
-                - Do not assume context from other search threads unless the user explicitly refers to earlier research outside this search.
-            """.trimIndent()
+        val isWebChatScope = EidosSystemPromptLayers.isWebChatScope(activeScope)
+        if (!isWebChatScope) {
+            EidosSystemPromptLayers.webPanelUrlBlock(webPanelPageUrl.orEmpty())?.let { lines += it }
         }
 
-        if (activeScope == ConversationScopes.PANEL_GALLERY) {
-            lines += PanelGalleryContext.buildPromptBlock(context, database)
-        }
-
-        if (activeScope == ConversationScopes.DUMP_EDIT) {
-            val app = context.applicationContext as OptimalXApplication
-            lines += DumpEditContext.buildPromptBlock(
-                context = context,
-                userMessage = dumpEditUserMessage,
-                contentSectionRetriever = ContentSectionRetriever(app.embeddingEngine),
-            )
-            lines += """
-                DumpEdit rules:
-                - The user is in the DumpEdit scratch buffer — not a saved folder note.
-                - Use read_dump_edit(query=...) to read buffer sections when content is large or AI locked.
-                - Do not use write_note on DumpEdit; the user promotes to a folder when they want to keep content.
-            """.trimIndent()
-        } else if (currentSubfolderId != null) {
+        if (currentSubfolderId != null &&
+            activeScope != "content_summary" &&
+            activeScope != ConversationScopes.QUICK_NOTES_DAY &&
+            activeScope != ConversationScopes.SUBFOLDER &&
+            activeScope != ConversationScopes.WEB_EDITOR &&
+            activeScope != ConversationScopes.PANEL_RUNNER &&
+            activeScope != ConversationScopes.PANEL_WORKSHOP
+        ) {
             val subfolder = database.subfolderDao().getById(currentSubfolderId)
             if (subfolder != null) {
-                if (activeScope == ConversationScopes.PANEL_RUNNER) {
-                    lines += PanelRunnerContext.buildPromptBlock(context, database, subfolder)
-                } else if (activeScope == ConversationScopes.PANEL_WORKSHOP) {
-                    lines += buildWorkshopPanelContext(
-                        subfolder = subfolder,
-                        workshopOpenFileName = workshopOpenFileName,
-                        workshopOpenFileContent = workshopOpenFileContent,
-                        workshopEidosMode = workshopEidosMode ?: WorkshopEidosMode.EDIT,
-                        workshopProjectPhase = workshopProjectPhase,
-                        workshopDocAlignScope = workshopDocAlignScope,
-                        workshopUpdateSection = workshopUpdateSection,
-                        workshopUserTurns = workshopUserTurns,
-                    )
-                } else {
-                    lines += buildSubfolderContext(subfolder)
+                lines += SubfolderContext.buildVolatileContext(database, subfolder)
+                if (EidosSystemPromptLayers.isNoteEditScope(activeScope)) {
+                    lines += EidosSystemPromptLayers.NOTE_WRITE_RULES
                 }
-                val workshopEditWithBridge = activeScope == ConversationScopes.PANEL_WORKSHOP &&
-                    WorkshopEidosMode.normalizeToUserChip(
-                        workshopEidosMode ?: WorkshopEidosMode.EDIT,
-                    ) == WorkshopEidosMode.EDIT &&
-                    (workshopProjectPhase?.allowsCallPanelFunction == true)
-                val skipPanelBridge = activeScope == ConversationScopes.PANEL_WORKSHOP && !workshopEditWithBridge
-                if (!skipPanelBridge || activeScope == ConversationScopes.PANEL_RUNNER) {
-                    val bridgeContext = buildPanelBridgeContext(
-                        currentSubfolderId = currentSubfolderId,
-                        currentScopeType = activeScope,
-                    )
-                    if (bridgeContext != null) {
-                        lines += bridgeContext
-                    } else when (activeScope) {
-                        ConversationScopes.PANEL_WORKSHOP ->
-                            if (workshopEditWithBridge) {
-                                lines += PanelPlatformSpec.inactivePanelBridgeContextBlock()
-                            }
-                        ConversationScopes.PANEL_RUNNER ->
-                            lines += PanelPlatformSpec.inactivePanelRunnerBridgeContextBlock()
-                        else -> Unit
-                    }
-                }
-                lines += "Active parent folder ID: ${subfolder.parentFolderId}"
+                lines += ParentFolderContext.formatActiveParentLine(
+                    database.parentFolderDao().getById(subfolder.parentFolderId)?.name,
+                    subfolder.parentFolderId,
+                )
                 if (!isWebChatScope) {
                     val surface = subfolderEditorSurfaceHint?.trim().orEmpty()
                     if (surface.isNotEmpty()) {
@@ -911,56 +1045,20 @@ class EidosApiClient(
                     }
                 }
             }
-        } else if (currentParentFolderId != null) {
-            lines += buildParentFolderContext(currentParentFolderId)
-        }
-
-        lines += "In-chat memory depth: $conversationMemoryDepth (conversation override or Settings default)."
-        if (chatHistoryTrimmed) {
-            lines += PanelPlatformSpec.historyTrimNotice(conversationMemoryDepth)
         }
 
         return lines.joinToString("\n\n")
-    }
-
-    private suspend fun buildPanelBridgeContext(
-        currentSubfolderId: Long,
-        currentScopeType: String,
-    ): String? {
-        val snapshot = panelBridgeRegistry?.snapshot(
-            currentSubfolderId = currentSubfolderId,
-            currentScopeType = currentScopeType,
-        )
-        if (snapshot == null || !snapshot.hasEligiblePanel) {
-            return null
-        }
-        val fnList = if (snapshot.availableFunctions.isEmpty()) "(none reported)" else snapshot.availableFunctions.joinToString(", ")
-        val eventLines = if (snapshot.recentEvents.isEmpty()) {
-            "- Recent panel events: (none)"
-        } else {
-            snapshot.recentEvents.joinToString(
-                separator = "\n",
-                prefix = "- Recent panel events:\n",
-            ) { evt ->
-                "  - ${evt.name} @ ${evt.timestamp}: ${evt.payloadJson.take(220)}"
-            }
-        }
-        return """
-            Panel Bridge (ACTIVE — call_panel_function will reach live panel JS):
-            - Context: ${snapshot.activeContextType ?: "unknown"} (workshopSubfolderId=${snapshot.activeWorkshopSubfolderId ?: -1})
-            - Registered functions: $fnList
-            - getState: functionName=getState, args="{}" — returns panel/game state from script.js panelGetState
-            - runAction: functionName=runAction, args JSON string e.g. {"action":"newGame"} or {"action":"move","x":1} — handled by script.js panelHandleAction
-            - Game/agent loop: getState → plan → runAction → getState until done; use search_semantic or workshop_read_file(query) for script.js action names
-            $eventLines
-        """.trimIndent()
     }
 
     private fun enrichToolArguments(
         toolName: String,
         argumentsJson: String,
         currentSubfolderId: Long?,
+        currentParentFolderId: Long?,
         currentScopeType: String?,
+        workshopHostLink: WorkshopHostLink? = null,
+        imageStudioHub: Boolean? = null,
+        imageStudioSaveSubfolderId: Long? = null,
     ): String {
         val args = runCatching { json.parseToJsonElement(argumentsJson).jsonObject }.getOrNull()
             ?: return argumentsJson
@@ -979,26 +1077,85 @@ class EidosApiClient(
                 enriched.toString()
             }
             "search_semantic" -> {
-                val scopeProjectId = when (currentScopeType) {
-                    ConversationScopes.PANEL_WORKSHOP, ConversationScopes.PANEL_RUNNER -> currentSubfolderId
-                    else -> null
-                }
-                if (scopeProjectId == null) {
+                val enriched = EidosSearchSemanticEnrich.enrich(
+                    args = args,
+                    currentScopeType = currentScopeType,
+                    currentSubfolderId = currentSubfolderId,
+                    currentParentFolderId = currentParentFolderId,
+                    workshopHostLink = workshopHostLink,
+                )
+                enriched?.toString() ?: argumentsJson
+            }
+            "create_subfolder" -> {
+                if (currentParentFolderId == null || args.containsKey("parentFolderId")) {
                     return argumentsJson
                 }
                 val enriched = buildJsonObject {
                     args.forEach { (key, value) -> put(key, value) }
-                    if (!args.containsKey("scopeType")) {
-                        put("scopeType", JsonPrimitive("local_first"))
+                    put("parentFolderId", JsonPrimitive(currentParentFolderId))
+                }
+                enriched.toString()
+            }
+            "search_folders" -> {
+                if (currentParentFolderId == null || args.containsKey("parentFolderId")) {
+                    return argumentsJson
+                }
+                val enriched = buildJsonObject {
+                    args.forEach { (key, value) -> put(key, value) }
+                    put("parentFolderId", JsonPrimitive(currentParentFolderId))
+                }
+                enriched.toString()
+            }
+            "list_images" -> {
+                val enriched = buildJsonObject {
+                    args.forEach { (key, value) -> put(key, value) }
+                    if (!currentScopeType.isNullOrBlank() && !args.containsKey("currentScopeType")) {
+                        put("currentScopeType", JsonPrimitive(currentScopeType))
                     }
-                    if (!args.containsKey("scopeId")) {
-                        put("scopeId", JsonPrimitive(scopeProjectId))
+                    if (currentSubfolderId != null && !args.containsKey("currentSubfolderId")) {
+                        put("currentSubfolderId", JsonPrimitive(currentSubfolderId))
+                    }
+                    if (currentScopeType == ConversationScopes.IMAGE_STUDIO) {
+                        if (!args.containsKey("scope")) {
+                            put("scope", JsonPrimitive(if (imageStudioHub == true) "all" else "subfolder"))
+                        }
+                        if (imageStudioHub != null && !args.containsKey("imageStudioHub")) {
+                            put("imageStudioHub", JsonPrimitive(imageStudioHub))
+                        }
+                        val scopeArg = args["scope"]?.jsonPrimitive?.contentOrNull
+                            ?: if (imageStudioHub == true) "all" else "subfolder"
+                        if (
+                            scopeArg == "subfolder" &&
+                            !args.containsKey("subfolderId")
+                        ) {
+                            val sid = imageStudioSaveSubfolderId ?: currentSubfolderId
+                            if (sid != null) put("subfolderId", JsonPrimitive(sid))
+                        }
                     }
                 }
                 enriched.toString()
             }
-            "workshop_write_file", "workshop_create_file", "workshop_replace_string",
+            "list_folder_contents" -> {
+                if (
+                    currentScopeType == ConversationScopes.IMAGE_STUDIO &&
+                    imageStudioHub != true &&
+                    !args.containsKey("folderId")
+                ) {
+                    val sid = imageStudioSaveSubfolderId ?: currentSubfolderId
+                    if (sid != null) {
+                        val enriched = buildJsonObject {
+                            args.forEach { (key, value) -> put(key, value) }
+                            put("folderId", JsonPrimitive(sid))
+                        }
+                        return enriched.toString()
+                    }
+                }
+                argumentsJson
+            }
+            "workshop_write_file", "workshop_create_file", "workshop_edit_file",
+            "workshop_append_file",
             "workshop_read_file", "workshop_list_pending_review",
+            "write_note", "edit_note_section", "read_note_section", "write_note_summary",
             -> {
                 if (currentSubfolderId == null && currentScopeType.isNullOrBlank()) {
                     return argumentsJson
@@ -1011,6 +1168,12 @@ class EidosApiClient(
                     if (!currentScopeType.isNullOrBlank() && !args.containsKey("currentScopeType")) {
                         put("currentScopeType", JsonPrimitive(currentScopeType))
                     }
+                    if (currentSubfolderId != null &&
+                        !args.containsKey("subfolderId") &&
+                        toolName in noteSubfolderTools
+                    ) {
+                        put("subfolderId", JsonPrimitive(currentSubfolderId))
+                    }
                 }
                 enriched.toString()
             }
@@ -1018,260 +1181,12 @@ class EidosApiClient(
         }
     }
 
-    private suspend fun buildWorkshopPanelContext(
-        subfolder: Subfolder,
-        workshopOpenFileName: String?,
-        workshopOpenFileContent: String?,
-        workshopEidosMode: WorkshopEidosMode,
-        workshopProjectPhase: WorkshopProjectPhase?,
-        workshopDocAlignScope: WorkshopDocAlignScope?,
-        workshopUpdateSection: WorkshopUpdateSection?,
-        workshopUserTurns: Int,
-    ): String {
-        val phase = workshopProjectPhase
-            ?: WorkshopProjectPreferences.getProjectPhase(context, subfolder.id)
-        val updateSection = workshopUpdateSection
-            ?: WorkshopProjectPreferences.getUpdateSection(context, subfolder.id)
-        val intakeSummary = WorkshopProjectPreferences.getIntakeSummary(context, subfolder.id)
-        val files = database.fileReferenceDao().getBySubfolderOnce(subfolder.id)
-        val fileManifest = WorkshopProjectContext.formatFileManifest(files)
-        val openExcerpt = if (workshopEidosMode == WorkshopEidosMode.CHAT) {
-            null
-        } else {
-            WorkshopProjectContext.formatOpenFileExcerpt(
-                workshopOpenFileName,
-                workshopOpenFileContent,
-            )
-        }
-
-        val specFallback = if (workshopEidosMode != WorkshopEidosMode.CHAT &&
-            phase != WorkshopProjectPhase.INTAKE
-        ) {
-            WorkshopSpecMarkdown.loadBounded(files)
-        } else {
-            ""
-        }
-
-        val diffReviewStatusBlock = if (WorkshopReviewPolicy.shouldReview(phase, workshopEidosMode)) {
-            val openSet = database.pendingChangeDao().findOpenSetForScope(
-                SCOPE_WORKSHOP_PROJECT,
-                subfolder.id,
-            )
-            val pendingItems = openSet?.let { database.pendingChangeDao().countPending(it.id) } ?: 0
-            WorkshopProjectContext.formatDiffReviewStatus(pendingItems)
-        } else {
-            null
-        }
-
-        return buildString {
-            appendLine("Panel Workshop — custom HTML/JS panel project")
-            appendLine("Project: ${subfolder.name} (subfolderId=${subfolder.id})")
-            appendLine("Workshop phase: ${phase.displayName} (${phase.name})")
-            appendLine("Active Eidos mode: ${workshopEidosMode.displayName} (${workshopEidosMode.name})")
-            if (phase == WorkshopProjectPhase.UPDATE) {
-                appendLine(
-                    "Update/edit: Chat, Plan, or Edit — read spec .md (incl. IMPLEMENTATION_PLAN.md) anytime; " +
-                        "spec writes and doc align run on Accept update.",
-                )
-            }
-            appendLine()
-            appendLine(fileManifest)
-            if (diffReviewStatusBlock != null) {
-                appendLine()
-                appendLine(diffReviewStatusBlock)
-            }
-            if (openExcerpt != null) {
-                appendLine()
-                append(openExcerpt)
-            } else {
-                val openName = workshopOpenFileName?.trim().orEmpty()
-                appendLine()
-                appendLine(
-                    when {
-                        workshopEidosMode == WorkshopEidosMode.CHAT && openName.isNotEmpty() ->
-                            "Editor tab: $openName (Chat mode — discuss only; use search_semantic or workshop_read_file with query)"
-                        openName.isNotEmpty() ->
-                            "Editor tab: $openName (excerpt synced from disk before this send — still prefer workshop_read_file with query before large edits)"
-                        else -> "Editor tab: (none reported)"
-                    },
-                )
-            }
-            appendLine()
-            appendLine(PanelPlatformSpec.eidosInstructionsForMode(
-                workshopEidosMode,
-                subfolder.id,
-                phase,
-                workshopDocAlignScope,
-                updateSection,
-            ))
-            appendLine()
-            appendLine(workshopContentPolicy(workshopEidosMode, phase, workshopDocAlignScope, updateSection))
-            if (intakeSummary.isNotBlank()) {
-                appendLine()
-                appendLine("Intake summary (chat alignment — authoritative for spec generation):")
-                appendLine(intakeSummary)
-            }
-            if (phase == WorkshopProjectPhase.SPEC_REVIEW) {
-                val specContents = loadWorkshopSpecContents(files)
-                appendLine()
-                appendLine(WorkshopSpecValidation.formatCapReport(specContents))
-                val readiness = WorkshopSpecValidation.evaluateAcceptReadiness(specContents)
-                appendLine()
-                appendLine(
-                    if (readiness.ready) {
-                        "Spec accept gate: ready — user may tap Accept specs after reviewing Docs."
-                    } else {
-                        "Spec accept gate: not ready — ${readiness.message}"
-                    },
-                )
-            }
-            if (phase == WorkshopProjectPhase.DESIGN_REVIEW) {
-                appendLine()
-                appendLine(
-                    "Design review: read spec .md with workshop_read_file; do not write spec .md in Edit until Accept design (doc align). " +
-                        "User validates layout in Preview.",
-                )
-            }
-            if (phase == WorkshopProjectPhase.UPDATE) {
-                appendLine()
-                appendLine(
-                    "Update/edit: runtime/code is truth for Preview; read IMPLEMENTATION_PLAN.md and other specs in Edit. " +
-                        "Spec .md writes and sync to code happen on Accept update (doc align), not per edit.",
-                )
-            }
-            if (specFallback.isNotBlank()) {
-                appendLine()
-                appendLine("Spec markdown (bounded orientation — use search_semantic / workshop_read_file for full text):")
-                appendLine(specFallback)
-            } else if (workshopEidosMode != WorkshopEidosMode.CHAT && phase != WorkshopProjectPhase.INTAKE) {
-                appendLine()
-                appendLine(
-                    "Spec orientation: use search_semantic or workshop_read_file on README/spec .md files.",
-                )
-            }
-            if (WorkshopEidosModeResolver.shouldNudgeNewChat(workshopUserTurns)) {
-                appendLine()
-                appendLine(PanelPlatformSpec.newChatNudge(workshopUserTurns))
-            }
-            appendLine()
-            appendLine("User's current request is authoritative for this turn.")
-        }.trim()
-    }
-
-    private suspend fun buildSubfolderContext(subfolder: Subfolder): String {
-        val note = database.noteDao().getBySubfolderOnce(subfolder.id)
-
-        val noteContext = when {
-            note == null -> "Note: none."
-            note.aiBlind -> "Note: blind from Eidos (do not request content)."
-            note.aiLocked -> {
-                val summaryBlock = ContentSummaryService.formatNoteSummaryForPrompt(note)
-                if (summaryBlock != null) {
-                    "Note: AI lock — summary below; use read_note(subfolderId=${subfolder.id}) only if needed.\n$summaryBlock"
-                } else {
-                    "Note: AI lock (use read_note tool if user allows)."
-                }
-            }
-            else -> {
-                val summaryBlock = ContentSummaryService.formatNoteSummaryForPrompt(note)
-                if (summaryBlock != null) {
-                    "Note: present — summary below; use read_note(subfolderId=${subfolder.id}) for full text.\n$summaryBlock"
-                } else {
-                    "Note: present — use read_note(subfolderId=${subfolder.id}) for full text; no summary yet (user can Generate Summary)."
-                }
-            }
-        }
-
-        return buildString {
-            appendLine("Current subfolder:")
-            appendLine("Name: ${subfolder.name}")
-            appendLine("subfolderId: ${subfolder.id}")
-            appendLine(noteContext)
-            appendLine("Attachments: use list_folder_contents / read_file — not listed inline.")
-        }.trim()
-    }
-
-    private suspend fun buildParentFolderContext(parentFolderId: Long): String {
-        val parent = database.parentFolderDao().getById(parentFolderId)
-            ?: return "Parent folder context unavailable."
-        return """
-            Current parent folder:
-            Name: ${parent.name}
-            parentFolderId: ${parent.id}
-            Subfolders: use list_folder_contents(folderId=${parent.id}) — not listed inline.
-        """.trimIndent()
-    }
-
-    private fun loadWorkshopSpecContents(files: List<com.example.optimalx.data.model.FileReference>): Map<String, String> =
-        files
-            .filter { it.fileType.equals("md", ignoreCase = true) }
-            .associate { ref ->
-                ref.fileName to runCatching {
-                    java.io.File(ref.filePath).readText()
-                }.getOrDefault("")
-            }
-
-    private fun workshopContentPolicy(
-        mode: WorkshopEidosMode,
-        phase: WorkshopProjectPhase,
-        docAlignScope: WorkshopDocAlignScope? = null,
-        updateSection: WorkshopUpdateSection? = null,
-    ): String {
-        val chip = WorkshopEidosMode.normalizeToUserChip(mode)
-        return when {
-        docAlignScope != null ->
-            "Workshop content policy (Align docs / Plan): read runtime code and existing spec .md as needed; " +
-                "write spec .md only where out of date — no HTML/CSS/JS changes."
-        phase == WorkshopProjectPhase.INTAKE ->
-            "Workshop content policy (Intake): chat only — no file writes. Spec files are not generated until the user taps Generate specs."
-        phase == WorkshopProjectPhase.SPEC_REVIEW && chip == WorkshopEidosMode.CHAT ->
-            "Workshop content policy (Spec review / Chat): discuss specs only — no file writes. Plan mode for doc edits; user taps Accept specs when aligned."
-        phase == WorkshopProjectPhase.SPEC_REVIEW && chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy (Spec review / Plan): .md spec files only — no runtime writes until Accept specs and Build design."
-        phase == WorkshopProjectPhase.SPEC_REVIEW && chip == WorkshopEidosMode.EDIT ->
-            "Workshop content policy (Spec review / Edit): prefer Plan for .md; runtime edits only if user explicitly needs a scaffold tweak."
-        mode == WorkshopEidosMode.BUILD_DESIGN && phase == WorkshopProjectPhase.DESIGN_BUILD ->
-            "Workshop content policy (Design build / Build design): runtime shell only (index.html, style.css, stub script.js) — no .md read/write."
-        phase == WorkshopProjectPhase.DESIGN_BUILD && chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy (Design build / Plan): .md spec files only — use Build design for layout shell."
-        phase == WorkshopProjectPhase.DESIGN_BUILD && chip == WorkshopEidosMode.EDIT ->
-            "Workshop content policy (Design build / Edit): HTML/CSS/stub JS — no .md writes until Accept design."
-        phase == WorkshopProjectPhase.DESIGN_REVIEW && chip == WorkshopEidosMode.CHAT ->
-            "Workshop content policy (Design review / Chat): discuss only — no file writes."
-        phase == WorkshopProjectPhase.DESIGN_REVIEW && chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy (Design review / Plan): read any file; write spec .md only (runtime edits in Edit mode)."
-        phase == WorkshopProjectPhase.DESIGN_REVIEW ->
-            "Workshop content policy (Design review / Edit): HTML/CSS/stub JS only — .md files frozen until Accept design."
-        mode == WorkshopEidosMode.BUILD_LOGIC && phase == WorkshopProjectPhase.LOGIC_BUILD ->
-            "Workshop content policy (Logic build / Build logic): script.js and bridge.js primary; no .md read/write."
-        phase == WorkshopProjectPhase.LOGIC_BUILD && chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy (Logic build / Plan): .md spec files only — use Build logic for behavior."
-        phase == WorkshopProjectPhase.LOGIC_BUILD ->
-            "Workshop content policy (Logic build / Edit): edit runtime files directly — Preview not required for workshop_write_file."
-        phase == WorkshopProjectPhase.LOGIC_REVIEW && chip == WorkshopEidosMode.CHAT ->
-            "Workshop content policy (Logic review / Chat): discuss only — no file writes."
-        phase == WorkshopProjectPhase.LOGIC_REVIEW && chip == WorkshopEidosMode.EDIT && phase.allowsDebugMode ->
-            "Workshop content policy (Logic review / Edit): edit runtime files directly — no .md writes until Accept logic."
-        phase == WorkshopProjectPhase.LOGIC_REVIEW ->
-            "Workshop content policy (Logic review / Edit): edit runtime files directly — no .md writes until Accept logic."
-        phase == WorkshopProjectPhase.UPDATE && chip == WorkshopEidosMode.CHAT ->
-            "Workshop content policy (Update / Chat): discuss only — no file writes."
-        phase == WorkshopProjectPhase.UPDATE && chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy (Update / Plan): .md spec files only — runtime edits in Edit mode."
-        mode == WorkshopEidosMode.BUILD_PLAN && phase == WorkshopProjectPhase.UPDATE ->
-            "Workshop content policy (Update / Build plan): build-run — runtime + ${PanelPlatformSpec.IMPLEMENTATION_PLAN_MD} phase markers; direct disk; Auto-Continue across plan phases."
-        phase == WorkshopProjectPhase.UPDATE ->
-            "Workshop content policy (Update / Edit): runtime writes in Edit; read any spec .md (incl. IMPLEMENTATION_PLAN.md); spec writes on Accept update only."
-        chip == WorkshopEidosMode.CHAT ->
-            "Workshop content policy (Chat): discuss only — no file writes. " +
-                "Use search_semantic for project content; optional workshop_read_file with query when search is insufficient."
-        chip == WorkshopEidosMode.PLAN ->
-            "Workshop content policy: search_semantic first for spec passages; writes limited to .md spec files (fileReferenceId from manifest)."
-        else ->
-            "Workshop content policy: search_semantic → workshop_read_file(query or line range) → workshop_write_file. " +
-                "Do not read full large files without query; open-tab excerpt in prompt may be stale after edits."
-    }
-    }
+    private val noteSubfolderTools = setOf(
+        "write_note",
+        "edit_note_section",
+        "read_note_section",
+        "write_note_summary",
+    )
 
     private fun chatModeBlockedToolMessage(toolNames: List<String>): String {
         val listed = toolNames.joinToString(", ")
@@ -1359,12 +1274,13 @@ class EidosApiClient(
     }
 
     private companion object {
-        const val WORKSHOP_CHAT_MAX_TOOL_ROUNDS = 2
     }
 
     private fun buildTracedRequest(
         traceRecorder: EidosApiTraceRecorder?,
         systemPrompt: String,
+        stableSystemPrefix: String?,
+        volatileSystemSuffix: String?,
         conversationHistory: List<EidosMessage>,
         toolDefinitions: List<EidosToolDefinition>,
         userMessage: String,
@@ -1372,15 +1288,32 @@ class EidosApiClient(
         promptCacheKey: String?,
         phase: EidosRequestPhase,
         streamListener: EidosStreamListener?,
+        thinkingEnabled: Boolean,
+        reasoningEffort: String?,
+        toolResultReplayRounds: Int,
+        localGemma: Boolean = false,
+        attachedImagePaths: List<String> = emptyList(),
     ): EidosRequest = EidosRequest(
         systemPrompt = systemPrompt,
-        conversationHistory = conversationHistory,
+        stableSystemPrefix = stableSystemPrefix,
+        volatileSystemSuffix = volatileSystemSuffix,
+        conversationHistory = if (localGemma) {
+            GemmaLocalPolicy.trimOutboundHistory(conversationHistory)
+        } else {
+            EidosHistoryTrimmer.prepareOutboundHistory(
+                history = conversationHistory,
+                replayRounds = toolResultReplayRounds,
+            )
+        },
         toolDefinitions = toolDefinitions,
         userMessage = userMessage,
         previousResponseId = previousResponseId,
         promptCacheKey = promptCacheKey,
         phase = phase,
+        thinkingEnabled = thinkingEnabled,
+        reasoningEffort = reasoningEffort,
         streamListener = streamListener,
+        attachedImagePaths = if (phase == EidosRequestPhase.FULL) attachedImagePaths else emptyList(),
         onProviderExchange = traceRecorder?.let { recorder ->
             { body, response ->
                 recorder.recordExchange(phase, body, response)
@@ -1405,3 +1338,7 @@ class EidosApiClient(
         )
     }
 }
+
+private fun EidosResponse.withNavigationTargets(
+    targets: List<EidosNavigationTarget>,
+): EidosResponse = copy(navigationTargets = EidosNavigationCodec.dedupeTargets(targets))

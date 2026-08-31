@@ -6,7 +6,7 @@
 |--------|--------|
 | **Status** | **v2 spec** — phased workflow (replaces README-first + one-shot Start Build) |
 | **Audience** | Product, UX, Eidos prompt authors |
-| **Related** | [WORKSHOP_MODES.md](WORKSHOP_MODES.md) (modes + phases), [PANEL_PLATFORM.md](PANEL_PLATFORM.md) (runtime contract), [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) (Auto-Continue + prompt/token fixes), [WORKSHOP_MEMORY.md](../memory/WORKSHOP_MEMORY.md) (categorical cross-project preferences), [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md) (recovery checklist), [DIFF_REVIEW.md](DIFF_REVIEW.md) (pending edits on edit profile) |
+| **Related** | [WORKSHOP_MODES.md](WORKSHOP_MODES.md) (modes + phases), [PANEL_PLATFORM.md](PANEL_PLATFORM.md) (runtime contract), [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md) (Auto-Continue + prompt/token fixes), [WORKSHOP_MEMORY.md](../memory/WORKSHOP_MEMORY.md) (categorical cross-project preferences), [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md) (recovery checklist), [DIFF_REVIEW.md](DIFF_REVIEW.md) (pending edits on edit profile), [agentic-ide.md](https://github.com/Tuf12/OptimalXDesktop1.0/blob/main/agentic-ide.md) (desktop: Agentic IDE platform), [agentic-ide-implementation-plan.md](https://github.com/Tuf12/OptimalXDesktop1.0/blob/main/agentic-ide-implementation-plan.md) (desktop: phased build plan), [agentic-ide-workshop-edits.md](https://github.com/Tuf12/OptimalXDesktop1.0/blob/main/agentic-ide-workshop-edits.md) (desktop: workshop write/verify layer) |
 | **Kimi integration** | Formula `web_search` / `fetch` (and utility tools) in workshop when provider is Kimi — see [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) |
 
 ---
@@ -313,13 +313,13 @@ Eidos writes in Build / Design / Edit / Debug should land in a **pending change 
 - Widget access to Workshop
 - Legacy **Sync to code** primary action
 
-Workshop projects themselves can be moved in and out of the app via the OptimalX Link subsystem ([OPTIMALX_LINK.md](OPTIMALX_LINK.md)) — that is the canonical path for export, restore, and orphan recovery. Per-panel share endpoints inside an individual project are not in v1.
+Workshop projects sync file bytes to the PC via **Settings → Sync with Desktop** or the per-project drawer (**Sync workshop files to PC**). Tier 1 Push/Pull syncs metadata only; bytes use the Files API (Option C). PC→phone: Pull then **Sync workshop files from PC**. Per-panel share endpoints inside an individual project are not in v1.
 
 ---
 
 ## Agentic loop
 
-Chess-piece phases in `agent_loops/PANEL_WORKSHOP_LOOP.md` remain **deferred**. v2 workshop UX uses **phases + modes** in this doc and [WORKSHOP_MODES.md](WORKSHOP_MODES.md).
+Chess-piece AgentByte phases in [archive/agent_loops/PANEL_WORKSHOP_LOOP.md](../archive/agent_loops/PANEL_WORKSHOP_LOOP.md) were **removed / never shipped**. v2 workshop UX uses **phases + modes** in this doc and [WORKSHOP_MODES.md](WORKSHOP_MODES.md).
 
 ---
 

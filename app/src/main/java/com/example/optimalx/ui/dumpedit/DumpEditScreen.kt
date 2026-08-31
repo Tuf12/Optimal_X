@@ -36,10 +36,17 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.optimalx.ui.components.NoteContentCodec
+import com.example.optimalx.ui.editor.NoteEditorSaveStatus
+import com.example.optimalx.ui.editor.toStatusLabel
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.navigation.RegisterNavigationLeaveGuard
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.SyneFamily
+import com.example.optimalx.voice.VoiceController
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,20 +66,44 @@ fun DumpEditScreen(
             }
         },
     )
+    val voiceController: VoiceController = viewModel(
+        key = "dump_edit_voice",
+        factory = viewModelFactory {
+            initializer {
+                val app = this[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]!!
+                VoiceController(app)
+            }
+        },
+    )
 
     val colors = LocalOptimalXColors.current
     val state by viewModel.state.collectAsState()
     val contentReady by viewModel.contentReady.collectAsState()
     val isViewMode by viewModel.isViewMode.collectAsState()
+    val userHasEdited by viewModel.userHasEdited.collectAsState()
+    val isDirty by viewModel.isDirty.collectAsState()
+    val saveStatus by viewModel.saveStatus.collectAsState()
     val isAiLocked by viewModel.isAiLocked.collectAsState()
     val isAiBlind by viewModel.isAiBlind.collectAsState()
+    val readAloudBarVisible by viewModel.readAloudBarVisible.collectAsState()
+    val readAloudIsPlaying by viewModel.readAloudIsPlaying.collectAsState()
     val showClearUndoSnackbar by viewModel.showClearUndoSnackbar.collectAsState()
     val parentFolderOptions by viewModel.parentFolderOptions.collectAsState()
 
     var showClearConfirm by remember { mutableStateOf(false) }
     var showPromoteDialog by remember { mutableStateOf(false) }
     var promoteFeedback by remember { mutableStateOf<String?>(null) }
+    RegisterNavigationLeaveGuard(hasUnsavedChanges = isDirty)
+
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    val exitDumpEdit: () -> Unit = {
+        scope.launch {
+            viewModel.flushBeforeExit()
+            onBack()
+        }
+    }
 
     LaunchedEffect(showClearUndoSnackbar) {
         if (!showClearUndoSnackbar) return@LaunchedEffect
@@ -103,7 +134,11 @@ fun DumpEditScreen(
         }
     }
 
-    BackHandler(onBack = onBack)
+    BackHandler(onBack = exitDumpEdit)
+
+    DisposableEffect(voiceController) {
+        onDispose { voiceController.stopSession() }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -132,10 +167,18 @@ fun DumpEditScreen(
                             color = colors.textDim,
                             fontSize = 13.sp,
                         )
+                        saveStatus.toStatusLabel()?.let { label ->
+                            Text(
+                                text = label,
+                                fontFamily = DmSansFamily,
+                                color = colors.textDim,
+                                fontSize = 12.sp,
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = exitDumpEdit) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
@@ -157,16 +200,20 @@ fun DumpEditScreen(
         },
     ) { padding ->
         DumpEditPanel(
-            initialContent = state.content,
+            initialContent = NoteContentCodec.normalizeLegacyToMarkdown(state.content),
             initialContentReady = contentReady,
             isViewMode = isViewMode,
             isAiLocked = isAiLocked,
             isAiBlind = isAiBlind,
             undoClearAvailable = viewModel.canUndoClear,
             restoreContentFlow = viewModel.restoreContent,
+            onEditorSnapshot = viewModel::onEditorSnapshot,
+            onEditorLoaded = viewModel::markEditorLoaded,
+            onEditSessionStarted = viewModel::onEditSessionStarted,
+            onRegisterLiveContentProvider = viewModel::setLiveContentProvider,
             onContentChanged = viewModel::onContentSave,
-            onUndo = viewModel::undo,
-            onRedo = viewModel::redo,
+            isDirty = isDirty,
+            userHasEdited = userHasEdited,
             onToggleViewMode = viewModel::toggleViewMode,
             onToggleAiLock = viewModel::toggleAiLock,
             onToggleAiBlind = viewModel::toggleAiBlind,
@@ -176,6 +223,16 @@ fun DumpEditScreen(
                 viewModel.loadPromoteTargets()
                 showPromoteDialog = true
             },
+            exportBaseName = "dump-edit",
+            onFlushBeforeExport = viewModel::flushBeforeExport,
+            onReadAloud = viewModel::speakAloud,
+            onStopSpeech = viewModel::stopSpeech,
+            readAloudBarVisible = readAloudBarVisible,
+            readAloudIsPlaying = readAloudIsPlaying,
+            onToggleReadAloudPlayback = viewModel::toggleReadAloudPlayback,
+            onReadAloudRewind10 = viewModel::readAloudRewind10Seconds,
+            onReadAloudForward10 = viewModel::readAloudForward10Seconds,
+            voiceController = voiceController,
             modifier = Modifier
                 .fillMaxSize()
                 .background(colors.background)

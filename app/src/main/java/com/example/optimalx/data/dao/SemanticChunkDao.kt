@@ -21,8 +21,21 @@ interface SemanticChunkDao {
     @Query("DELETE FROM semantic_chunks WHERE parentFolderId = :parentFolderId")
     suspend fun deleteByParentFolder(parentFolderId: Long)
 
+    @Query("SELECT COUNT(*) FROM semantic_chunks")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM semantic_chunks")
     suspend fun getAll(): List<SemanticChunk>
+
+    @Query(
+        "SELECT * FROM semantic_chunks WHERE objectType = :objectType AND objectId = :objectId " +
+            "ORDER BY endLine DESC, id DESC LIMIT :limit",
+    )
+    suspend fun getByObjectOrderedByEndLine(
+        objectType: String,
+        objectId: Long,
+        limit: Int,
+    ): List<SemanticChunk>
 
     @Query("DELETE FROM semantic_chunks WHERE id NOT IN (:ids)")
     suspend fun deleteExceptIds(ids: List<Long>)

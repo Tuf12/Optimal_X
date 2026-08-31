@@ -53,6 +53,11 @@ object EidosApiTraceDirectoryResolver {
                 EidosApiTraceDirectory("panel_gallery", "Panel Gallery")
             ConversationScopes.DUMP_EDIT ->
                 EidosApiTraceDirectory("dump_edit", "DumpEdit")
+            ConversationScopes.IMAGE_STUDIO -> {
+                val id = subfolderId ?: 0L
+                val name = database.subfolderDao().getById(id)?.name ?: "Subfolder $id"
+                EidosApiTraceDirectory("image_studio:$id", "Image Studio · $name")
+            }
             ConversationScopes.QUICK_NOTES_ROOT -> {
                 val id = parentFolderId ?: 0L
                 EidosApiTraceDirectory("quick_notes_root:$id", "Quick Notes Root")

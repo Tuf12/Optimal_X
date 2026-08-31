@@ -6,7 +6,15 @@ import androidx.lifecycle.viewModelScope
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.preferences.DumpEditPreferences
 import com.example.optimalx.data.preferences.DumpEditState
+import com.example.optimalx.ui.components.NoteContentCodec
+import com.example.optimalx.ui.editor.NoteEditorWorkingCopyFlusher
+import com.example.optimalx.ui.editor.NoteEditorSaveStatus
+import com.example.optimalx.ui.editor.NoteEditorSyncPolicy
+import com.example.optimalx.voice.ReadAloudSession
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,7 +27,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class PromoteParentOption(
     val id: Long,
@@ -36,16 +43,28 @@ sealed class PromoteResult {
     data class Error(val message: String) : PromoteResult()
 }
 
+private const val WORKING_COPY_AUTOSAVE_MS = 800L
+
 class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
 
     private val appContext = app.applicationContext
     private val appRef = app as OptimalXApplication
+    private val readAloudSession: ReadAloudSession = appRef.readAloudSession
+
+    val readAloudBarVisible: StateFlow<Boolean> = readAloudSession.barVisible
+    val readAloudIsPlaying: StateFlow<Boolean> = readAloudSession.isPlaying
 
     val state: StateFlow<DumpEditState> = DumpEditPreferences.observeState(appContext)
         .onEach { loaded ->
-            if (!historySeeded) {
-                seedUndoHistory(loaded.content)
-                historySeeded = true
+            if (!contentInitialized) {
+                val canonical = NoteContentCodec.normalizeLegacyToMarkdown(loaded.content)
+                if (canonical != loaded.content) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        DumpEditPreferences.saveContent(appContext, canonical)
+                    }
+                }
+                markEditorLoaded(canonical)
+                contentInitialized = true
                 _contentReady.value = true
             }
         }
@@ -62,8 +81,29 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
         .map { it.aiBlind }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    private val _isViewMode = MutableStateFlow(false)
+    private val _isViewMode = MutableStateFlow(true)
     val isViewMode: StateFlow<Boolean> = _isViewMode.asStateFlow()
+
+    private val _userHasEdited = MutableStateFlow(false)
+    val userHasEdited: StateFlow<Boolean> = _userHasEdited.asStateFlow()
+
+    private val _isDirty = MutableStateFlow(false)
+    val isDirty: StateFlow<Boolean> = _isDirty.asStateFlow()
+
+    private var editSessionBaseline: String? = null
+    private var pendingEditorContent: String? = null
+    private var lastPersistedContent: String? = null
+    private var liveContentProvider: (() -> String)? = null
+    private var workingCopyAutosaveJob: Job? = null
+
+    private val _saveStatus = MutableStateFlow(NoteEditorSaveStatus.Saved)
+    val saveStatus: StateFlow<NoteEditorSaveStatus> = _saveStatus.asStateFlow()
+
+    private val workingCopyFlusher = NoteEditorWorkingCopyFlusher(
+        onSaving = { _saveStatus.value = NoteEditorSaveStatus.Saving },
+        onSaved = { _saveStatus.value = NoteEditorSaveStatus.Saved },
+        onPersist = { content -> persistWorkingCopy(content) },
+    )
 
     private val _restoreContent = MutableSharedFlow<String>()
     val restoreContent: SharedFlow<String> = _restoreContent.asSharedFlow()
@@ -83,39 +123,95 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
     val canUndoClear: Boolean
         get() = undoClearSnapshot != null
 
-    private val contentHistory = ArrayDeque<String>()
-    private var historyIndex = -1
-    private var historySeeded = false
+    private var contentInitialized = false
 
-    fun onContentSave(html: String) {
-        val current = contentHistory.getOrNull(historyIndex)
-        if (html == current) return
+    fun setLiveContentProvider(provider: (() -> String)?) {
+        liveContentProvider = provider
+    }
 
-        while (contentHistory.size > historyIndex + 1) contentHistory.removeLast()
-        if (contentHistory.size >= 50) {
-            contentHistory.removeFirst()
-            historyIndex--
+    fun onEditSessionStarted(baseline: String) {
+        editSessionBaseline = baseline
+        _userHasEdited.value = false
+        pendingEditorContent = baseline
+    }
+
+    fun onEditorSnapshot(content: String) {
+        pendingEditorContent = content
+        val baseline = editSessionBaseline
+        if (baseline != null && content != baseline) {
+            _userHasEdited.value = true
+        } else if (NoteEditorSyncPolicy.shouldPersistWorkingCopy(content, lastPersistedContent)) {
+            _userHasEdited.value = true
         }
-        contentHistory.addLast(html)
-        historyIndex = contentHistory.size - 1
+        val dirtyVsWorkingCopy = content != lastPersistedContent
+        _isDirty.value = dirtyVsWorkingCopy
+        _saveStatus.value = if (dirtyVsWorkingCopy) {
+            NoteEditorSaveStatus.Unsaved
+        } else {
+            NoteEditorSaveStatus.Saved
+        }
+        scheduleWorkingCopyAutosave(content, dirtyVsWorkingCopy)
+    }
 
-        viewModelScope.launch(Dispatchers.IO) {
-            DumpEditPreferences.saveContent(appContext, html)
+    private fun scheduleWorkingCopyAutosave(content: String, dirty: Boolean) {
+        workingCopyAutosaveJob?.cancel()
+        if (!dirty) return
+        workingCopyAutosaveJob = viewModelScope.launch {
+            delay(WORKING_COPY_AUTOSAVE_MS)
+            workingCopyFlusher.flush(
+                content = content,
+                shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(
+                    content,
+                    lastPersistedContent,
+                ),
+            )
         }
     }
 
-    fun undo() {
-        if (historyIndex <= 0) return
-        historyIndex--
-        val html = contentHistory[historyIndex]
-        viewModelScope.launch { _restoreContent.emit(html) }
+    fun markEditorLoaded(content: String) {
+        pendingEditorContent = content
+        lastPersistedContent = content
+        _isDirty.value = false
+        _saveStatus.value = NoteEditorSaveStatus.Saved
     }
 
-    fun redo() {
-        if (historyIndex >= contentHistory.size - 1) return
-        historyIndex++
-        val html = contentHistory[historyIndex]
-        viewModelScope.launch { _restoreContent.emit(html) }
+    fun onContentSave(content: String, force: Boolean = false) {
+        viewModelScope.launch {
+            workingCopyFlusher.flush(
+                content = content,
+                shouldPersist = force || NoteEditorSyncPolicy.shouldPersistWorkingCopy(
+                    content,
+                    lastPersistedContent,
+                ),
+            )
+        }
+    }
+
+    suspend fun flushBeforeExport(content: String) {
+        workingCopyFlusher.flush(
+            content = content,
+            shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(content, lastPersistedContent),
+        )
+    }
+
+    suspend fun flushBeforeExit(content: String? = null) {
+        val toSave = content ?: liveContentProvider?.invoke() ?: pendingEditorContent ?: return
+        workingCopyFlusher.flush(
+            content = toSave,
+            shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(toSave, lastPersistedContent),
+        )
+    }
+
+    private suspend fun persistWorkingCopy(content: String) {
+        if (content == lastPersistedContent) return
+        withContext(Dispatchers.IO) {
+            DumpEditPreferences.saveContent(appContext, content)
+        }
+        lastPersistedContent = content
+        pendingEditorContent = content
+        _isDirty.value = false
+        _saveStatus.value = NoteEditorSaveStatus.Saved
+        // Keep userHasEdited during an active edit session (see EditorViewModel).
     }
 
     fun toggleViewMode() {
@@ -143,7 +239,9 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 DumpEditPreferences.clearContent(appContext)
             }
-            seedUndoHistory("")
+            markEditorLoaded("")
+            _userHasEdited.value = false
+            editSessionBaseline = null
             _restoreContent.emit("")
             _showClearUndoSnackbar.value = true
         }
@@ -157,7 +255,7 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 DumpEditPreferences.saveContent(appContext, snapshot)
             }
-            seedUndoHistory(snapshot)
+            markEditorLoaded(snapshot)
             _restoreContent.emit(snapshot)
         }
     }
@@ -175,7 +273,9 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
 
     fun promoteToFolder(parentFolderId: Long, subfolderName: String) {
         viewModelScope.launch {
-            val content = DumpEditPreferences.readState(appContext).content
+            val content = NoteContentCodec.normalizeLegacyToMarkdown(
+                DumpEditPreferences.readState(appContext).content,
+            )
             if (content.isBlank()) {
                 _promoteResult.emit(PromoteResult.Error("Buffer is empty — nothing to promote."))
                 return@launch
@@ -195,7 +295,6 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
                         appRef.semanticChunkBuilder.indexNote(appRef.semanticIndexer, id)
                     }
                     appRef.semanticSyncService.requestSync("promote_dump_edit:$id")
-                    appRef.appIndexSyncService.requestSync("promote_dump_edit:$id")
                     id
                 }
                 val parentName = appRef.database.parentFolderDao().getById(parentFolderId)?.name ?: "Folder"
@@ -212,9 +311,13 @@ class DumpEditViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun seedUndoHistory(content: String) {
-        contentHistory.clear()
-        contentHistory.addLast(content)
-        historyIndex = 0
-    }
+    fun speakAloud(content: String) = readAloudSession.startFromNote(content)
+
+    fun toggleReadAloudPlayback() = readAloudSession.togglePlayback()
+
+    fun readAloudRewind10Seconds() = readAloudSession.rewind10Seconds()
+
+    fun readAloudForward10Seconds() = readAloudSession.forward10Seconds()
+
+    fun stopSpeech() = readAloudSession.stop()
 }

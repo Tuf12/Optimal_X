@@ -1,9 +1,9 @@
 package com.example.optimalx.data.eidos
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
+import com.example.optimalx.OptimalXApplication
+import com.example.optimalx.data.litert.LitertLmDefaults
+import com.example.optimalx.data.litert.LitertLmVisionService
 import com.example.optimalx.data.preferences.ApiKeyNames
 import com.example.optimalx.data.preferences.EncryptedSettingKeys
 import com.example.optimalx.data.preferences.SettingsDefaults
@@ -23,9 +23,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.Locale
 
 class ImageVisionService(
     private val context: Context,
@@ -34,85 +32,63 @@ class ImageVisionService(
 ) {
 
     suspend fun describeImage(file: File): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val prefs = getEncryptedPrefs(context)
             val provider = prefs.getString(EncryptedSettingKeys.ACTIVE_PROVIDER, null)
                 ?: SettingsDefaults.ACTIVE_PROVIDER
+            val prompt =
+                "Describe this image in concise detail, including key objects, text visible in the image, and likely context."
 
-            val (mimeType, base64Data) = prepareImagePayload(file)
-            val prompt = "Describe this image in concise detail, including key objects, text visible in the image, and likely context."
+            val text = if (provider == LitertLmDefaults.PROVIDER_ID) {
+                describeWithLocalGemma(file, prompt)
+            } else {
+                val encoded = ChatVisionImageStore.encodeForProvider(file)
+                    ?: error("Could not decode image")
+                when (provider) {
+                    "openai" -> describeWithOpenAi(
+                        apiKey = prefs.getString(ApiKeyNames.OPENAI, null)
+                            ?: error("Missing OpenAI API key"),
+                        mimeType = encoded.mimeType,
+                        base64Data = encoded.base64,
+                        prompt = prompt,
+                    )
 
-            when (provider) {
-                "openai" -> describeWithOpenAi(
-                    apiKey = prefs.getString(ApiKeyNames.OPENAI, null)
-                        ?: error("Missing OpenAI API key"),
-                    mimeType = mimeType,
-                    base64Data = base64Data,
-                    prompt = prompt,
-                )
+                    "anthropic" -> describeWithAnthropic(
+                        apiKey = prefs.getString(ApiKeyNames.ANTHROPIC, null)
+                            ?: error("Missing Anthropic API key"),
+                        mimeType = encoded.mimeType,
+                        base64Data = encoded.base64,
+                        prompt = prompt,
+                    )
 
-                "anthropic" -> describeWithAnthropic(
-                    apiKey = prefs.getString(ApiKeyNames.ANTHROPIC, null)
-                        ?: error("Missing Anthropic API key"),
-                    mimeType = mimeType,
-                    base64Data = base64Data,
-                    prompt = prompt,
-                )
+                    "kimi" -> describeWithKimi(
+                        apiKey = prefs.getString(ApiKeyNames.KIMI, null)
+                            ?: error("Missing Kimi API key"),
+                        mimeType = encoded.mimeType,
+                        base64Data = encoded.base64,
+                        prompt = prompt,
+                    )
 
-                "kimi" -> describeWithKimi(
-                    apiKey = prefs.getString(ApiKeyNames.KIMI, null)
-                        ?: error("Missing Kimi API key"),
-                    mimeType = mimeType,
-                    base64Data = base64Data,
-                    prompt = prompt,
-                )
-
-                else -> describeWithXai(
-                    apiKey = prefs.getString(ApiKeyNames.XAI, null)
-                        ?: error("Missing xAI API key"),
-                    mimeType = mimeType,
-                    base64Data = base64Data,
-                    prompt = prompt,
-                )
+                    else -> describeWithXai(
+                        apiKey = prefs.getString(ApiKeyNames.XAI, null)
+                            ?: error("Missing xAI API key"),
+                        mimeType = encoded.mimeType,
+                        base64Data = encoded.base64,
+                        prompt = prompt,
+                    )
+                }
             }
+            Result.success(text)
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
     }
 
-    private fun prepareImagePayload(file: File): Pair<String, String> {
-        val mimeType = guessMimeType(file)
-        val encoded = downscaleAndEncode(file)
-        return mimeType to encoded
-    }
-
-    private fun downscaleAndEncode(file: File): String {
-        val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            ?: error("Could not decode image")
-
-        val maxDim = 1400
-        val scaled = if (bitmap.width > maxDim || bitmap.height > maxDim) {
-            val scale = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
-            Bitmap.createScaledBitmap(
-                bitmap,
-                (bitmap.width * scale).toInt().coerceAtLeast(1),
-                (bitmap.height * scale).toInt().coerceAtLeast(1),
-                true,
-            )
-        } else {
-            bitmap
+    private suspend fun describeWithLocalGemma(file: File, prompt: String): String {
+        val app = context.applicationContext as OptimalXApplication
+        return LitertLmVisionService(app).describeImage(file, prompt).getOrElse { error ->
+            error(error.message ?: "Local Gemma vision failed")
         }
-
-        val out = ByteArrayOutputStream()
-        val format = when (guessMimeType(file)) {
-            "image/png" -> Bitmap.CompressFormat.PNG
-            "image/webp" -> Bitmap.CompressFormat.WEBP_LOSSY
-            else -> Bitmap.CompressFormat.JPEG
-        }
-        scaled.compress(format, 85, out)
-
-        if (scaled != bitmap) scaled.recycle()
-        bitmap.recycle()
-
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
     private fun describeWithOpenAi(
@@ -122,7 +98,7 @@ class ImageVisionService(
         prompt: String,
     ): String {
         val payload = buildJsonObject {
-            put("model", JsonPrimitive("gpt-5.4-nano-2026-03-17"))
+            put("model", JsonPrimitive("gpt-5.6-luna"))
             put("reasoning", buildJsonObject { put("effort", JsonPrimitive("none")) })
             put("text", buildJsonObject { put("verbosity", JsonPrimitive("low")) })
             put("input", buildJsonArray {
@@ -345,14 +321,5 @@ class ImageVisionService(
             if (!response.isSuccessful) error("Vision request failed (${response.code}): $text")
             return json.parseToJsonElement(text).jsonObject
         }
-    }
-
-    private fun guessMimeType(file: File): String = when (file.extension.lowercase(Locale.US)) {
-        "png" -> "image/png"
-        "webp" -> "image/webp"
-        "gif" -> "image/gif"
-        "heic" -> "image/heic"
-        "jpg", "jpeg" -> "image/jpeg"
-        else -> "image/jpeg"
     }
 }

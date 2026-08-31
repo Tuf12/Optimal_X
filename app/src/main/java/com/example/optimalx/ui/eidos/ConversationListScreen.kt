@@ -71,7 +71,6 @@ class ConversationListViewModel(
 
     private val appRef = app as OptimalXApplication
     private val db = appRef.database
-    private val appIndexSync = appRef.appIndexSyncService
 
     private val _items = MutableStateFlow<List<ConversationListItem>>(emptyList())
     val items: StateFlow<List<ConversationListItem>> = _items.asStateFlow()
@@ -128,7 +127,6 @@ class ConversationListViewModel(
                 db.chatMessageDao().deleteAllByConversation(id)
                 db.conversationDao().deleteById(id)
             }
-            appIndexSync.requestSync("conversation_list_delete_selected:${toDelete.size}")
             _selectedIds.value = emptySet()
             load()
         }
@@ -145,7 +143,6 @@ class ConversationListViewModel(
                     updatedAt = System.currentTimeMillis(),
                 )
             )
-            appIndexSync.requestSync("conversation_list_rename:$id")
             load()
         }
     }

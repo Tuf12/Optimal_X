@@ -89,8 +89,20 @@ class ContentSectionRetriever(
         )
     }
 
-    fun lineRangeJson(fullText: String, startLine: Int, endLine: Int): ScopedReadResult {
-        val excerpt = ContentSegmentation.extractLineRange(fullText, startLine, endLine)
+    fun lineRangeJson(
+        fullText: String,
+        startLine: Int,
+        endLine: Int,
+        contextBefore: Int = 0,
+        contextAfter: Int = 0,
+    ): ScopedReadResult {
+        val lines = fullText.lines()
+        val lineCount = lines.size.coerceAtLeast(1)
+        val coreStart = startLine.coerceAtLeast(1)
+        val coreEnd = endLine.coerceIn(coreStart, lineCount)
+        val start = (coreStart - contextBefore.coerceAtLeast(0)).coerceAtLeast(1)
+        val end = (coreEnd + contextAfter.coerceAtLeast(0)).coerceAtMost(lineCount)
+        val excerpt = ContentSegmentation.extractLineRange(fullText, start, end)
         val totalLines = fullText.lines().size
         return ScopedReadResult(
             buildJsonObject {
@@ -100,9 +112,9 @@ class ContentSectionRetriever(
                 put("sections", buildJsonArray {
                     addJsonObject {
                         put("excerpt", JsonPrimitive(excerpt))
-                        put("startLine", JsonPrimitive(startLine))
-                        put("endLine", JsonPrimitive(endLine))
-                        put("anchor", JsonPrimitive("lines $startLine–$endLine"))
+                        put("startLine", JsonPrimitive(start))
+                        put("endLine", JsonPrimitive(end))
+                        put("anchor", JsonPrimitive("lines $start\u2013$end"))
                     }
                 })
             }.toString(),

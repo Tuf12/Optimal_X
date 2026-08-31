@@ -4,6 +4,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.optimalx.data.db.AppDatabase
+import com.example.optimalx.data.model.PendingChangeItem
+import com.example.optimalx.data.model.PendingChangeSet
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -27,7 +29,11 @@ class CheckpointRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).allowMainThreadQueries().build()
-        repo = CheckpointRepository(db.contentCheckpointDao(), db.contentPatchDao())
+        repo = CheckpointRepository(
+            db.contentCheckpointDao(),
+            db.contentPatchDao(),
+            db.pendingChangeDao(),
+        )
     }
 
     @After
@@ -123,6 +129,38 @@ class CheckpointRepositoryTest {
     }
 
     @Test
+    fun retention_clearsPendingItemBaseCheckpointReferences() = runBlocking {
+        repo.baselineIfMissing(SOURCE_TYPE_WORKSHOP_FILE, sourceId = 11, content = "v0")
+        val v1 = repo.createCheckpoint(SOURCE_TYPE_WORKSHOP_FILE, 11, "v1", CHECKPOINT_AUTHOR_EIDOS)
+        for (i in 2..6) {
+            repo.createCheckpoint(SOURCE_TYPE_WORKSHOP_FILE, 11, "v$i", CHECKPOINT_AUTHOR_EIDOS)
+        }
+
+        val setId = db.pendingChangeDao().insertSet(
+            PendingChangeSet(
+                scopeType = SCOPE_WORKSHOP_PROJECT,
+                scopeId = 11,
+                status = "open",
+            ),
+        )
+        val itemId = db.pendingChangeDao().insertItem(
+            PendingChangeItem(
+                changeSetId = setId,
+                sourceType = SOURCE_TYPE_WORKSHOP_FILE,
+                sourceId = 11,
+                baseCheckpointId = v1.id,
+                proposedContent = "proposal",
+                proposedHash = ContentDiff.sha256Hex("proposal"),
+                unifiedDiff = "+proposal",
+                status = PENDING_ITEM_STATUS_PENDING,
+            ),
+        )
+
+        assertNull(db.contentCheckpointDao().getById(v1.id))
+        assertNull(db.pendingChangeDao().getItem(itemId)!!.baseCheckpointId)
+    }
+
+    @Test
     fun getLatest_returnsHighestSequence() = runBlocking {
         repo.baselineIfMissing(SOURCE_TYPE_WORKSHOP_FILE, sourceId = 1, content = "a")
         repo.createCheckpoint(SOURCE_TYPE_WORKSHOP_FILE, 1, "b", CHECKPOINT_AUTHOR_EIDOS)
@@ -137,5 +175,46 @@ class CheckpointRepositoryTest {
     fun checkpoint_hashMatchesContentDiff() = runBlocking {
         val cp = repo.baselineIfMissing(SOURCE_TYPE_WORKSHOP_FILE, sourceId = 1, content = "hello world")
         assertEquals(ContentDiff.sha256Hex("hello world"), cp.contentHash)
+    }
+
+    @Test
+    fun isDirtyVsHead_emptyNoCheckpoint_false() = runBlocking {
+        assertFalse(repo.isDirtyVsHead(SOURCE_TYPE_NOTE, sourceId = 42L, workingCopy = ""))
+    }
+
+    @Test
+    fun commitWorkingCopyIfDirty_createsCheckpointWhenDirty() = runBlocking {
+        val committed = repo.commitWorkingCopyIfDirty(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = 7L,
+            workingCopy = "user paste",
+            author = CHECKPOINT_AUTHOR_USER,
+            label = CHECKPOINT_LABEL_COMMITTED_EDITS,
+        )
+        assertNotNull(committed)
+        assertEquals(CHECKPOINT_LABEL_COMMITTED_EDITS, committed!!.label)
+        assertFalse(repo.isDirtyVsHead(SOURCE_TYPE_NOTE, 7L, "user paste"))
+
+        val second = repo.commitWorkingCopyIfDirty(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = 7L,
+            workingCopy = "user paste",
+            author = CHECKPOINT_AUTHOR_USER,
+            label = CHECKPOINT_LABEL_COMMITTED_EDITS,
+        )
+        assertNull(second)
+    }
+
+    @Test
+    fun commitWorkingCopyIfDirty_beforeEidosLabel() = runBlocking {
+        repo.commitWorkingCopyIfDirty(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = 9L,
+            workingCopy = "draft",
+            author = CHECKPOINT_AUTHOR_USER,
+            label = CHECKPOINT_LABEL_BEFORE_EIDOS,
+        )
+        val latest = repo.getLatest(SOURCE_TYPE_NOTE, 9L)
+        assertEquals(CHECKPOINT_LABEL_BEFORE_EIDOS, latest?.label)
     }
 }

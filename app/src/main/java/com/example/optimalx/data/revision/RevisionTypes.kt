@@ -17,10 +17,12 @@ const val SOURCE_TYPE_WORKSHOP_NEW_FILE: String = "workshop_new_file"
 
 /**
  * Note body checkpoint (one note per subfolder, so `sourceId = subfolderId`).
- * Pending-review for notes is still deferred — checkpoint history is wired up
- * via `EditorViewModel`'s save path and the shared `ContentHistorySheet`.
+ * Pending-review wired via [PendingChangeService.proposeNote] and [NoteWriteRouter].
  */
 const val SOURCE_TYPE_NOTE: String = "note"
+
+/** Scope of a pending change set targeting a subfolder note. */
+const val SCOPE_SUBFOLDER: String = "subfolder"
 
 /** Scope of a pending change set targeting a workshop project. */
 const val SCOPE_WORKSHOP_PROJECT: String = "workshop_project"
@@ -28,6 +30,9 @@ const val SCOPE_WORKSHOP_PROJECT: String = "workshop_project"
 const val CHECKPOINT_AUTHOR_USER: String = "user"
 const val CHECKPOINT_AUTHOR_EIDOS: String = "eidos"
 const val CHECKPOINT_AUTHOR_SYSTEM: String = "system"
+
+const val CHECKPOINT_LABEL_COMMITTED_EDITS: String = "Committed edits"
+const val CHECKPOINT_LABEL_BEFORE_EIDOS: String = "Before Eidos edit"
 
 const val PENDING_SET_STATUS_OPEN: String = "open"
 const val PENDING_SET_STATUS_ACCEPTED: String = "accepted"
@@ -54,6 +59,19 @@ fun interface WorkshopFileIndexer {
     }
 }
 
+/**
+ * Reindexes a note into the semantic store after a write.
+ *
+ * Production wiring composes `SemanticChunkBuilder.indexNote(SemanticIndexer, ...)`.
+ */
+fun interface NoteIndexer {
+    suspend fun reindex(subfolderId: Long)
+
+    companion object {
+        val NoOp: NoteIndexer = NoteIndexer { }
+    }
+}
+
 // ── Result sealed types ──────────────────────────────────────────────────────
 
 sealed interface ProposeResult {
@@ -74,9 +92,10 @@ sealed interface AcceptResult {
     data class Applied(val itemId: Long, val checkpointId: Long, val fileReferenceId: Long) : AcceptResult
 
     /**
-     * Working copy hash no longer matches the baseline captured at proposal time —
-     * the user (or another process) modified the file since Eidos proposed. The UI
-     * should surface "Working copy changed; re-review?" instead of applying.
+     * Working copy hash no longer matches the proposal baseline —
+     * the user (or another process) modified the content since Eidos proposed.
+     * Diff Review should offer Dismiss (clear queue, keep current) vs Leave it
+     * (return to the review list; Reject may undo workshop write-through).
      */
     data class ConcurrentChange(
         val itemId: Long,

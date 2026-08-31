@@ -38,14 +38,14 @@ class KimiProvider(
     private val client: OkHttpClient,
     private val json: Json,
     private val model: String = DEFAULT_KIMI_MODEL,
-    formulaToolService: KimiFormulaToolService? = null,
+    /**
+     * Injected by [EidosApiClient] for the main chat loop (schemas already loaded there).
+     * Null for lightweight callers (e.g. panel `eidosInfer`) that attach no Formula tools.
+     */
+    private val formulaToolService: KimiFormulaToolService? = null,
 ) : EidosProvider {
 
-    private val formulaToolService: KimiFormulaToolService = formulaToolService
-        ?: KimiFormulaToolService(apiKey = apiKey, client = client, json = json)
-
     override suspend fun send(request: EidosRequest): EidosResponse {
-        formulaToolService.ensureLoadedWithRetry()
         val allowedToolNames = buildAllowedToolNames(request)
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
@@ -65,6 +65,7 @@ class KimiProvider(
             put(
                 "thinking",
                 buildThinkingBlock(
+                    thinkingEnabled = request.thinkingEnabled,
                     phase = request.phase,
                     conversationHistory = request.conversationHistory,
                 ),
@@ -93,7 +94,7 @@ class KimiProvider(
 
     private fun buildAllowedToolNames(request: EidosRequest): Set<String> {
         val names = request.toolDefinitions.map { it.name }.toMutableSet()
-        formulaToolService.formulaToolSchemas().forEach { tool ->
+        formulaToolService?.formulaToolSchemas().orEmpty().forEach { tool ->
             tool["function"]?.jsonObject
                 ?.get("name")
                 ?.jsonPrimitive
@@ -105,7 +106,7 @@ class KimiProvider(
     }
 
     private fun buildTools(request: EidosRequest): kotlinx.serialization.json.JsonArray {
-        val formulaTools = formulaToolService.formulaToolSchemas()
+        val formulaTools = formulaToolService?.formulaToolSchemas().orEmpty()
         val localTools = request.toolDefinitions.map { def ->
             buildJsonObject {
                 put("type", JsonPrimitive("function"))
@@ -134,17 +135,20 @@ class KimiProvider(
     }
 
     private fun buildMessages(request: EidosRequest) = buildJsonArray {
-        add(
-            buildJsonObject {
-                put("role", JsonPrimitive("system"))
-                put(
-                    "content",
-                    buildJsonArray {
-                        add(PromptCacheMarkers.cachedTextContentBlock(request.systemPrompt, markCache = true))
-                    },
-                )
-            },
-        )
+        // Omitted on tool continuations (blank system): the cached prefix carries it.
+        if (request.systemPrompt.isNotBlank()) {
+            add(
+                buildJsonObject {
+                    put("role", JsonPrimitive("system"))
+                    put(
+                        "content",
+                        buildJsonArray {
+                            add(PromptCacheMarkers.cachedTextContentBlock(request.systemPrompt, markCache = true))
+                        },
+                    )
+                },
+            )
+        }
 
         val outboundHistory = EidosHistoryTrimmer.prepareKimiOutboundHistory(
             request.conversationHistory,
@@ -155,15 +159,14 @@ class KimiProvider(
             add(message.toKimiMessage(cacheBreakpoint = index == lastHistoryIndex))
         }
 
-        if (request.userMessage.isNotBlank()) {
+        if (request.userMessage.isNotBlank() || request.attachedImagePaths.isNotEmpty()) {
+            val images = ChatVisionUserContent.encodePaths(request.attachedImagePaths)
             add(
                 buildJsonObject {
                     put("role", JsonPrimitive("user"))
                     put(
                         "content",
-                        buildJsonArray {
-                            add(PromptCacheMarkers.cachedTextContentBlock(request.userMessage, markCache = false))
-                        },
+                        ChatVisionUserContent.chatCompletionsContent(request.userMessage, images),
                     )
                 },
             )
@@ -227,9 +230,14 @@ class KimiProvider(
     }
 
     private fun buildThinkingBlock(
+        thinkingEnabled: Boolean,
         phase: EidosRequestPhase,
         conversationHistory: List<EidosMessage>,
     ): JsonObject = buildJsonObject {
+        if (!thinkingEnabled) {
+            put("type", JsonPrimitive("disabled"))
+            return@buildJsonObject
+        }
         put("type", JsonPrimitive("enabled"))
         val preserveThinking = phase == EidosRequestPhase.TOOL_CONTINUATION ||
             EidosHistoryTrimmer.kimiNeedsPreservedThinking(conversationHistory)

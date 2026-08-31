@@ -26,7 +26,6 @@ class WorkshopReviewPolicyTest {
             WorkshopEidosMode.BUILD,
             WorkshopEidosMode.BUILD_DESIGN,
             WorkshopEidosMode.BUILD_LOGIC,
-            WorkshopEidosMode.BUILD_PLAN,
         )
         for (phase in phases) {
             for (mode in buildModes) {
@@ -36,16 +35,6 @@ class WorkshopReviewPolicyTest {
                 )
             }
         }
-    }
-
-    @Test
-    fun buildPlanInUpdate_autoAcceptsLikeOtherBuildFamily() {
-        assertFalse(
-            WorkshopReviewPolicy.shouldReview(
-                WorkshopProjectPhase.UPDATE,
-                WorkshopEidosMode.BUILD_PLAN,
-            ),
-        )
     }
 
     @Test

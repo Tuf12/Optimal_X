@@ -4,15 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.collectAsState
-import androidx.core.content.ContextCompat
-import com.example.optimalx.voice.VoiceController
-import com.example.optimalx.voice.VoiceSessionState
-import android.content.Intent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -20,33 +13,36 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.mohamedrejeb.richeditor.model.rememberRichTextState
-import com.mohamedrejeb.richeditor.ui.material3.RichTextEditor
-import com.mohamedrejeb.richeditor.ui.material3.RichTextEditorDefaults
+import com.example.optimalx.ui.components.ClearVoiceRecordingDialog
+import com.example.optimalx.ui.components.NoteContentCodec
+import com.example.optimalx.ui.editor.NoteEditorSyncPolicy
+import com.example.optimalx.ui.editor.NoteExportFormat
+import com.example.optimalx.ui.editor.rememberNoteExportActions
 import com.example.optimalx.ui.editor.components.EditorDropdownMenu
+import com.example.optimalx.ui.editor.components.EditorModeFab
 import com.example.optimalx.ui.editor.components.FormattingToolbar
+import com.example.optimalx.ui.editor.components.MarkdownNoteEditorState
+import com.example.optimalx.ui.editor.components.MarkdownNoteSourceEditor
+import com.example.optimalx.ui.editor.components.MarkdownNoteViewPanel
 import com.example.optimalx.ui.editor.components.NoteDictationBar
 import com.example.optimalx.ui.editor.components.NoteReadAloudBar
-import com.example.optimalx.ui.components.ClearVoiceRecordingDialog
-import com.example.optimalx.ui.editor.components.NoteFontSize
-import com.example.optimalx.ui.theme.DmSansFamily
-import com.example.optimalx.ui.theme.LocalOptimalXColors
+import com.example.optimalx.ui.editor.components.NoteSummaryPanel
+import com.example.optimalx.voice.VoiceController
+import com.example.optimalx.voice.VoiceSessionState
+import com.example.optimalx.voice.sanitizeNoteContentForTts
 import kotlinx.coroutines.flow.SharedFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,15 +54,22 @@ fun NotePanel(
     isAiLocked: Boolean,
     isAiBlind: Boolean,
     restoreContentFlow: SharedFlow<String>,
+    noteUpdatedAt: Long,
+    onEditorSnapshot: (String) -> Unit,
+    onNoteEditorLoaded: (String) -> Unit,
+    onNoteEditSessionStarted: (String) -> Unit,
+    onRegisterLiveContentProvider: ((() -> String)?) -> Unit,
     onContentChanged: (String) -> Unit,
-    onUndo: () -> Unit,
-    onRedo: () -> Unit,
+    onDictationSaved: (String) -> Unit,
+    isNoteDirty: Boolean,
+    userHasEdited: Boolean,
     onToggleViewMode: () -> Unit,
     onToggleAiLock: () -> Unit,
     onToggleAiBlind: () -> Unit,
-    hasNoteSummary: Boolean = false,
-    summaryGenerating: Boolean = false,
-    onGenerateSummary: () -> Unit = {},
+    memoryBullets: List<String> = emptyList(),
+    contentDigest: String = "",
+    summaryUpdatedAt: Long = 0L,
+    onSaveNoteSummary: (List<String>, String) -> Unit = { _, _ -> },
     onReadNoteAloud: (plainText: String) -> Unit,
     onStopNoteSpeech: () -> Unit,
     noteReadAloudBarVisible: Boolean,
@@ -75,32 +78,54 @@ fun NotePanel(
     onNoteReadAloudRewind10: () -> Unit,
     onNoteReadAloudForward10: () -> Unit,
     voiceController: VoiceController? = null,
+    exportBaseName: String = "note",
+    onFlushBeforeExport: suspend (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val colors = LocalOptimalXColors.current
     val context = LocalContext.current
-    val richTextState = rememberRichTextState()
+    val editorState = remember { MarkdownNoteEditorState() }
 
-    var currentFontSize by remember { mutableStateOf(NoteFontSize.MEDIUM) }
     var showDropdown by remember { mutableStateOf(false) }
     var initialized by remember { mutableStateOf(false) }
+    var lastAppliedUpdatedAt by remember { mutableStateOf(0L) }
+    var showClearRecordingDialog by remember { mutableStateOf(false) }
 
     val sessionState = voiceController?.sessionState?.collectAsState()?.value ?: VoiceSessionState.IDLE
     val isNoteDictationActive = sessionState == VoiceSessionState.LISTENING ||
         sessionState == VoiceSessionState.TRANSCRIBING ||
         sessionState == VoiceSessionState.PAUSED
-    var showClearRecordingDialog by remember { mutableStateOf(false) }
 
     val latestOnContentChanged = rememberUpdatedState(onContentChanged)
+    val latestOnDictationSaved = rememberUpdatedState(onDictationSaved)
+    val latestOnEditorSnapshot = rememberUpdatedState(onEditorSnapshot)
+    val latestOnNoteEditorLoaded = rememberUpdatedState(onNoteEditorLoaded)
+    val latestOnNoteEditSessionStarted = rememberUpdatedState(onNoteEditSessionStarted)
+    val latestOnRegisterLiveContentProvider = rememberUpdatedState(onRegisterLiveContentProvider)
     val latestInitialized = rememberUpdatedState(initialized)
+    val latestEditorState = rememberUpdatedState(editorState)
+
+    fun currentMarkdown(): String = editorState.markdown
+
+    fun emitEditorSnapshot() {
+        if (!isViewMode) {
+            latestOnEditorSnapshot.value(currentMarkdown())
+        }
+    }
+
+    fun startDictation(controller: VoiceController) {
+        controller.startListening(existingText = "") { heard ->
+            editorState.appendPlain(heard)
+            val markdown = currentMarkdown()
+            latestOnEditorSnapshot.value(markdown)
+            latestOnDictationSaved.value(markdown)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted && voiceController != null) {
-            startNoteDictation(voiceController, richTextState) { html ->
-                latestOnContentChanged.value(html)
-            }
+            startDictation(voiceController)
         }
     }
 
@@ -108,41 +133,82 @@ fun NotePanel(
         onDispose { voiceController?.stopSession() }
     }
 
-    // Initialize from DB content once the note is actually loaded.
-    // This avoids a race where we apply empty content before Room emits.
-    LaunchedEffect(initialContentReady, initialContent) {
-        if (!initialized && initialContentReady) {
-            setRichTextContent(richTextState, initialContent)
+    LaunchedEffect(initialContentReady, initialContent, noteUpdatedAt, userHasEdited) {
+        if (!initialContentReady) return@LaunchedEffect
+        val normalized = NoteContentCodec.normalizeLegacyToMarkdown(initialContent)
+        if (!initialized) {
+            editorState.load(normalized)
+            lastAppliedUpdatedAt = noteUpdatedAt
             initialized = true
+            latestOnNoteEditorLoaded.value(editorState.markdown)
+            return@LaunchedEffect
+        }
+        if (userHasEdited) return@LaunchedEffect
+        if (noteUpdatedAt <= lastAppliedUpdatedAt) return@LaunchedEffect
+        editorState.load(normalized)
+        lastAppliedUpdatedAt = noteUpdatedAt
+        latestOnNoteEditorLoaded.value(editorState.markdown)
+    }
+
+    var previousIsViewMode by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(isViewMode, initialized) {
+        if (!initialized) return@LaunchedEffect
+        val wasViewMode = previousIsViewMode
+        previousIsViewMode = isViewMode
+        if (isViewMode) return@LaunchedEffect
+        val enteringEdit = wasViewMode == null || wasViewMode
+        if (enteringEdit) {
+            latestOnNoteEditSessionStarted.value(currentMarkdown())
         }
     }
 
-    // Restore content on undo/redo events from ViewModel
     LaunchedEffect(Unit) {
-        restoreContentFlow.collect { html ->
-            setRichTextContent(richTextState, html)
+        restoreContentFlow.collect { content ->
+            editorState.load(content)
+            latestOnNoteEditorLoaded.value(editorState.markdown)
+            if (!isViewMode) {
+                latestOnNoteEditSessionStarted.value(editorState.markdown)
+            }
         }
     }
 
-    // Persist when leaving the note (pager swaps away beyondViewportPageCount=0), leaving the editor,
-    // or fragment/activity stopping — no idle debounced autosave.
+    DisposableEffect(isViewMode) {
+        latestOnRegisterLiveContentProvider.value { latestEditorState.value.markdown }
+        onDispose { latestOnRegisterLiveContentProvider.value(null) }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             if (latestInitialized.value) {
-                latestOnContentChanged.value(richTextState.toHtml())
+                latestOnContentChanged.value(latestEditorState.value.markdown)
             }
         }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, richTextState) {
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP && latestInitialized.value) {
-                latestOnContentChanged.value(richTextState.toHtml())
+                latestOnContentChanged.value(latestEditorState.value.markdown)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    fun handleToggleViewMode() {
+        if (isViewMode) {
+            latestOnNoteEditSessionStarted.value(currentMarkdown())
+        } else {
+            latestOnContentChanged.value(currentMarkdown())
+        }
+        onToggleViewMode()
+    }
+
+    val noteExport = rememberNoteExportActions(
+        exportBaseName = exportBaseName,
+        shareChooserTitle = "Share note",
+        onFlushBeforeExport = onFlushBeforeExport,
+    )
 
     Column(modifier = modifier.fillMaxSize()) {
 
@@ -165,84 +231,73 @@ fun NotePanel(
             )
         }
 
-        // Formatting toolbar + dropdown anchor
-        Box {
-            FormattingToolbar(
-                richTextState = richTextState,
-                currentFontSize = currentFontSize,
-                onFontSizeCycle = {
-                    currentFontSize = currentFontSize.next()
-                    richTextState.addSpanStyle(SpanStyle(fontSize = currentFontSize.sp))
-                },
-                onUndo = onUndo,
-                onRedo = onRedo,
-                readAloudSessionActive = noteReadAloudBarVisible,
-                onReadAloudClick = {
-                    if (noteReadAloudBarVisible) onStopNoteSpeech()
-                    else onReadNoteAloud(richTextState.toText())
-                },
-                noteMicActive = isNoteDictationActive,
-                noteMicEnabled = !isViewMode && voiceController != null && !isNoteDictationActive,
-                onNoteMicClick = {
-                    val controller = voiceController ?: return@FormattingToolbar
-                    if (sessionState != VoiceSessionState.IDLE) return@FormattingToolbar
-                    val granted = ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.RECORD_AUDIO,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (granted) {
-                        startNoteDictation(controller, richTextState) { html ->
-                            onContentChanged(html)
-                        }
-                    } else {
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                },
-                onMoreClick = { showDropdown = true },
-            )
-            EditorDropdownMenu(
-                expanded = showDropdown,
-                isViewMode = isViewMode,
-                isAiLocked = isAiLocked,
-                isAiBlind = isAiBlind,
-                hasNoteSummary = hasNoteSummary,
-                summaryGenerating = summaryGenerating,
-                onDismiss = { showDropdown = false },
-                onGenerateSummary = onGenerateSummary,
-                onToggleStrikethrough = {
-                    richTextState.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-                },
-                onToggleViewMode = onToggleViewMode,
-                onToggleAiLock = onToggleAiLock,
-                onToggleAiBlind = onToggleAiBlind,
-                onExport = {
-                    val text = richTextState.toText()
-                    context.startActivity(
-                        Intent.createChooser(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text)
-                            },
-                            "Export note",
-                        )
-                    )
-                },
-                onShare = {
-                    val text = richTextState.toText()
-                    context.startActivity(
-                        Intent.createChooser(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text)
-                            },
-                            "Share note",
-                        )
-                    )
-                },
-            )
-        }
+        FormattingToolbar(
+            editorState = editorState,
+            onAfterFormatAction = ::emitEditorSnapshot,
+            isViewMode = isViewMode,
+            onToggleViewMode = { handleToggleViewMode() },
+            readAloudSessionActive = noteReadAloudBarVisible,
+            onReadAloudClick = {
+                if (noteReadAloudBarVisible) onStopNoteSpeech()
+                else onReadNoteAloud(sanitizeNoteContentForTts(currentMarkdown()))
+            },
+            noteMicActive = isNoteDictationActive,
+            noteMicEnabled = !isViewMode && voiceController != null && !isNoteDictationActive,
+            onNoteMicClick = {
+                val controller = voiceController ?: return@FormattingToolbar
+                if (sessionState != VoiceSessionState.IDLE) return@FormattingToolbar
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    startDictation(controller)
+                } else {
+                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            },
+            onMoreClick = { showDropdown = true },
+            moreMenuContent = {
+                EditorDropdownMenu(
+                    expanded = showDropdown,
+                    isViewMode = isViewMode,
+                    isAiLocked = isAiLocked,
+                    isAiBlind = isAiBlind,
+                    onDismiss = { showDropdown = false },
+                    onToggleViewMode = {
+                        showDropdown = false
+                        handleToggleViewMode()
+                    },
+                    onToggleAiLock = onToggleAiLock,
+                    onToggleAiBlind = onToggleAiBlind,
+                    onExportPdf = {
+                        showDropdown = false
+                        noteExport.export(currentMarkdown(), NoteExportFormat.PDF)
+                    },
+                    onExportMarkdown = {
+                        showDropdown = false
+                        noteExport.export(currentMarkdown(), NoteExportFormat.MARKDOWN)
+                    },
+                    onSharePdf = {
+                        showDropdown = false
+                        noteExport.sharePdf(currentMarkdown())
+                    },
+                    onShare = {
+                        showDropdown = false
+                        noteExport.share(currentMarkdown())
+                    },
+                )
+            },
+        )
 
-        // Main editor
+        NoteSummaryPanel(
+            memoryBullets = memoryBullets,
+            contentDigest = contentDigest,
+            summaryUpdatedAt = summaryUpdatedAt,
+            isViewMode = isViewMode,
+            onSave = onSaveNoteSummary,
+        )
+
         if (showClearRecordingDialog && voiceController != null) {
             ClearVoiceRecordingDialog(
                 onConfirm = {
@@ -253,69 +308,33 @@ fun NotePanel(
             )
         }
 
-        RichTextEditor(
-            state = richTextState,
-            readOnly = isViewMode,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .background(colors.surface)
                 .imePadding(),
-            textStyle = TextStyle(
-                color = colors.textPrimary,
-                fontFamily = DmSansFamily,
-                fontWeight = FontWeight.Normal,
-                fontSize = 15.sp,
-                lineHeight = 24.sp,
-            ),
-            colors = RichTextEditorDefaults.richTextEditorColors(
-                textColor = colors.textPrimary,
-                containerColor = colors.surface,
-                cursorColor = colors.accent,
-                focusedIndicatorColor = colors.accent,
-                unfocusedIndicatorColor = colors.border,
-                placeholderColor = colors.textDim,
-            ),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        )
+        ) {
+            if (isViewMode) {
+                MarkdownNoteViewPanel(
+                    content = currentMarkdown(),
+                    modifier = Modifier.fillMaxSize(),
+                )
+                EditorModeFab(
+                    isViewMode = true,
+                    onClick = { handleToggleViewMode() },
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                )
+            } else {
+                MarkdownNoteSourceEditor(
+                    state = editorState,
+                    modifier = Modifier.fillMaxSize(),
+                    onEdited = {
+                        if (NoteEditorSyncPolicy.shouldTrackEditorSnapshots(isEditMode = true)) {
+                            emitEditorSnapshot()
+                        }
+                    },
+                )
+            }
+        }
     }
-}
-
-private fun setRichTextContent(
-    richTextState: com.mohamedrejeb.richeditor.model.RichTextState,
-    content: String,
-) {
-    val isHtml = content.contains("<p", ignoreCase = true) ||
-        content.contains("<div", ignoreCase = true) ||
-        content.contains("<br", ignoreCase = true) ||
-        content.contains("<span", ignoreCase = true)
-    if (isHtml) {
-        richTextState.setHtml(content)
-    } else {
-        richTextState.setMarkdown(content)
-    }
-}
-
-private fun startNoteDictation(
-    voiceController: VoiceController,
-    richTextState: com.mohamedrejeb.richeditor.model.RichTextState,
-    onSaved: (String) -> Unit,
-) {
-    // Note body is appended in the callback; do not pass it as STT base or Whisper
-    // will return base+speech and duplicate the entire note on commit.
-    voiceController.startListening(existingText = "") { heard ->
-        appendPlainTextToNote(richTextState, heard)
-        onSaved(richTextState.toHtml())
-    }
-}
-
-private fun appendPlainTextToNote(
-    richTextState: com.mohamedrejeb.richeditor.model.RichTextState,
-    heard: String,
-) {
-    val addition = heard.trim()
-    if (addition.isBlank()) return
-    val current = richTextState.toText().trim()
-    val merged = if (current.isBlank()) addition else "$current\n\n$addition"
-    setRichTextContent(richTextState, merged)
 }

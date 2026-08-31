@@ -3,6 +3,7 @@ package com.example.optimalx.data.model
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 /**
  * One review session — usually one Eidos turn that touched one or more workshop files.
@@ -17,6 +18,7 @@ import androidx.room.PrimaryKey
         Index(value = ["scopeType", "scopeId"]),
         Index(value = ["status"]),
         Index(value = ["conversationId"]),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class PendingChangeSet(
@@ -31,4 +33,6 @@ data class PendingChangeSet(
     val status: String,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

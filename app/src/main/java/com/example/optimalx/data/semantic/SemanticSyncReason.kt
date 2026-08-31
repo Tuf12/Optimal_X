@@ -46,7 +46,9 @@ object SemanticSyncReason {
             "create_quick_notes_day_subfolder",
             "workshop_editor_open" -> SemanticSyncAction.IndexSubfolder(id)
 
-            "delete_file_reference" -> SemanticSyncAction.DeleteFile(id)
+            "delete_file_reference",
+            "soft_delete_file_reference",
+            "permanently_delete_file_reference" -> SemanticSyncAction.DeleteFile(id)
 
             "create_parent_folder",
             "rename_parent_folder",

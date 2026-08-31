@@ -20,7 +20,7 @@ class EidosHistoryTrimmerTest {
             user("keep"),
             assistant("keep reply"),
         )
-        val budget = EidosContextLimits.HistoryBudget(maxUserExchanges = 1, maxChars = 100_000)
+        val budget = EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 1, maxChars = 100_000)
         val trimmed = EidosHistoryTrimmer.trimHistoryIfNeeded(history, budget)
         assertEquals(2, trimmed.size)
         assertEquals("keep", trimmed.first().content)
@@ -37,13 +37,13 @@ class EidosHistoryTrimmerTest {
         )
         val untrimmed = EidosHistoryTrimmer.trimHistoryIfNeeded(
             history,
-            EidosContextLimits.HistoryBudget(maxUserExchanges = 8, maxChars = 100_000),
+            EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 8, maxChars = 100_000),
         )
         assertEquals(5, untrimmed.size)
 
         val trimmed = EidosHistoryTrimmer.trimHistoryIfNeeded(
             history,
-            EidosContextLimits.HistoryBudget(maxUserExchanges = 1, maxChars = 100_000),
+            EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 1, maxChars = 100_000),
         )
         assertEquals(3, trimmed.size)
         assertEquals(EidosRole.USER, trimmed.first().role)
@@ -85,7 +85,7 @@ class EidosHistoryTrimmerTest {
             user("old"),
             assistant("old reply", reasoning = "stale"),
             user("go"),
-            assistant("", reasoning = "active", toolCalls = listOf(toolCall("t1", "read_note"))),
+            assistant("", reasoning = "active", toolCalls = listOf(toolCall("t1", "search_semantic"))),
             tool("t1", "note body"),
         )
         val outbound = EidosHistoryTrimmer.prepareKimiOutboundHistory(
@@ -142,9 +142,75 @@ class EidosHistoryTrimmerTest {
     }
 
     @Test
+    fun prepareOutboundHistory_stubsOldReadRoundsKeepsRecent() {
+        val body = "x".repeat(500)
+        val history = listOf(
+            user("go"),
+            assistant("", toolCalls = listOf(toolCall("c1", "search_semantic"))),
+            toolNamed("c1", body, "search_semantic"),
+            assistant("", toolCalls = listOf(toolCall("c2", "search_semantic"))),
+            toolNamed("c2", body, "search_semantic"),
+            assistant("", toolCalls = listOf(toolCall("c3", "workshop_read_file"))),
+            toolNamed("c3", body, "workshop_read_file"),
+            assistant("", toolCalls = listOf(toolCall("c4", "search_semantic"))),
+            toolNamed("c4", body, "search_semantic"),
+        )
+        val outbound = EidosHistoryTrimmer.prepareOutboundHistory(history, replayRounds = 3)
+
+        assertTrue(
+            "oldest read round should be stubbed",
+            outbound[2].content.startsWith("[Earlier search_semantic result"),
+        )
+        assertTrue(outbound[2].content.contains("c1"))
+        assertEquals(body, outbound[4].content)
+        assertEquals(body, outbound[6].content)
+        assertEquals(body, outbound[8].content)
+    }
+
+    @Test
+    fun prepareOutboundHistory_neverStubsWriteResults() {
+        val body = "y".repeat(500)
+        val history = listOf(
+            user("build"),
+            assistant("", toolCalls = listOf(toolCall("w1", "workshop_write_file"))),
+            toolNamed("w1", body, "workshop_write_file"),
+            assistant("", toolCalls = listOf(toolCall("r2", "search_semantic"))),
+            toolNamed("r2", body, "search_semantic"),
+            assistant("", toolCalls = listOf(toolCall("r3", "search_semantic"))),
+            toolNamed("r3", body, "search_semantic"),
+            assistant("", toolCalls = listOf(toolCall("r4", "search_semantic"))),
+            toolNamed("r4", body, "search_semantic"),
+        )
+        val outbound = EidosHistoryTrimmer.prepareOutboundHistory(history, replayRounds = 3)
+        assertEquals("write result kept verbatim", body, outbound[2].content)
+    }
+
+    @Test
+    fun prepareOutboundHistory_shortReadNotStubbed() {
+        val history = listOf(
+            assistant("", toolCalls = listOf(toolCall("c1", "search_semantic"))),
+            toolNamed("c1", "tiny", "search_semantic"),
+            assistant("", toolCalls = listOf(toolCall("c2", "search_semantic"))),
+            toolNamed("c2", "hit", "search_semantic"),
+        )
+        val outbound = EidosHistoryTrimmer.prepareOutboundHistory(history, replayRounds = 1)
+        assertEquals("tiny", outbound[1].content)
+    }
+
+    @Test
+    fun prepareOutboundHistory_underReplayRounds_returnsSame() {
+        val history = listOf(
+            user("q"),
+            assistant("", toolCalls = listOf(toolCall("c1", "search_semantic"))),
+            toolNamed("c1", "x".repeat(500), "search_semantic"),
+        )
+        assertEquals(history, EidosHistoryTrimmer.prepareOutboundHistory(history, replayRounds = 3))
+    }
+
+    @Test
     fun trimHistoryIfNeeded_underBudget_returnsSameList() {
         val history = listOf(user("one"), assistant("two"))
-        val budget = EidosContextLimits.historyBudget(EidosContextLimits.MEMORY_HIGH)
+        val budget = EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 40, maxChars = 80_000)
         val trimmed = EidosHistoryTrimmer.trimHistoryIfNeeded(history, budget)
         assertEquals(history, trimmed)
     }
@@ -154,7 +220,7 @@ class EidosHistoryTrimmerTest {
         val history = (1..10).flatMap { i ->
             listOf(user("u$i"), assistant("a$i"))
         }
-        val budget = EidosContextLimits.historyBudget(EidosContextLimits.MEMORY_LOW)
+        val budget = EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 8, maxChars = 12_000)
         assertTrue(EidosHistoryTrimmer.isOverBudget(history, budget))
         assertFalse(
             EidosHistoryTrimmer.isOverBudget(
@@ -170,12 +236,12 @@ class EidosHistoryTrimmerTest {
             user("x".repeat(500)),
             assistant("y".repeat(500)),
         )
-        val budget = EidosContextLimits.HistoryBudget(maxUserExchanges = 100, maxChars = 400)
+        val budget = EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 100, maxChars = 400)
         assertTrue(EidosHistoryTrimmer.isOverBudget(history, budget))
         assertFalse(
             EidosHistoryTrimmer.isOverBudget(
                 history,
-                EidosContextLimits.HistoryBudget(maxUserExchanges = 100, maxChars = 5_000),
+                EidosHistoryTrimmer.HistoryBudget(maxUserExchanges = 100, maxChars = 5_000),
             ),
         )
     }
@@ -198,6 +264,13 @@ class EidosHistoryTrimmerTest {
         content = content,
         toolCallId = id,
         toolName = "tool",
+    )
+
+    private fun toolNamed(id: String, content: String, name: String) = EidosMessage(
+        role = EidosRole.TOOL,
+        content = content,
+        toolCallId = id,
+        toolName = name,
     )
 
     private fun toolCall(id: String, name: String) = EidosToolCall(

@@ -1,11 +1,12 @@
 package com.example.optimalx.data.revision
 
 import com.example.optimalx.data.dao.FileReferenceDao
+import com.example.optimalx.data.dao.NoteDao
 import com.example.optimalx.data.model.FileReference
 import java.io.File
 
 /**
- * Single point where a workshop file write hits the filesystem. Used by both:
+ * Single point where a workshop file or note body write hits persistent storage.
  *
  * - **Build-mode auto-accept** in `RoomToolExecutor` (no review queue), and
  * - **`PendingChangeService.accept(...)`** when the user accepts a queued proposal.
@@ -17,11 +18,14 @@ class DirectWriteApplier(
     private val fileReferenceDao: FileReferenceDao,
     private val checkpointRepository: CheckpointRepository,
     private val indexer: WorkshopFileIndexer,
+    private val noteDao: NoteDao? = null,
+    private val noteIndexer: NoteIndexer = NoteIndexer.NoOp,
     /**
      * Resolves the on-disk path for a workshop file. Production uses
      * `<filesDir>/workshop/<subfolderId>/<fileName>`; tests inject a temp dir.
      */
     private val workshopFilePath: suspend (subfolderId: Long, fileName: String) -> File,
+    private val onNoteContentSaved: (subfolderId: Long) -> Unit = {},
 ) {
 
     /**
@@ -66,6 +70,44 @@ class DirectWriteApplier(
             conversationId = conversationId,
         )
         return WriteResult.Applied(fileReferenceId = ref.id, checkpointId = cp.id)
+    }
+
+    /**
+     * Overwrite a note body for [subfolderId]. Creates a baseline checkpoint for the
+     * prior stored content on first write, then a new checkpoint for [content].
+     */
+    suspend fun applyNoteWrite(
+        subfolderId: Long,
+        content: String,
+        author: String = CHECKPOINT_AUTHOR_EIDOS,
+        label: String? = null,
+        conversationId: Long? = null,
+    ): WriteResult {
+        val dao = noteDao ?: return WriteResult.Failed("NoteDao not configured")
+        val note = dao.getBySubfolderOnce(subfolderId)
+            ?: return WriteResult.Failed("Note not found for subfolderId=$subfolderId")
+        val priorContent = note.content
+
+        checkpointRepository.baselineIfMissing(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = subfolderId,
+            content = priorContent,
+        )
+
+        val now = System.currentTimeMillis()
+        dao.update(note.copy(content = content, updatedAt = now))
+        noteIndexer.reindex(subfolderId)
+
+        val cp = checkpointRepository.createCheckpoint(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = subfolderId,
+            content = content,
+            author = author,
+            label = label,
+            conversationId = conversationId,
+        )
+        onNoteContentSaved(subfolderId)
+        return WriteResult.Applied(fileReferenceId = subfolderId, checkpointId = cp.id)
     }
 
     /**

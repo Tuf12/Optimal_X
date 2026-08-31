@@ -20,7 +20,7 @@ The Whisper + widget Quick Ask rollout (2026-05-31) landed the main routing. Wha
 | Moved conversations still in old folder list | Stale pointers + list not refreshed |
 | Chat wiped when leaving DumpEdit or rotating | Scope dispose + `ON_STOP` kills voice unconditionally |
 | Widget Ask Eidos TTS tied to global Read aloud | `WidgetVoiceService` reads `READ_ALOUD` for TTS + `handMicBackToUser()` |
-| Docs contradict shipped code | `VOICE_SYSTEM.md` body still describes Sherpa/VAD; STT checklist stale |
+| Docs contradict shipped code | ~~`VOICE_SYSTEM.md` Sherpa/VAD~~ — **resolved** (see Phase 8) |
 
 After this plan:
 
@@ -215,15 +215,16 @@ From [CHAT_FIX.md](CHAT_FIX.md) Phase 6 + STT leftovers.
 
 ---
 
-### Phase 8 — Documentation refresh ☐
+### Phase 8 — Documentation refresh (partial)
 
 | ID | Task | Status |
 |----|------|--------|
-| 8a | Rewrite `VOICE_SYSTEM.md` **Core STT Model** section for Google + Whisper API (remove Sherpa/VAD as primary) | ☐ |
-| 8b | Update [STT_AND_CONVERSATION_ROUTING_CHECKLIST.md](STT_AND_CONVERSATION_ROUTING_CHECKLIST.md) to match shipped routing | ☐ |
+| 8a | Rewrite `VOICE_SYSTEM.md` for Google + Whisper API + Gemma scribe (remove Sherpa/VAD as primary) | ✅ |
+| 8b | Update [STT_AND_CONVERSATION_ROUTING_CHECKLIST.md](STT_AND_CONVERSATION_ROUTING_CHECKLIST.md) to match shipped routing | ✅ |
 | 8c | Mark [STT_WHISPER_WIDGET_PLAN.md](STT_WHISPER_WIDGET_PLAN.md) complete with link to this plan for follow-ups | ☐ |
 | 8d | Update [CHAT_FIX.md](CHAT_FIX.md) status — point remaining work here or mark superseded | ☐ |
 | 8e | Cursor journal / release note when Phases 1–6 complete | ☐ |
+| 8f | Align `CHAT_UI.md` § STT with `VOICE_SYSTEM.md` | ✅ |
 
 ---
 

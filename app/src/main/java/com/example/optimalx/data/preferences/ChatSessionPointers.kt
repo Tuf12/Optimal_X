@@ -23,6 +23,7 @@ object ChatSessionPointers {
 
     private fun panelWorkshopKey(subfolderId: Long) = "panel_workshop_${subfolderId}_conversation_id"
     private fun panelRunnerKey(subfolderId: Long) = "panel_runner_${subfolderId}_conversation_id"
+    private fun imageStudioKey(subfolderId: Long) = "image_studio_${subfolderId}_conversation_id"
     private const val KEY_PANEL_GALLERY = "panel_gallery_conversation_id"
     private const val KEY_DUMP_EDIT = "dump_edit_conversation_id"
 
@@ -141,6 +142,21 @@ object ChatSessionPointers {
 
     fun clearPanelRunner(context: Context, subfolderId: Long) =
         setPanelRunner(context, subfolderId, null)
+
+    fun getImageStudio(context: Context, saveSubfolderId: Long): Long? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(imageStudioKey(saveSubfolderId), -1L)
+            .takeIf { it > 0L }
+
+    fun setImageStudio(context: Context, saveSubfolderId: Long, conversationId: Long?) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(imageStudioKey(saveSubfolderId), conversationId ?: -1L)
+            .apply()
+    }
+
+    fun clearImageStudio(context: Context, saveSubfolderId: Long) =
+        setImageStudio(context, saveSubfolderId, null)
 
     fun getDumpEdit(context: Context): Long? =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

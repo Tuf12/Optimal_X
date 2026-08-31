@@ -282,7 +282,7 @@ Do not start until Phases 1–7 are stable and users ask for more.
 | Multiple save slots | New table or JSON array in blob; panel-defined slot id |
 | Export/import state file | SAF JSON export per panel — niche |
 | `localStorage` ↔ Room sync | High complexity; prefer Room-only |
-| Cross-device sync | Out of scope — OptimalX Link backup only |
+| Cross-device sync | Out of scope — Sync with Desktop |
 | Eidos read/write `panel_state` tool | Security/privacy review required |
 
 ---

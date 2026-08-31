@@ -75,7 +75,7 @@ Post-reply TTS uses **`WIDGET_VOICE_HANDS_FREE`**. Mic re-open after TTS uses **
 
 **Target matrix** (Phase 1): [VOICE_CHAT_STT_COMPLETION_PLAN.md](../implementation/VOICE_CHAT_STT_COMPLETION_PLAN.md) § Voice behavior matrix.
 
-**Widget Chat UI** uses `VoiceController` (Whisper when enabled + key; else Google). **Ask Eidos / Quick Notes** use Google STT only via `WidgetVoiceService`.
+**Widget Chat UI** uses `VoiceController` (Gemma scribe → Whisper API when enabled + key; else Google). **Ask Eidos / Quick Notes** use Google STT only via `WidgetVoiceService`.
 
 ### Pause / Resume / Cancel Rules
 
@@ -142,7 +142,7 @@ Once selected, mic/send continue appending to that conversation instead of creat
 | Widget surface | STT engine |
 |----------------|------------|
 | Ask Eidos, Quick Notes | `GoogleSpeechToTextEngine` only (`WidgetVoiceService`) |
-| Widget Chat UI mic | `VoiceController` → Whisper API when toggle + key; else Google |
+| Widget Chat UI mic | `VoiceController` → Gemma scribe if enabled; else Whisper API when toggle + key; else Google |
 
 - Append-only transcript buffer until send/cancel
 - Engine internals hidden from user-facing widget behavior

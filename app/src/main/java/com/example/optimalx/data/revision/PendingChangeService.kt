@@ -1,6 +1,7 @@
 package com.example.optimalx.data.revision
 
 import com.example.optimalx.data.dao.FileReferenceDao
+import com.example.optimalx.data.dao.NoteDao
 import com.example.optimalx.data.dao.PendingChangeDao
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.PendingChangeItem
@@ -14,13 +15,13 @@ import java.io.File
  * are identical to the build-mode auto-accept path.
  *
  * In v1 the only `sourceType` values handled are [SOURCE_TYPE_WORKSHOP_FILE]
- * (overwrite an existing workshop file) and [SOURCE_TYPE_WORKSHOP_NEW_FILE]
- * (create a new workshop file). The `note` sourceTypes are reserved for a
- * later phase.
+ * handled are [SOURCE_TYPE_WORKSHOP_FILE], [SOURCE_TYPE_WORKSHOP_NEW_FILE], and
+ * [SOURCE_TYPE_NOTE] (subfolder note body).
  */
 class PendingChangeService(
     private val pendingDao: PendingChangeDao,
     private val fileReferenceDao: FileReferenceDao,
+    private val noteDao: NoteDao? = null,
     private val checkpointRepository: CheckpointRepository,
     private val directWriteApplier: DirectWriteApplier,
     private val clock: () -> Long = { System.currentTimeMillis() },
@@ -165,6 +166,70 @@ class PendingChangeService(
         )
     }
 
+    /**
+     * Queue a note-body overwrite proposal for [subfolderId]. Diff is always
+     * stored body → [proposedContent]; one open row per note in the set.
+     */
+    suspend fun proposeNote(
+        subfolderId: Long,
+        conversationId: Long?,
+        proposedContent: String,
+    ): ProposeResult {
+        val dao = noteDao ?: return ProposeResult.Failed("NoteDao not configured")
+        val note = dao.getBySubfolderOnce(subfolderId)
+            ?: return ProposeResult.Failed("Note not found for subfolderId=$subfolderId")
+        val diskContent = note.content
+        val effectiveWorking = effectiveWorkingContentForNote(subfolderId)
+        if (proposedContent == effectiveWorking) {
+            return ProposeResult.NoChange("Proposed content matches working copy")
+        }
+
+        val baseline = checkpointRepository.ensureProposalBaseline(
+            sourceType = SOURCE_TYPE_NOTE,
+            sourceId = subfolderId,
+            workingCopy = diskContent,
+            conversationId = conversationId,
+        )
+
+        val diff = ContentDiff.unifiedDiff(diskContent, proposedContent)
+        val proposedHash = ContentDiff.sha256Hex(proposedContent)
+
+        val setId = ensureOpenSet(
+            scopeType = SCOPE_SUBFOLDER,
+            scopeId = subfolderId,
+            conversationId = conversationId,
+        )
+        val priorItem = pendingDao.findOpenItemForTarget(setId, SOURCE_TYPE_NOTE, subfolderId)
+        val supersededPriorItem = priorItem != null
+        priorItem?.let { pendingDao.deleteItem(it.id) }
+
+        val now = clock()
+        val itemId = pendingDao.insertItem(
+            PendingChangeItem(
+                changeSetId = setId,
+                sourceType = SOURCE_TYPE_NOTE,
+                sourceId = subfolderId,
+                baseCheckpointId = baseline.id,
+                proposedContent = proposedContent,
+                proposedHash = proposedHash,
+                unifiedDiff = diff,
+                status = PENDING_ITEM_STATUS_PENDING,
+                fileName = "Note",
+                isNewFile = false,
+                createdAt = now,
+                updatedAt = now,
+            )
+        )
+        touchSet(setId, now)
+        val pendingCount = pendingDao.countPending(setId)
+        return ProposeResult.Queued(
+            setId = setId,
+            itemId = itemId,
+            pendingCountInSet = pendingCount,
+            supersededPriorItem = supersededPriorItem,
+        )
+    }
+
     // ── Accept / Reject ──────────────────────────────────────────────────────
 
     /**
@@ -180,6 +245,7 @@ class PendingChangeService(
         return when (item.sourceType) {
             SOURCE_TYPE_WORKSHOP_FILE -> acceptWorkshopWrite(item)
             SOURCE_TYPE_WORKSHOP_NEW_FILE -> acceptWorkshopCreate(item)
+            SOURCE_TYPE_NOTE -> acceptNoteWrite(item)
             else -> AcceptResult.Failed(itemId, "Unsupported sourceType: ${item.sourceType}")
         }
     }
@@ -200,6 +266,14 @@ class PendingChangeService(
         refreshSetStatus(item.changeSetId, now)
         return RejectResult.Ok
     }
+
+    /**
+     * Clear a pending Diff Review row without changing the current note/file.
+     * Used when Accept hits [AcceptResult.ConcurrentChange] and the user chooses
+     * Dismiss (keep current content). On mobile this currently matches [reject];
+     * keep the API so write-through workshop undo can diverge later if needed.
+     */
+    suspend fun dismiss(itemId: Long): RejectResult = reject(itemId)
 
     suspend fun rejectAll(setId: Long): RejectResult {
         val pending = pendingDao.listItems(setId).filter { it.status == PENDING_ITEM_STATUS_PENDING }
@@ -223,6 +297,27 @@ class PendingChangeService(
         val set = pendingDao.findOpenSetForScope(SCOPE_WORKSHOP_PROJECT, ref.subfolderId) ?: return disk
         val pending = pendingDao.findOpenItemForTarget(set.id, SOURCE_TYPE_WORKSHOP_FILE, ref.id)
         return pending?.proposedContent ?: disk
+    }
+
+    /**
+     * Note body Eidos should treat as current for reads and chained replace_string edits.
+     * An open pending proposal overrides the stored note until accept.
+     */
+    suspend fun effectiveWorkingContentForNote(subfolderId: Long): String {
+        val dao = noteDao ?: return ""
+        val disk = dao.getBySubfolderOnce(subfolderId)?.content.orEmpty()
+        val set = pendingDao.findOpenSetForScope(SCOPE_SUBFOLDER, subfolderId) ?: return disk
+        val pending = pendingDao.findOpenItemForTarget(set.id, SOURCE_TYPE_NOTE, subfolderId)
+        return pending?.proposedContent ?: disk
+    }
+
+    suspend fun formatNotePendingQueueLine(subfolderId: Long): String? {
+        val set = pendingDao.findOpenSetForScope(SCOPE_SUBFOLDER, subfolderId) ?: return null
+        val pending = pendingDao.listItems(set.id).filter { it.status == PENDING_ITEM_STATUS_PENDING }
+        if (pending.isEmpty()) return null
+        val count = pending.size
+        val label = if (count == 1) "1 pending note change" else "$count pending note changes"
+        return " Diff Review queue ($label)."
     }
 
     /** JSON summary for [workshop_list_pending_review] and write-tool feedback. */
@@ -315,6 +410,42 @@ class PendingChangeService(
             content = item.proposedContent,
             author = CHECKPOINT_AUTHOR_EIDOS,
             label = "Initial create (accepted)",
+            conversationId = conversationId,
+        )
+        return when (write) {
+            is WriteResult.Applied -> {
+                markItemAccepted(item)
+                AcceptResult.Applied(item.id, write.checkpointId, write.fileReferenceId)
+            }
+            is WriteResult.Failed -> AcceptResult.Failed(item.id, write.message)
+        }
+    }
+
+    private suspend fun acceptNoteWrite(item: PendingChangeItem): AcceptResult {
+        val dao = noteDao
+            ?: return AcceptResult.Failed(item.id, "NoteDao not configured")
+        val note = dao.getBySubfolderOnce(item.sourceId)
+            ?: return AcceptResult.Failed(item.id, "Note not found: ${item.sourceId}")
+        val currentContent = note.content
+        val currentHash = ContentDiff.sha256Hex(currentContent)
+
+        if (item.baseCheckpointId != null) {
+            val baseline = checkpointRepository.getById(item.baseCheckpointId)
+            if (baseline != null && baseline.contentHash != currentHash) {
+                return AcceptResult.ConcurrentChange(
+                    itemId = item.id,
+                    expectedHash = baseline.contentHash,
+                    actualHash = currentHash,
+                )
+            }
+        }
+
+        val conversationId = pendingDao.getSet(item.changeSetId)?.conversationId
+        val write = directWriteApplier.applyNoteWrite(
+            subfolderId = item.sourceId,
+            content = item.proposedContent,
+            author = CHECKPOINT_AUTHOR_EIDOS,
+            label = "Accepted proposal",
             conversationId = conversationId,
         )
         return when (write) {

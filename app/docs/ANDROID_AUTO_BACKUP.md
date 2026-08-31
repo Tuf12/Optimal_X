@@ -13,10 +13,9 @@ This document does **not** cover:
 
 | Mechanism | Where it lives |
 |-----------|----------------|
-| **Settings → Export / Import backup** (`.zip` via SAF) | `OptimalXBackupManager` — see [FILES_AND_MEDIA.md](architecture/FILES_AND_MEDIA.md) |
-| **OptimalX Link** (LAN snapshot with desktop app) | [OPTIMALX_LINK.md](architecture/OPTIMALX_LINK.md) |
+| **Sync with Desktop** (LAN sync with Electron app) | [DESKTOP_SYNC_MOBILE_PHASE2.md](implementation/DESKTOP_SYNC_MOBILE_PHASE2.md) |
 
-Those are separate, user-initiated or Link-scoped flows. Google Drive auto backup is handled entirely by the OS from XML rules in `res/xml/`.
+Google Drive auto backup is handled entirely by the OS from XML rules in `res/xml/`. It is separate from Sync with Desktop.
 
 ---
 
@@ -56,7 +55,7 @@ Downloaded Whisper binaries live under `files/models/`. They are large, re-insta
 
 - Android Auto Backup is capped at **~25 MB per app** (cloud backup).
 - Over the cap, Android **skips** backup silently — it does not truncate.
-- Heavy libraries (many attachments, large workshop trees) may outgrow auto backup; use **Settings → Export backup** or **OptimalX Link** for full snapshots.
+- Heavy libraries (many attachments, large workshop trees) may outgrow auto backup; use **Sync with Desktop** for off-device copies.
 
 ---
 
@@ -164,6 +163,6 @@ Logcat tag `BackupManagerService` helps confirm backup/restore. `adb shell dumps
 
 - **Do not** add Kotlin for auto backup unless product requirements change.
 - **Do not** include `optimalx_api_keys` in backup rules.
-- **Do not** conflate this with OptimalX Link or `OptimalXBackupManager` zip export.
+- **Do not** conflate this with Sync with Desktop.
 - **Do** keep `backup_rules.xml` and `data_extraction_rules.xml` in sync.
 - If auto backup still fails on a test device, check total payload size (25 MB) and logcat for transport errors before changing includes.

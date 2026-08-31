@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -388,7 +389,7 @@ private fun ShareScreen(
                                         )
                                     },
                                     enabled = !busyImporting,
-                                    modifier = Modifier.padding(start = (-8).dp),
+                                    contentPadding = PaddingValues(0.dp),
                                 ) {
                                     Text(
                                         text = "Create subfolder",

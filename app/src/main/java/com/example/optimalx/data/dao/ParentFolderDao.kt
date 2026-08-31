@@ -31,7 +31,7 @@ interface ParentFolderDao {
     @Query(
         """
         SELECT * FROM parent_folders WHERE deletedAt IS NULL AND (
-            isSystemFolder = 0 OR name IN ('Eidos Chats', 'Quick Notes', 'Panel Workshop')
+            isSystemFolder = 0 OR name IN ('Eidos Chats', 'Quick Notes', 'Eidos Reasoning', 'Panel Workshop')
         ) ORDER BY sortOrder ASC, createdAt ASC
         """,
     )
@@ -61,4 +61,18 @@ interface ParentFolderDao {
 
     @Query("SELECT * FROM parent_folders WHERE deletedAt IS NULL")
     suspend fun getAllActiveOnce(): List<ParentFolder>
+
+    @Query("SELECT * FROM parent_folders")
+    suspend fun getAllForSyncLookup(): List<ParentFolder>
+
+    @Query("SELECT * FROM parent_folders WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): ParentFolder?
+
+    @Query(
+        """
+        SELECT * FROM parent_folders
+        WHERE updatedAt > :since OR (deletedAt IS NOT NULL AND deletedAt > :since)
+        """,
+    )
+    suspend fun getChangedSince(since: Long): List<ParentFolder>
 }

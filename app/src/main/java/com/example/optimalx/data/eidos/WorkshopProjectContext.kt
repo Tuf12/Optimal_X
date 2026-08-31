@@ -12,7 +12,7 @@ object WorkshopProjectContext {
 
     fun formatFileManifest(files: List<FileReference>): String {
         if (files.isEmpty()) {
-            return "Project files: (none yet — use workshop_create_file to add files)."
+            return "Project files: (none yet — project scaffold may still be initializing)."
         }
         val sorted = files.sortedBy { it.fileName.lowercase() }
         return buildString {

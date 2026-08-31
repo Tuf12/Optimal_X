@@ -1,61 +1,10 @@
 package com.example.optimalx.data.eidos
 
 /**
- * User-facing chat memory depth and tool-first context rules (see EIDOS_LLM_CONTEXT_CLEANUP.md).
+ * Tool-first context rules for Eidos system prompts (see EIDOS_LLM_CONTEXT_CLEANUP.md).
+ * Conversation thread memory uses [ConversationOutboundHistory] plus active-conversation prefetch.
  */
 object EidosContextLimits {
-
-    const val MEMORY_LOW = "low"
-    const val MEMORY_MEDIUM = "medium"
-    const val MEMORY_HIGH = "high"
-
-    val MEMORY_OPTIONS: List<String> = listOf(MEMORY_LOW, MEMORY_MEDIUM, MEMORY_HIGH)
-
-    /** [maxUserExchanges] = user turns kept; [maxChars] is a secondary safety cap on total text. */
-    data class HistoryBudget(
-        val maxUserExchanges: Int,
-        val maxChars: Int,
-    )
-
-    fun normalizeMemoryDepth(value: String?): String? {
-        val trimmed = value?.trim()?.lowercase().orEmpty()
-        if (trimmed.isBlank()) return null
-        return trimmed.takeIf { it in MEMORY_OPTIONS }
-    }
-
-    /** Per-conversation override, else Settings default. */
-    fun effectiveMemoryDepth(
-        conversationStored: String?,
-        settingsDefault: String,
-    ): String {
-        return normalizeMemoryDepth(conversationStored)
-            ?: normalizeMemoryDepth(settingsDefault)
-            ?: MEMORY_LOW
-    }
-
-    fun displayLabel(depth: String?, settingsDefault: String): String {
-        val effective = effectiveMemoryDepth(depth, settingsDefault)
-        val tier = effective.replaceFirstChar { it.uppercase() }
-        return if (depth == null || normalizeMemoryDepth(depth) == null) {
-            "Memory: $tier (default)"
-        } else {
-            "Memory: $tier"
-        }
-    }
-
-    /** Cycles: inherit settings → low → medium → high → inherit. */
-    fun nextConversationMemoryDepth(current: String?): String? = when (normalizeMemoryDepth(current)) {
-        null -> MEMORY_LOW
-        MEMORY_LOW -> MEMORY_MEDIUM
-        MEMORY_MEDIUM -> MEMORY_HIGH
-        else -> null
-    }
-
-    fun historyBudget(depth: String): HistoryBudget = when (depth.lowercase()) {
-        MEMORY_MEDIUM -> HistoryBudget(maxUserExchanges = 16, maxChars = 30_000)
-        MEMORY_HIGH -> HistoryBudget(maxUserExchanges = 40, maxChars = 80_000)
-        else -> HistoryBudget(maxUserExchanges = 8, maxChars = 12_000)
-    }
 
     /** Injected on every Eidos call — keep stable for provider prompt-cache prefixes. */
     val TOOL_FIRST_CONTEXT_RULES: String = """
@@ -63,20 +12,22 @@ object EidosContextLimits {
         - Do not assume full note, file, folder-tree, or entire workshop project source is inlined in this prompt.
         - Panel Workshop scope includes a compact project file list (fileReferenceId per file) and a bounded open-tab excerpt when applicable.
         - Retrieval: call search_semantic(query) — it returns chunk_text passages with location and ids. Answer from those chunks directly.
-        - Use read_note/read_file/workshop_read_file only to expand a line range or before editing — not as a required second hop for Q&A.
+        - Use read_file/workshop_read_file to expand a file line range when needed — not as a required second hop for Q&A.
+        - Note Q&A and edits: read_note for the current subfolder note; search_semantic for passages; edit_note_section with startLine/endLine from hits (or oldString fallback).
+        - write_note_summary appends durable folder-memory bullets for the active subfolder; user may edit summary in the editor.
         - Prefer scopeType=local_first with current subfolder/parent ids when the question is location-specific; expansionPolicy defaults to expand_if_weak.
         - search_chat_history is keyword fallback for exact chat phrases only.
         - Active location IDs in this prompt are authoritative for default create/write targets.
         - Stored summaries in prompt are orientation only; trust search_semantic chunks for facts.
+        - Long chat threads may include a rolling conversation summary in message history; use search_semantic or read_conversation for full detail.
     """.trimIndent()
 
-    /** Panel Workshop only — no folder/note tool prose (see PANEL_WORKSHOP_AUTO_CONTINUE_PLAN Phase 1). */
-    val WORKSHOP_TOOL_FIRST_CONTEXT_RULES: String = """
-        Panel Workshop context policy:
-        - Project files are listed by fileReferenceId only — runtime source is not inlined in full.
-        - Call search_semantic(query) first with scopeType=local_first and this project's subfolderId.
-        - Use workshop_read_file with query or line range before edits; workshop_replace_string for targeted changes.
-        - Open editor excerpt (when present) is orientation only — prefer workshop_read_file before large edits.
-        - Spec orientation: search_semantic or workshop_read_file on README/spec .md — no inlined project summary.
+    /** Appended on main chat profiles when prefetch is enabled (Phase 2). */
+    val PREFETCH_RETRIEVAL_RULES: String = """
+        Retrieved context (when present):
+        - ## Retrieved context may already include relevant Daily, LTM, Journal, user note, workshop file, or past chat passages for this message.
+        - Answer from those passages when sufficient; call search_semantic when you need more detail or are editing.
+        - Workshop edits: use line numbers from file semantic hits (lineNumbersApplyTo=file) — not conversation chunk line numbers.
+        - Summaries inlined elsewhere in this prompt are orientation only; trust retrieved passages and search_semantic for facts.
     """.trimIndent()
 }

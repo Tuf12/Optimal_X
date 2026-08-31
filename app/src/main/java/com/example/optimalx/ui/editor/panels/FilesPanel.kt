@@ -27,6 +27,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -35,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.optimalx.data.model.FileReference
+import com.example.optimalx.ui.components.ConfirmDeleteFileDialog
 import com.example.optimalx.ui.editor.components.FileTypeBadge
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
@@ -47,9 +52,11 @@ fun FilesPanel(
     onImport: (android.net.Uri) -> Unit,
     onDelete: (FileReference) -> Unit,
     modifier: Modifier = Modifier,
+    loading: Boolean = false,
 ) {
     val colors = LocalOptimalXColors.current
     val context = LocalContext.current
+    var pendingDelete by remember { mutableStateOf<FileReference?>(null) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -82,13 +89,16 @@ fun FilesPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = "Files",
-                color = colors.textPrimary,
+                text = if (loading) "Downloading from desktop…" else "Files",
+                color = if (loading) colors.accent else colors.textPrimary,
                 fontFamily = DmSansFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 17.sp,
             )
-            IconButton(onClick = { filePicker.launch(supportedMimeTypes) }) {
+            IconButton(
+                onClick = { filePicker.launch(supportedMimeTypes) },
+                enabled = !loading,
+            ) {
                 Icon(
                     imageVector = Icons.Default.Add,
                     contentDescription = "Import file",
@@ -122,12 +132,24 @@ fun FilesPanel(
                 items(files, key = { it.id }) { file ->
                     FileRow(
                         file = file,
-                        onClick = { onFileClick(file) },
-                        onDelete = { onDelete(file) },
+                        onClick = { if (!loading) onFileClick(file) },
+                        onDelete = { pendingDelete = file },
+                        enabled = !loading,
                     )
                 }
             }
         }
+    }
+
+    pendingDelete?.let { file ->
+        ConfirmDeleteFileDialog(
+            fileName = file.fileName,
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                onDelete(file)
+                pendingDelete = null
+            },
+        )
     }
 }
 
@@ -136,6 +158,7 @@ private fun FileRow(
     file: FileReference,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    enabled: Boolean = true,
 ) {
     val colors = LocalOptimalXColors.current
 
@@ -145,7 +168,7 @@ private fun FileRow(
             .padding(vertical = 4.dp)
             .background(colors.surface, RoundedCornerShape(12.dp))
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

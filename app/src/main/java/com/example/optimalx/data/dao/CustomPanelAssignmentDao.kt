@@ -27,4 +27,13 @@ interface CustomPanelAssignmentDao {
 
     @Query("DELETE FROM custom_panel_assignments WHERE workshopSubfolderId = :workshopSubfolderId")
     suspend fun deleteByWorkshopSubfolder(workshopSubfolderId: Long)
+
+    @Query("SELECT * FROM custom_panel_assignments WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): CustomPanelAssignment?
+
+    @Query("SELECT * FROM custom_panel_assignments WHERE createdAt > :since ORDER BY createdAt")
+    suspend fun getChangedSince(since: Long): List<CustomPanelAssignment>
+
+    @Query("SELECT * FROM custom_panel_assignments ORDER BY createdAt")
+    suspend fun getAllForSyncLookup(): List<CustomPanelAssignment>
 }

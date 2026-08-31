@@ -23,6 +23,7 @@ data class SemanticScopeFilter(
     val subfolderId: Long? = null,
     val parentFolderId: Long? = null,
     val objectType: String? = null,
+    val objectId: Long? = null,
 )
 
 class SemanticIndexer(
@@ -113,9 +114,36 @@ class SemanticIndexer(
 
     suspend fun allChunkIds(): Set<Long> = chunkDao.getAll().map { it.id }.toSet()
 
+    suspend fun getRecentChunksForObject(
+        objectType: String,
+        objectId: Long,
+        limit: Int,
+    ): List<SemanticChunkHit> {
+        if (limit <= 0) return emptyList()
+        val rows = chunkDao.getByObjectOrderedByEndLine(objectType, objectId, limit)
+        return rows.map { row ->
+            SemanticChunkHit(
+                chunkId = row.id,
+                objectType = row.objectType,
+                objectId = row.objectId,
+                parentFolderId = row.parentFolderId,
+                subfolderId = row.subfolderId,
+                location = row.location,
+                chunkText = row.chunkText,
+                chunkType = row.chunkType,
+                startLine = row.startLine,
+                endLine = row.endLine,
+                score = 0.99f,
+            )
+        }
+    }
+
     private fun matchesScope(row: SemanticChunk, scope: SemanticScopeFilter?): Boolean {
         if (scope == null) return true
         scope.objectType?.let { if (row.objectType != it) return false }
+        scope.objectId?.let { oid ->
+            if (row.objectId != oid) return false
+        }
         scope.subfolderId?.let { sid ->
             when (row.objectType) {
                 SemanticObjectType.NOTE -> if (row.objectId != sid) return false

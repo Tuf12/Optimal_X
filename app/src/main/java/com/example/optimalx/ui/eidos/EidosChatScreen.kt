@@ -2,12 +2,12 @@ package com.example.optimalx.ui.eidos
 
 import android.Manifest
 import android.app.Application
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,13 +76,20 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.optimalx.data.imagestudio.ImageStudioDraftParser
 import com.example.optimalx.data.eidos.WorkshopEidosMode
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
 import com.example.optimalx.data.eidos.WorkshopUpdateSection
-import com.example.optimalx.data.eidos.model.EidosRole
+import com.example.optimalx.data.eidos.EidosNavigationTarget
+import com.example.optimalx.data.revision.SCOPE_SUBFOLDER
+import com.example.optimalx.data.revision.SCOPE_WORKSHOP_PROJECT
 import com.example.optimalx.ui.components.ChatComposerBar
 import com.example.optimalx.ui.components.ClearVoiceRecordingDialog
+import com.example.optimalx.data.eidos.model.EidosRole
+import com.example.optimalx.ui.eidos.components.ChatVisionMessageImage
+import com.example.optimalx.ui.eidos.components.EidosNavigationChips
 import com.example.optimalx.ui.components.ChatMessageBubbleFooter
+import com.example.optimalx.ui.components.ChatMessageRetryButton
 import com.example.optimalx.ui.components.ChatTopBar
 import com.example.optimalx.ui.components.MarkdownRichText
 import com.example.optimalx.ui.components.SelectablePlainText
@@ -88,6 +97,9 @@ import com.example.optimalx.ui.workshop.WorkshopEidosModeSelector
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
+import com.example.optimalx.OptimalXApplication
+import com.example.optimalx.ui.editor.components.NoteReadAloudBar
+import com.example.optimalx.voice.ReadAloudSession
 import com.example.optimalx.voice.VoiceController
 import com.example.optimalx.voice.VoiceSessionState
 
@@ -96,7 +108,9 @@ import com.example.optimalx.voice.VoiceSessionState
 fun EidosChatScreen(
     viewModel: EidosChatViewModel,
     onBack: () -> Unit,
-    onOpenDiffReview: (subfolderId: Long) -> Unit = {},
+    onOpenDiffReview: (subfolderId: Long, scopeType: String) -> Unit = { _, _ -> },
+    onNavigateFromChat: ((EidosNavigationTarget) -> Unit)? = null,
+    onChatLinkClick: ((String) -> Boolean)? = null,
 ) {
     val colors = LocalOptimalXColors.current
     val context = LocalContext.current
@@ -110,17 +124,28 @@ fun EidosChatScreen(
         }
     }
 
+    LaunchedEffect(viewModel) {
+        viewModel.toastMessage.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val messages by viewModel.messages.collectAsState()
+    val isImageStudioScope by viewModel.isImageStudioScope.collectAsState()
     val input by viewModel.input.collectAsState()
+    val pendingImage by viewModel.pendingImage.collectAsState()
     val isSending by viewModel.isSending.collectAsState()
-    val workshopAutoContinueActive by viewModel.workshopAutoContinueActive.collectAsState()
     val showKimiThinking by viewModel.showKimiThinkingIndicator.collectAsState()
     val streamPreview by viewModel.streamPreview.collectAsState()
     val readAloud by viewModel.readAloud.collectAsState()
     val readAloudMicPassback by viewModel.readAloudMicPassback.collectAsState()
     val readAloudInfoDismissed by viewModel.readAloudInfoDismissed.collectAsState()
+    val localGemmaToolsEnabled by viewModel.localGemmaToolsEnabled.collectAsState()
     val micUseWhisperApi by viewModel.micUseWhisperApi.collectAsState()
+    val micUseLocalGemmaScribe by viewModel.micUseLocalGemmaScribe.collectAsState()
     val hasOpenAiApiKey by viewModel.hasOpenAiApiKey.collectAsState()
+    val activeProvider by viewModel.activeProvider.collectAsState()
+    val eidosThinkingLevel by viewModel.eidosThinkingLevel.collectAsState()
     val rereadMessageId by viewModel.rereadMessageId.collectAsState()
     val conversationSummaries by viewModel.conversationSummaries.collectAsState()
     val historyDirectoryOptions by viewModel.historyDirectoryOptions.collectAsState()
@@ -132,19 +157,18 @@ fun EidosChatScreen(
     val selectedHistoryLocationId by viewModel.selectedHistoryLocationId.collectAsState()
     val hasActiveConversation by viewModel.hasActiveConversation.collectAsState()
     val chatScopeLabel by viewModel.chatScopeLabel.collectAsState()
-    val conversationMemoryLabel by viewModel.conversationMemoryLabel.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     val restrictQuickNotesToolbar by viewModel.restrictQuickNotesChatToolbar.collectAsState()
     val restrictWebToolbar by viewModel.restrictWebChatToolbar.collectAsState()
     val restrictChatToolbar = restrictQuickNotesToolbar || restrictWebToolbar
     val quickNotesInboxSubfolderId by viewModel.quickNotesInboxSubfolderId.collectAsState()
     val workshopScopeSubfolderId by viewModel.workshopScopeSubfolderId.collectAsState()
+    val noteScopeSubfolderId by viewModel.noteScopeSubfolderId.collectAsState()
     val workshopEidosModeChipSelection by viewModel.workshopEidosModeChipSelection.collectAsState()
     val workshopProjectPhase by viewModel.workshopProjectPhase.collectAsState()
     val workshopUpdateSection by viewModel.workshopUpdateSection.collectAsState()
     val workshopPendingChangeCount by viewModel.workshopPendingChangeCount.collectAsState()
-    val workshopShowAcceptPlanBanner by viewModel.workshopShowAcceptPlanBanner.collectAsState()
-    val workshopShowBuildPlanBanner by viewModel.workshopShowBuildPlanBanner.collectAsState()
+    val notePendingChangeCount by viewModel.notePendingChangeCount.collectAsState()
     val workshopSelectorModes = remember(workshopProjectPhase, workshopUpdateSection) {
         workshopProjectPhase.selectorModes(workshopUpdateSection)
     }
@@ -171,6 +195,11 @@ fun EidosChatScreen(
     var renameDraft by remember { mutableStateOf("") }
     var expandedReasoningIds by remember { mutableStateOf(setOf<Long>()) }
 
+    val readAloudSession: ReadAloudSession =
+        (context.applicationContext as OptimalXApplication).readAloudSession
+    val readAloudBarVisible by readAloudSession.barVisible.collectAsState()
+    val readAloudIsPlaying by readAloudSession.isPlaying.collectAsState()
+
     val voiceController: VoiceController = viewModel(
         factory = viewModelFactory {
             initializer {
@@ -183,7 +212,7 @@ fun EidosChatScreen(
     val liveTranscript by voiceController.liveTranscript.collectAsState()
     val usesWhisperCapture by voiceController.usesWhisperCapture.collectAsState()
 
-    LaunchedEffect(micUseWhisperApi) {
+    LaunchedEffect(micUseWhisperApi, micUseLocalGemmaScribe) {
         viewModel.refreshOpenAiKeyPresence()
         voiceController.applyMicEnginePreferenceFromSettings()
     }
@@ -205,7 +234,7 @@ fun EidosChatScreen(
     val isListening = sessionState == VoiceSessionState.LISTENING
     val isTranscribing = sessionState == VoiceSessionState.TRANSCRIBING
     val isPaused = sessionState == VoiceSessionState.PAUSED
-    val isSpeaking = sessionState == VoiceSessionState.SPEAKING
+    val isSpeaking = sessionState == VoiceSessionState.SPEAKING || readAloudIsPlaying
     val isCapturingVoice = if (usesWhisperCapture) isListening || isTranscribing else isListening
 
     // TTS only for genuinely new assistant messages after load (not history opened from DB).
@@ -218,11 +247,14 @@ fun EidosChatScreen(
         } else if (messages.size > lastSeenMessageCount) {
             val last = messages.lastOrNull()
             if (last != null && last.role == EidosRole.ASSISTANT && readAloud) {
-                voiceController.speakResponse(
-                    text = last.text,
-                    thenListen = readAloudMicPassback,
-                    onListenResult = { text -> viewModel.setInput(text) },
-                )
+                voiceController.stopSession()
+                readAloudSession.startFromChat(last.text) {
+                    if (readAloudMicPassback) {
+                        voiceController.startListening(existingText = "") { text ->
+                            viewModel.setInput(text)
+                        }
+                    }
+                }
             }
             lastSeenMessageCount = messages.size
         } else {
@@ -317,8 +349,6 @@ fun EidosChatScreen(
                     scopeLabel = chatScopeLabel,
                     workshopPhaseLabel = if (workshopScopeSubfolderId != null)
                         workshopProjectPhase.phaseLabel(workshopUpdateSection) else null,
-                    memoryDepthLabel = conversationMemoryLabel,
-                    onMemoryDepthClick = { viewModel.cycleConversationMemoryDepth() },
                     hasActiveConversation = hasActiveConversation,
                     isSending = isSending,
                     onHistoryClick = {
@@ -328,6 +358,8 @@ fun EidosChatScreen(
                     onNewChatClick = { showNewChatConfirm = true },
                     onMoveClick = { showMoveHereConfirm = true },
                     onStopClick = { viewModel.cancelActiveSend() },
+                    localGemmaToolsEnabled = localGemmaToolsEnabled,
+                    onLocalGemmaToolsEnabledChange = viewModel::setLocalGemmaToolsEnabled,
                     readAloud = readAloud,
                     readAloudMicPassback = readAloudMicPassback,
                     onReadAloudChange = viewModel::setReadAloud,
@@ -337,6 +369,10 @@ fun EidosChatScreen(
                     micUseWhisperApi = micUseWhisperApi,
                     hasOpenAiApiKey = hasOpenAiApiKey,
                     onMicUseWhisperApiChange = viewModel::setMicUseWhisperApi,
+                    activeProvider = activeProvider,
+                    onActiveProviderChange = viewModel::setActiveProvider,
+                    thinkingLevel = eidosThinkingLevel,
+                    onThinkingLevelChange = viewModel::setEidosThinkingLevel,
                     onOpenChatSettings = viewModel::refreshOpenAiKeyPresence,
                     restrictToolbar = restrictChatToolbar,
                 )
@@ -356,10 +392,6 @@ fun EidosChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .navigationBarsPadding()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                ) { focusManager.clearFocus() }
                 .padding(horizontal = 14.dp, vertical = 12.dp),
         ) {
             Box(
@@ -367,6 +399,12 @@ fun EidosChatScreen(
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
+                // Dismiss keyboard when the user scrolls the transcript — avoid a parent
+                // clickable over the list (it can swallow navigation chip taps).
+                val isScrolling = listState.isScrollInProgress
+                LaunchedEffect(isScrolling) {
+                    if (isScrolling) focusManager.clearFocus()
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -376,7 +414,6 @@ fun EidosChatScreen(
                 ) {
                     items(messages, key = { it.id }) { message ->
                         val isUser = message.role == EidosRole.USER
-                        val isSyntheticHandoff = message.isSyntheticHandoff
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -385,20 +422,7 @@ fun EidosChatScreen(
                             val bubbleModifier = if (isUser) {
                                 Modifier
                                     .clip(bubbleShape)
-                                    .background(
-                                        if (isSyntheticHandoff) {
-                                            colors.accentDim.copy(alpha = 0.35f)
-                                        } else {
-                                            colors.messageBubbleUser
-                                        },
-                                    )
-                                    .then(
-                                        if (isSyntheticHandoff) {
-                                            Modifier.border(1.dp, colors.accent.copy(alpha = 0.45f), bubbleShape)
-                                        } else {
-                                            Modifier
-                                        },
-                                    )
+                                    .background(colors.messageBubbleUser)
                             } else {
                                 Modifier
                                     .border(1.dp, colors.messageBubbleEidosBorder, bubbleShape)
@@ -414,16 +438,6 @@ fun EidosChatScreen(
                                     .fillMaxWidth(0.88f)
                                     .padding(horizontal = 11.dp, vertical = 9.dp),
                             ) {
-                                if (isUser && isSyntheticHandoff) {
-                                    Text(
-                                        text = "Auto-continue handoff",
-                                        color = colors.accent,
-                                        fontFamily = DmSansFamily,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.padding(bottom = 4.dp),
-                                    )
-                                }
                                 val reasoningText = message.reasoningText
                                 if (!isUser && !reasoningText.isNullOrBlank()) {
                                     val reasoningExpanded = message.id in expandedReasoningIds
@@ -474,6 +488,9 @@ fun EidosChatScreen(
                                         )
                                     }
                                 }
+                                message.imageAttachment?.let { attachment ->
+                                    ChatVisionMessageImage(attachment = attachment)
+                                }
                                 MarkdownRichText(
                                     text = message.text,
                                     style = TextStyle(
@@ -483,31 +500,69 @@ fun EidosChatScreen(
                                         lineHeight = 19.sp,
                                     ),
                                     selectable = true,
+                                    onLinkClick = onChatLinkClick,
                                 )
+                                if (!isUser && message.navigationTargets.isNotEmpty()) {
+                                    EidosNavigationChips(
+                                        targets = message.navigationTargets,
+                                        onNavigate = { target ->
+                                            if (onNavigateFromChat != null) {
+                                                onNavigateFromChat(target)
+                                            } else {
+                                                viewModel.postToast(
+                                                    "Open navigation from the main Eidos chat screen.",
+                                                )
+                                            }
+                                        },
+                                    )
+                                }
+                                if (
+                                    !isUser &&
+                                    isImageStudioScope &&
+                                    ImageStudioDraftParser.hasImageStudioDraft(message.text)
+                                ) {
+                                    AssistChip(
+                                        onClick = {
+                                            viewModel.requestImageStudioDraftHandoff(message.text)
+                                            onBack()
+                                        },
+                                        label = {
+                                            Text(
+                                                text = "Use in Image Studio",
+                                                fontFamily = DmSansFamily,
+                                                fontSize = 12.sp,
+                                            )
+                                        },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = colors.surface2,
+                                            labelColor = colors.accent,
+                                        ),
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    )
+                                }
                                 ChatMessageBubbleFooter(timeLabel = message.timeLabel) {
                                     if (!isUser) {
-                                        val isPlaying = message.id == rereadMessageId
+                                        val isRereadActive =
+                                            message.id == rereadMessageId && readAloudBarVisible
                                         IconButton(
                                             onClick = {
-                                                if (isPlaying) {
-                                                    voiceController.stopSession()
+                                                if (isRereadActive) {
+                                                    readAloudSession.stop()
                                                     viewModel.setRereadMessageId(null)
                                                 } else {
                                                     voiceController.stopSession()
                                                     viewModel.setRereadMessageId(message.id)
-                                                    voiceController.speakResponse(
-                                                        text = message.text,
-                                                        thenListen = false,
-                                                        onDone = { viewModel.setRereadMessageId(null) },
-                                                    )
+                                                    readAloudSession.startFromChat(message.text) {
+                                                        viewModel.setRereadMessageId(null)
+                                                    }
                                                 }
                                             },
                                             modifier = Modifier.size(28.dp),
                                         ) {
                                             Icon(
                                                 imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                                contentDescription = if (isPlaying) "Stop" else "Read aloud",
-                                                tint = if (isPlaying) colors.accent else colors.textDim,
+                                                contentDescription = if (isRereadActive) "Stop" else "Read aloud",
+                                                tint = if (isRereadActive) colors.accent else colors.textDim,
                                                 modifier = Modifier.size(18.dp),
                                             )
                                         }
@@ -526,6 +581,9 @@ fun EidosChatScreen(
                                         )
                                     }
                                     if (isUser) {
+                                        ChatMessageRetryButton(
+                                            onClick = { viewModel.retryMessage(message.id, message.text) },
+                                        )
                                         IconButton(
                                             onClick = {
                                                 editingMessage = message
@@ -551,40 +609,21 @@ fun EidosChatScreen(
                         item(key = "diff_review_banner") {
                             DiffReviewBanner(
                                 count = workshopPendingChangeCount,
-                                onClick = { onOpenDiffReview(pendingReviewSubId) },
+                                onClick = {
+                                    onOpenDiffReview(pendingReviewSubId, SCOPE_WORKSHOP_PROJECT)
+                                },
                             )
                         }
                     }
 
-                    if (pendingReviewSubId != null && workshopShowAcceptPlanBanner && !isSending) {
-                        item(key = "accept_plan_banner") {
-                            AcceptPlanBanner(
-                                onClick = { viewModel.acceptImplementationPlan(pendingReviewSubId) },
-                            )
-                        }
-                    }
-
-                    if (
-                        pendingReviewSubId != null &&
-                        workshopShowBuildPlanBanner &&
-                        workshopPendingChangeCount == 0 &&
-                        !isSending
-                    ) {
-                        item(key = "build_plan_banner") {
-                            BuildPlanBanner(
-                                onClick = { viewModel.sendWorkshopBuildFromPlanKickoff(pendingReviewSubId) },
-                            )
-                        }
-                    }
-
-                    if (workshopAutoContinueActive && isSending && !showKimiThinking) {
-                        item(key = "workshop_auto_continue") {
-                            Text(
-                                text = "Building — continuing workshop chunk…",
-                                color = colors.textDim,
-                                fontFamily = DmMonoFamily,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    val noteReviewSubId = noteScopeSubfolderId
+                    if (noteReviewSubId != null && notePendingChangeCount > 0 && !isSending) {
+                        item(key = "note_diff_review_banner") {
+                            DiffReviewBanner(
+                                count = notePendingChangeCount,
+                                onClick = {
+                                    onOpenDiffReview(noteReviewSubId, SCOPE_SUBFOLDER)
+                                },
                             )
                         }
                     }
@@ -622,16 +661,36 @@ fun EidosChatScreen(
                 }
             }
 
+            if (readAloudBarVisible) {
+                NoteReadAloudBar(
+                    isPlaying = readAloudIsPlaying,
+                    onPlayPause = readAloudSession::togglePlayback,
+                    onRewind10 = readAloudSession::rewind10Seconds,
+                    onForward10 = readAloudSession::forward10Seconds,
+                )
+            }
+
             ChatComposerBar(
                 input = input,
                 onInputChange = viewModel::setInput,
                 onSend = { commitAndSend() },
                 onMicClick = {
+                    if (readAloudBarVisible && readAloudIsPlaying) {
+                        readAloudSession.stop()
+                        return@ChatComposerBar
+                    }
                     when (sessionState) {
                         VoiceSessionState.LISTENING,
                         VoiceSessionState.PAUSED,
                         -> voiceController.handleComposerMicTap(input)
-                        VoiceSessionState.SPEAKING -> voiceController.stopSession()
+                        VoiceSessionState.SPEAKING,
+                        -> {
+                            if (readAloudBarVisible) {
+                                readAloudSession.stop()
+                            } else {
+                                voiceController.stopSession()
+                            }
+                        }
                         VoiceSessionState.IDLE -> {
                             val permState = ContextCompat.checkSelfPermission(
                                 context, Manifest.permission.RECORD_AUDIO
@@ -661,6 +720,10 @@ fun EidosChatScreen(
                 onTextFieldFocused = {
                     if (isListening) voiceController.finalizeListeningForEdit(input)
                 },
+                pendingImage = pendingImage,
+                onAttachImageUri = viewModel::attachImageFromUri,
+                onClearPendingImage = viewModel::clearPendingImage,
+                onAttachError = viewModel::postToast,
                 modifier = Modifier.imePadding(),
             )
         }
@@ -876,90 +939,6 @@ fun EidosChatScreen(
                 }
             },
             containerColor = colors.sheetBackground,
-        )
-    }
-}
-
-/**
- * Bottom-of-list banner shown under the latest assistant message when the active
- * workshop scope has pending DIFF_REVIEW items. Tapping opens [DiffReviewScreen].
- */
-@Composable
-private fun AcceptPlanBanner(
-    onClick: () -> Unit,
-) {
-    val colors = LocalOptimalXColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, colors.accentBorder, RoundedCornerShape(10.dp))
-            .background(colors.accentDim)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Accept plan",
-                color = colors.textPrimary,
-                fontFamily = DmSansFamily,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-            )
-            Text(
-                text = "Accept plan, then tap Build plan once — Auto-Continue runs all phases",
-                color = colors.textMid,
-                fontFamily = DmSansFamily,
-                fontSize = 12.sp,
-            )
-        }
-        Text(
-            text = "Accept",
-            color = colors.accent,
-            fontFamily = DmSansFamily,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.sp,
-        )
-    }
-}
-
-@Composable
-private fun BuildPlanBanner(
-    onClick: () -> Unit,
-) {
-    val colors = LocalOptimalXColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, colors.accentBorder, RoundedCornerShape(10.dp))
-            .background(colors.accentDim)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Build plan",
-                color = colors.textPrimary,
-                fontFamily = DmSansFamily,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-            )
-            Text(
-                text = "Execute the next phase from your accepted implementation plan",
-                color = colors.textMid,
-                fontFamily = DmSansFamily,
-                fontSize = 12.sp,
-            )
-        }
-        Text(
-            text = "Build",
-            color = colors.accent,
-            fontFamily = DmSansFamily,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.sp,
         )
     }
 }

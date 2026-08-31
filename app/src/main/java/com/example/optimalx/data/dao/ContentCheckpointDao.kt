@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.example.optimalx.data.model.ContentCheckpoint
 import kotlinx.coroutines.flow.Flow
 
@@ -12,6 +13,9 @@ interface ContentCheckpointDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(checkpoint: ContentCheckpoint): Long
+
+    @Update
+    suspend fun update(checkpoint: ContentCheckpoint)
 
     @Query("SELECT * FROM content_checkpoints WHERE id = :id")
     suspend fun getById(id: Long): ContentCheckpoint?
@@ -90,4 +94,13 @@ interface ContentCheckpointDao {
         """
     )
     suspend fun deleteAllForSource(sourceType: String, sourceId: Long)
+
+    @Query("SELECT * FROM content_checkpoints WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): ContentCheckpoint?
+
+    @Query("SELECT * FROM content_checkpoints WHERE createdAt > :since ORDER BY createdAt")
+    suspend fun getChangedSince(since: Long): List<ContentCheckpoint>
+
+    @Query("SELECT * FROM content_checkpoints ORDER BY createdAt")
+    suspend fun getAllForSyncLookup(): List<ContentCheckpoint>
 }

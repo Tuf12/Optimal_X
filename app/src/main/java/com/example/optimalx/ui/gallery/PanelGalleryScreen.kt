@@ -57,6 +57,7 @@ fun PanelGalleryScreen(
     onPinnedPanelsClick: () -> Unit,
     onPinnedDumpEditClick: () -> Unit,
     onPinnedWorkshopClick: () -> Unit,
+    onPinnedImageStudioClick: () -> Unit,
     onPinnedQuickNotesClick: () -> Unit,
     onPinnedUserPinClick: (PinnedRowItem.UserPin) -> Unit,
 ) {
@@ -121,6 +122,7 @@ fun PanelGalleryScreen(
                 onDumpEditClick = onPinnedDumpEditClick,
                 onWorkshopClick = onPinnedWorkshopClick,
                 onQuickNotesClick = onPinnedQuickNotesClick,
+                onImageStudioClick = onPinnedImageStudioClick,
                 onUserPinClick = onPinnedUserPinClick,
                 onUserPinLongClick = { pin -> viewModel.unpinById(pin.pinId) },
             )

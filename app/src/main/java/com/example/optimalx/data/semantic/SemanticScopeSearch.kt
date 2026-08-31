@@ -64,6 +64,15 @@ object SemanticScopeSearch {
                 SemanticScopeFilter(objectType = SemanticObjectType.CONVERSATION),
                 null,
             )
+            "active_conversation" -> {
+                if (scopeId == null) return listOf(null)
+                listOf(
+                    SemanticScopeFilter(
+                        objectType = SemanticObjectType.CONVERSATION,
+                        objectId = scopeId,
+                    ),
+                )
+            }
             else -> listOf(null)
         }
     }

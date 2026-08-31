@@ -85,6 +85,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -103,6 +104,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -157,14 +160,20 @@ import com.example.optimalx.data.preferences.settingsDataStore
 import com.example.optimalx.ui.components.ChatComposerBar
 import com.example.optimalx.ui.components.ClearVoiceRecordingDialog
 import com.example.optimalx.ui.components.ChatMessageBubbleFooter
+import com.example.optimalx.ui.components.ChatMessageRetryButton
 import com.example.optimalx.ui.components.ChatTopBar
 import com.example.optimalx.ui.components.MarkdownRichText
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.eidos.EidosUiMessage
 import com.example.optimalx.ui.eidos.KimiStreamPreviewBubble
+import com.example.optimalx.ui.eidos.components.ChatVisionMessageImage
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.SyneFamily
+import com.example.optimalx.OptimalXApplication
+import com.example.optimalx.ui.editor.components.NoteReadAloudBar
+import com.example.optimalx.voice.ReadAloudSession
 import com.example.optimalx.voice.VoiceController
 import com.example.optimalx.voice.VoiceSessionState
 import com.example.optimalx.voice.WebSearchSttSession
@@ -174,12 +183,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicBoolean
 
 private const val WEB_PANEL_TAG = "WebPanel"
 
 private val DEFAULT_WEB_BAR_SHORTCUTS = listOf(
-    "https://duckduckgo.com/",
+    "https://search.brave.com/",
     "https://docs.anthropic.com/",
     "https://github.com/",
     "https://stackoverflow.com/",
@@ -288,20 +296,20 @@ fun WebPanel(
     modifier: Modifier = Modifier,
     @Suppress("UNUSED_PARAMETER") panelTitle: String,
     eidosViewModel: EidosChatViewModel,
-    scopeKey: String = "global",
+    scopeKey: String,
     initialUrl: String = "",
 ) {
+    val browserScopeKey = remember(scopeKey) { WebPanelScope.normalize(scopeKey) }
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val colors = LocalOptimalXColors.current
     val scope = rememberCoroutineScope()
     var webView by remember { mutableStateOf<WebView?>(null) }
-    val webViewCallbacksActive = remember { AtomicBoolean(true) }
     // Key by initialUrl so a new widget search/URL does not reuse saved URL + "already restored" from a prior visit.
-    var urlInput by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
-    var currentUrl by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
-    var requestedUrl by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
+    var urlInput by rememberSaveable(browserScopeKey, initialUrl) { mutableStateOf(initialUrl) }
+    var currentUrl by rememberSaveable(browserScopeKey, initialUrl) { mutableStateOf(initialUrl) }
+    var requestedUrl by rememberSaveable(browserScopeKey, initialUrl) { mutableStateOf(initialUrl) }
     var isLoading by remember { mutableStateOf(false) }
     var pageError by remember { mutableStateOf<String?>(null) }
     var fallbackUrl by remember { mutableStateOf<String?>(null) }
@@ -309,24 +317,28 @@ fun WebPanel(
     var lastFallbackSignature by rememberSaveable { mutableStateOf("") }
     var showBookmarks by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
-    var showSearchHistoryTab by rememberSaveable { mutableStateOf(false) }
-    var hasRestoredSessionUrl by rememberSaveable(initialUrl) { mutableStateOf(false) }
+    var showSearchHistoryTab by rememberSaveable(browserScopeKey) { mutableStateOf(false) }
+    var hasRestoredSessionUrl by rememberSaveable(browserScopeKey, initialUrl) { mutableStateOf(false) }
     var overflowMenuExpanded by remember { mutableStateOf(false) }
     val eidosSheetOpen by eidosViewModel.webPanelEidosSheetOpen.collectAsState()
     val eidosListState = rememberLazyListState()
 
     val messages by eidosViewModel.messages.collectAsState()
     val input by eidosViewModel.input.collectAsState()
+    val pendingImage by eidosViewModel.pendingImage.collectAsState()
     val isSending by eidosViewModel.isSending.collectAsState()
     val showKimiThinking by eidosViewModel.showKimiThinkingIndicator.collectAsState()
     val streamPreview by eidosViewModel.streamPreview.collectAsState()
     val readAloud by eidosViewModel.readAloud.collectAsState()
     val readAloudMicPassback by eidosViewModel.readAloudMicPassback.collectAsState()
     val readAloudInfoDismissed by eidosViewModel.readAloudInfoDismissed.collectAsState()
+    val localGemmaToolsEnabled by eidosViewModel.localGemmaToolsEnabled.collectAsState()
     val micUseWhisperApi by eidosViewModel.micUseWhisperApi.collectAsState()
+    val micUseLocalGemmaScribe by eidosViewModel.micUseLocalGemmaScribe.collectAsState()
     val hasOpenAiApiKey by eidosViewModel.hasOpenAiApiKey.collectAsState()
+    val activeProvider by eidosViewModel.activeProvider.collectAsState()
+    val eidosThinkingLevel by eidosViewModel.eidosThinkingLevel.collectAsState()
     val hasActiveConversation by eidosViewModel.hasActiveConversation.collectAsState()
-    val conversationMemoryLabel by eidosViewModel.conversationMemoryLabel.collectAsState()
     val rereadMessageId by eidosViewModel.rereadMessageId.collectAsState()
     val chatScopeLabel by eidosViewModel.chatScopeLabel.collectAsState()
     val pendingConfirmation by eidosViewModel.pendingConfirmation.collectAsState()
@@ -345,7 +357,7 @@ fun WebPanel(
     val persistedLastUrl by context.settingsDataStore.data
         .map { prefs ->
             decodeLastUrlEntries(prefs[WEB_LAST_URL_KEY])
-                .firstOrNull { scopeMatches(scopeKey, it.scopeKey) }
+                .firstOrNull { WebPanelScope.matches(browserScopeKey, it.scopeKey) }
                 ?.url
         }
         .collectAsState(initial = null)
@@ -353,7 +365,7 @@ fun WebPanel(
         .map { prefs ->
             decodeBookmarks(prefs[WEB_BOOKMARKS_KEY])
                 .asSequence()
-                .filter { scopeMatches(scopeKey, it.scopeKey) }
+                .filter { WebPanelScope.matches(browserScopeKey, it.scopeKey) }
                 .toList()
         }
         .collectAsState(initial = emptyList())
@@ -361,7 +373,7 @@ fun WebPanel(
         .map { prefs ->
             decodeRecentEntries(prefs[WEB_RECENT_PAGES_KEY])
                 .asSequence()
-                .filter { scopeMatches(scopeKey, it.scopeKey) }
+                .filter { WebPanelScope.matches(browserScopeKey, it.scopeKey) }
                 .map { it.value }
                 .toList()
         }
@@ -370,13 +382,19 @@ fun WebPanel(
         .map { prefs ->
             decodeRecentSearchEntries(prefs[WEB_RECENT_SEARCHES_KEY])
                 .asSequence()
-                .filter { scopeMatches(scopeKey, it.scopeKey) }
+                .filter { WebPanelScope.matches(browserScopeKey, it.scopeKey) }
                 .toList()
         }
         .collectAsState(initial = emptyList())
     val activeValidUrl = (normalizeAndValidateUrl(currentUrl.ifBlank { urlInput }) as? UrlResult.Valid)?.url
     val isActiveBookmarked = activeValidUrl != null && bookmarks.any { it.url == activeValidUrl }
-    val webSubfolderId = remember(scopeKey) { subfolderIdFromWebScopeKey(scopeKey) }
+    val webSubfolderId = remember(browserScopeKey) { WebPanelScope.subfolderIdFromScopeKey(browserScopeKey) }
+
+    LaunchedEffect(eidosViewModel) {
+        eidosViewModel.toastMessage.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(activeValidUrl) {
         eidosViewModel.reportWebPanelPageUrl(activeValidUrl)
@@ -386,6 +404,11 @@ fun WebPanel(
             eidosViewModel.reportWebPanelPageUrl(null)
         }
     }
+
+    val readAloudSession: ReadAloudSession =
+        (context.applicationContext as OptimalXApplication).readAloudSession
+    val readAloudBarVisible by readAloudSession.barVisible.collectAsState()
+    val readAloudIsPlaying by readAloudSession.isPlaying.collectAsState()
 
     val voiceController: VoiceController = viewModel(
         key = "web_panel_eidos_voice",
@@ -400,7 +423,7 @@ fun WebPanel(
     val liveTranscript by voiceController.liveTranscript.collectAsState()
     val usesWhisperCapture by voiceController.usesWhisperCapture.collectAsState()
 
-    LaunchedEffect(micUseWhisperApi) {
+    LaunchedEffect(micUseWhisperApi, micUseLocalGemmaScribe) {
         eidosViewModel.refreshOpenAiKeyPresence()
         voiceController.applyMicEnginePreferenceFromSettings()
     }
@@ -438,7 +461,7 @@ fun WebPanel(
     val isListening = sessionState == VoiceSessionState.LISTENING
     val isTranscribing = sessionState == VoiceSessionState.TRANSCRIBING
     val isPaused = sessionState == VoiceSessionState.PAUSED
-    val isSpeaking = sessionState == VoiceSessionState.SPEAKING
+    val isSpeaking = sessionState == VoiceSessionState.SPEAKING || readAloudIsPlaying
     val isCapturingVoice = if (usesWhisperCapture) isListening || isTranscribing else isListening
 
     var lastSeenEidosMessageCount by remember { mutableIntStateOf(0) }
@@ -451,11 +474,14 @@ fun WebPanel(
         } else if (messages.size > lastSeenEidosMessageCount) {
             val last = messages.lastOrNull()
             if (last != null && last.role == EidosRole.ASSISTANT && readAloud) {
-                voiceController.speakResponse(
-                    text = last.text,
-                    thenListen = readAloudMicPassback,
-                    onListenResult = { eidosViewModel.setInput(it) },
-                )
+                voiceController.stopSession()
+                readAloudSession.startFromChat(last.text) {
+                    if (readAloudMicPassback) {
+                        voiceController.startListening(existingText = "") { text ->
+                            eidosViewModel.setInput(text)
+                        }
+                    }
+                }
             }
             lastSeenEidosMessageCount = messages.size
         } else {
@@ -539,7 +565,7 @@ fun WebPanel(
             context.settingsDataStore.edit { prefs ->
                 val updated = upsertLastUrlEntry(
                     existing = decodeLastUrlEntries(prefs[WEB_LAST_URL_KEY]),
-                    scopeKey = scopeKey,
+                    scopeKey = browserScopeKey,
                     url = validUrl,
                 )
                 prefs[WEB_LAST_URL_KEY] = encodeLastUrlEntries(updated)
@@ -554,7 +580,7 @@ fun WebPanel(
             context.settingsDataStore.edit { prefs ->
                 val updated = upsertRecentEntry(
                     existing = decodeRecentEntries(prefs[WEB_RECENT_PAGES_KEY]),
-                    scopeKey = scopeKey,
+                    scopeKey = browserScopeKey,
                     value = validUrl,
                 )
                 prefs[WEB_RECENT_PAGES_KEY] = encodeRecentEntries(updated)
@@ -571,7 +597,7 @@ fun WebPanel(
             context.settingsDataStore.edit { prefs ->
                 val updated = upsertRecentSearchEntry(
                     existing = decodeRecentSearchEntries(prefs[WEB_RECENT_SEARCHES_KEY]),
-                    scopeKey = scopeKey,
+                    scopeKey = browserScopeKey,
                     query = trimmed,
                     url = validUrl,
                 )
@@ -590,7 +616,7 @@ fun WebPanel(
             context.settingsDataStore.edit { prefs ->
                 val updated = upsertBookmark(
                     existing = decodeBookmarks(prefs[WEB_BOOKMARKS_KEY]),
-                    scopeKey = scopeKey,
+                    scopeKey = browserScopeKey,
                     url = url,
                 )
                 prefs[WEB_BOOKMARKS_KEY] = encodeBookmarks(updated)
@@ -662,6 +688,8 @@ fun WebPanel(
     }
 
     var showClearRecordingDialog by remember { mutableStateOf(false) }
+    var editingMessage by remember { mutableStateOf<EidosUiMessage?>(null) }
+    var editDraft by remember { mutableStateOf("") }
 
     fun commitEidosSend() {
         voiceController.commitVoiceThen(mergeBaseText = input) { eidosViewModel.sendMessage() }
@@ -766,13 +794,17 @@ fun WebPanel(
     }
 
     DisposableEffect(Unit) {
-        webViewCallbacksActive.set(true)
         onDispose {
-            webViewCallbacksActive.set(false)
             customViewCallback?.onCustomViewHidden()
             customView = null
             customViewCallback = null
             persistLastUrl(currentUrl.ifBlank { requestedUrl.ifBlank { urlInput } })
+            webView?.apply {
+                stopLoading()
+                webChromeClient = WebChromeClient()
+                webViewClient = WebViewClient()
+                destroy()
+            }
             webView = null
         }
     }
@@ -935,7 +967,7 @@ fun WebPanel(
                                             context.settingsDataStore.edit { prefs ->
                                                 val updated = decodeBookmarks(prefs[WEB_BOOKMARKS_KEY])
                                                     .filterNot {
-                                                        scopeMatches(scopeKey, it.scopeKey) &&
+                                                        WebPanelScope.matches(browserScopeKey, it.scopeKey) &&
                                                             it.url.equals(toRemove, ignoreCase = true)
                                                     }
                                                 prefs[WEB_BOOKMARKS_KEY] = encodeBookmarks(updated)
@@ -1199,14 +1231,12 @@ fun WebPanel(
                         }
                         view.webChromeClient = object : WebChromeClient() {
                             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                                if (!webViewCallbacksActive.get()) return
                                 (view.parent as? ViewGroup)?.removeView(view)
                                 customView = view
                                 customViewCallback = callback
                             }
 
                             override fun onHideCustomView() {
-                                if (!webViewCallbacksActive.get()) return
                                 customViewCallback?.onCustomViewHidden()
                                 customView = null
                                 customViewCallback = null
@@ -1263,7 +1293,6 @@ fun WebPanel(
                             }
 
                             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                                if (!webViewCallbacksActive.get()) return
                                 isLoading = true
                                 pageError = null
                                 lastFallbackSignature = ""
@@ -1275,7 +1304,6 @@ fun WebPanel(
                             }
 
                             override fun onPageFinished(view: WebView, url: String) {
-                                if (!webViewCallbacksActive.get()) return
                                 isLoading = false
                                 currentUrl = url
                                 persistLastUrl(url)
@@ -1288,7 +1316,6 @@ fun WebPanel(
                                 request: WebResourceRequest,
                                 error: WebResourceError,
                             ) {
-                                if (!webViewCallbacksActive.get()) return
                                 if (request.isForMainFrame) {
                                     val detail = error.description?.toString().orEmpty().ifBlank { "Page failed to load." }
                                     pageError = "Load error: $detail"
@@ -1306,10 +1333,6 @@ fun WebPanel(
                                 handler: SslErrorHandler,
                                 error: SslError,
                             ) {
-                                if (!webViewCallbacksActive.get()) {
-                                    handler.cancel()
-                                    return
-                                }
                                 handler.cancel()
                                 pageError = "SSL error: secure connection failed."
                                 promptFallback(error.url.orEmpty(), "This page has a certificate/security issue.")
@@ -1331,13 +1354,6 @@ fun WebPanel(
                     if (target.isNotBlank() && view.url != target) {
                         view.loadUrl(target)
                     }
-                },
-                onRelease = { view ->
-                    webViewCallbacksActive.set(false)
-                    if (webView === view) {
-                        webView = null
-                    }
-                    destroyWebViewSafely(view)
                 },
             )
 
@@ -1384,8 +1400,8 @@ fun WebPanel(
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             WebRecentShortcutChip(
-                                label = "DuckDuckGo",
-                                onClick = { openInPanel("https://duckduckgo.com/") },
+                                label = "Brave",
+                                onClick = { openInPanel("https://search.brave.com/") },
                             )
                             WebRecentShortcutChip(
                                 label = "Android Docs",
@@ -1449,14 +1465,14 @@ fun WebPanel(
                             onBack = { eidosViewModel.setWebPanelEidosSheetOpen(false) },
                             scopeLabel = sheetScopeLabel,
                             workshopPhaseLabel = null,
-                            memoryDepthLabel = conversationMemoryLabel,
-                            onMemoryDepthClick = { eidosViewModel.cycleConversationMemoryDepth() },
                             hasActiveConversation = hasActiveConversation,
                             isSending = isSending,
                             onHistoryClick = {},
                             onNewChatClick = { eidosViewModel.newChat() },
                             onMoveClick = {},
                             onStopClick = { eidosViewModel.cancelActiveSend() },
+                            localGemmaToolsEnabled = localGemmaToolsEnabled,
+                            onLocalGemmaToolsEnabledChange = eidosViewModel::setLocalGemmaToolsEnabled,
                             readAloud = readAloud,
                             readAloudMicPassback = readAloudMicPassback,
                             onReadAloudChange = eidosViewModel::setReadAloud,
@@ -1466,6 +1482,10 @@ fun WebPanel(
                             micUseWhisperApi = micUseWhisperApi,
                             hasOpenAiApiKey = hasOpenAiApiKey,
                             onMicUseWhisperApiChange = eidosViewModel::setMicUseWhisperApi,
+                            activeProvider = activeProvider,
+                            onActiveProviderChange = eidosViewModel::setActiveProvider,
+                            thinkingLevel = eidosThinkingLevel,
+                            onThinkingLevelChange = eidosViewModel::setEidosThinkingLevel,
                             onOpenChatSettings = eidosViewModel::refreshOpenAiKeyPresence,
                             restrictToolbar = true,
                             modifier = Modifier.padding(horizontal = 4.dp),
@@ -1532,6 +1552,9 @@ fun WebPanel(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 textAlign = if (isUser) TextAlign.End else TextAlign.Start,
                                             )
+                                            message.imageAttachment?.let { attachment ->
+                                                ChatVisionMessageImage(attachment = attachment)
+                                            }
                                             MarkdownRichText(
                                                 text = message.text,
                                                 style = TextStyle(
@@ -1544,28 +1567,27 @@ fun WebPanel(
                                             )
                                             ChatMessageBubbleFooter(timeLabel = message.timeLabel) {
                                                 if (!isUser) {
-                                                    val isPlaying = message.id == rereadMessageId
+                                                    val isRereadActive =
+                                                        message.id == rereadMessageId && readAloudBarVisible
                                                     IconButton(
                                                         onClick = {
-                                                            if (isPlaying) {
-                                                                voiceController.stopSession()
+                                                            if (isRereadActive) {
+                                                                readAloudSession.stop()
                                                                 eidosViewModel.setRereadMessageId(null)
                                                             } else {
                                                                 voiceController.stopSession()
                                                                 eidosViewModel.setRereadMessageId(message.id)
-                                                                voiceController.speakResponse(
-                                                                    text = message.text,
-                                                                    thenListen = false,
-                                                                    onDone = { eidosViewModel.setRereadMessageId(null) },
-                                                                )
+                                                                readAloudSession.startFromChat(message.text) {
+                                                                    eidosViewModel.setRereadMessageId(null)
+                                                                }
                                                             }
                                                         },
                                                         modifier = Modifier.size(28.dp),
                                                     ) {
                                                         Icon(
                                                             imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                                            contentDescription = if (isPlaying) "Stop" else "Read aloud",
-                                                            tint = if (isPlaying) colors.accent else colors.textDim,
+                                                            contentDescription = if (isRereadActive) "Stop" else "Read aloud",
+                                                            tint = if (isRereadActive) colors.accent else colors.textDim,
                                                             modifier = Modifier.size(18.dp),
                                                         )
                                                     }
@@ -1582,6 +1604,27 @@ fun WebPanel(
                                                         tint = colors.textDim,
                                                         modifier = Modifier.size(18.dp),
                                                     )
+                                                }
+                                                if (isUser) {
+                                                    ChatMessageRetryButton(
+                                                        onClick = {
+                                                            eidosViewModel.retryMessage(message.id, message.text)
+                                                        },
+                                                    )
+                                                    IconButton(
+                                                        onClick = {
+                                                            editingMessage = message
+                                                            editDraft = message.text
+                                                        },
+                                                        modifier = Modifier.size(28.dp),
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Edit,
+                                                            contentDescription = "Edit message",
+                                                            tint = colors.textDim,
+                                                            modifier = Modifier.size(18.dp),
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -1611,11 +1654,24 @@ fun WebPanel(
 
                         HorizontalDivider(color = colors.border, thickness = 1.dp)
 
+                        if (readAloudBarVisible) {
+                            NoteReadAloudBar(
+                                isPlaying = readAloudIsPlaying,
+                                onPlayPause = readAloudSession::togglePlayback,
+                                onRewind10 = readAloudSession::rewind10Seconds,
+                                onForward10 = readAloudSession::forward10Seconds,
+                            )
+                        }
+
                         ChatComposerBar(
                             input = input,
                             onInputChange = eidosViewModel::setInput,
                             onSend = { commitEidosSend() },
                             onMicClick = {
+                                if (readAloudBarVisible && readAloudIsPlaying) {
+                                    readAloudSession.stop()
+                                    return@ChatComposerBar
+                                }
                                 when (sessionState) {
                                     VoiceSessionState.LISTENING,
                                     VoiceSessionState.PAUSED,
@@ -1651,6 +1707,10 @@ fun WebPanel(
                             onTextFieldFocused = {
                                 if (isListening) voiceController.finalizeListeningForEdit(input)
                             },
+                            pendingImage = pendingImage,
+                            onAttachImageUri = eidosViewModel::attachImageFromUri,
+                            onClearPendingImage = eidosViewModel::clearPendingImage,
+                            onAttachError = eidosViewModel::postToast,
                             modifier = Modifier.navigationBarsPadding(),
                         )
                     }
@@ -1666,6 +1726,44 @@ fun WebPanel(
                 voiceController.discardRecording()
             },
             onDismiss = { showClearRecordingDialog = false },
+        )
+    }
+
+    editingMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { editingMessage = null },
+            title = {
+                Text("Edit message", fontFamily = DmSansFamily, color = colors.textPrimary)
+            },
+            text = {
+                TextField(
+                    value = editDraft,
+                    onValueChange = { editDraft = it },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface2,
+                        unfocusedContainerColor = colors.surface2,
+                        focusedIndicatorColor = colors.accent,
+                        unfocusedIndicatorColor = colors.border,
+                        cursorColor = colors.accent,
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    eidosViewModel.editMessage(msg.id, editDraft)
+                    editingMessage = null
+                }) {
+                    Text("Save", color = colors.accent, fontFamily = DmSansFamily)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingMessage = null }) {
+                    Text("Cancel", color = colors.textMid, fontFamily = DmSansFamily)
+                }
+            },
+            containerColor = colors.sheetBackground,
         )
     }
 
@@ -1779,7 +1877,7 @@ fun WebPanel(
                                                 context.settingsDataStore.edit { prefs ->
                                                     val updated = decodeBookmarks(prefs[WEB_BOOKMARKS_KEY])
                                                         .filterNot {
-                                                            scopeMatches(scopeKey, it.scopeKey) &&
+                                                            WebPanelScope.matches(browserScopeKey, it.scopeKey) &&
                                                                 it.url == bookmark.url
                                                         }
                                                     prefs[WEB_BOOKMARKS_KEY] = encodeBookmarks(updated)
@@ -1873,7 +1971,7 @@ fun WebPanel(
                                                             WEB_RECENT_PAGES_KEY
                                                         }
                                                         val updated = decodeRecentEntries(prefs[key]).filterNot {
-                                                            scopeMatches(scopeKey, it.scopeKey) &&
+                                                            WebPanelScope.matches(browserScopeKey, it.scopeKey) &&
                                                                 it.value.equals(item, ignoreCase = true)
                                                         }
                                                         prefs[key] = encodeRecentEntries(updated)
@@ -1927,7 +2025,7 @@ fun WebPanel(
                                                         val updated = decodeRecentSearchEntries(
                                                             prefs[WEB_RECENT_SEARCHES_KEY],
                                                         ).filterNot { entry ->
-                                                            scopeMatches(scopeKey, entry.scopeKey) &&
+                                                            WebPanelScope.matches(browserScopeKey, entry.scopeKey) &&
                                                                 normalizeWebSearchKey(entry.query) == deleteKey
                                                         }
                                                         prefs[WEB_RECENT_SEARCHES_KEY] = encodeRecentSearchEntries(updated)
@@ -1946,17 +2044,6 @@ fun WebPanel(
                 TextButton(onClick = { showHistory = false }) { Text("Done") }
             },
         )
-    }
-}
-
-private fun destroyWebViewSafely(view: WebView?) {
-    if (view == null) return
-    runCatching {
-        view.stopLoading()
-        view.webChromeClient = null
-        view.webViewClient = WebViewClient()
-        (view.parent as? ViewGroup)?.removeView(view)
-        view.destroy()
     }
 }
 
@@ -2026,10 +2113,9 @@ private val WEB_LAST_URL_KEY = stringPreferencesKey("web_panel_last_url_json")
 private val WEB_BOOKMARKS_KEY = stringPreferencesKey("web_panel_bookmarks_json")
 private val WEB_RECENT_PAGES_KEY = stringPreferencesKey("web_panel_recent_pages_json")
 private val WEB_RECENT_SEARCHES_KEY = stringPreferencesKey("web_panel_recent_searches_json")
-private const val SEARCH_ENGINE_URL = "https://duckduckgo.com/?q="
+private const val SEARCH_ENGINE_URL = "https://search.brave.com/search?q="
 private const val MAX_WEB_BOOKMARKS = 100
 private const val MAX_SCOPE_RECENTS = 20
-private val LEGACY_EDITOR_SCOPE_REGEX = Regex("^editor_subfolder_(\\d+)$")
 
 private fun decodeBookmarks(raw: String?): List<WebBookmark> {
     if (raw.isNullOrBlank()) return emptyList()
@@ -2062,16 +2148,13 @@ private fun encodeBookmarks(items: List<WebBookmark>): String {
     return array.toString()
 }
 
-private fun upsertBookmark(existing: List<WebBookmark>, url: String): List<WebBookmark> {
-    return upsertBookmark(existing, "global", url)
-}
-
 private fun upsertBookmark(existing: List<WebBookmark>, scopeKey: String, url: String): List<WebBookmark> {
+    val canonicalScope = WebPanelScope.normalize(scopeKey)
     val now = System.currentTimeMillis()
     val deduped = existing.filterNot {
-        scopeMatches(scopeKey, it.scopeKey) && it.url.equals(url, ignoreCase = true)
+        WebPanelScope.matches(canonicalScope, it.scopeKey) && it.url.equals(url, ignoreCase = true)
     }
-    return listOf(WebBookmark(scopeKey = scopeKey, url = url, createdAtMillis = now))
+    return listOf(WebBookmark(scopeKey = canonicalScope, url = url, createdAtMillis = now))
         .plus(deduped)
         .take(MAX_WEB_BOOKMARKS)
 }
@@ -2112,9 +2195,10 @@ private fun upsertLastUrlEntry(
     scopeKey: String,
     url: String,
 ): List<LastUrlEntry> {
+    val canonicalScope = WebPanelScope.normalize(scopeKey)
     val now = System.currentTimeMillis()
-    val deduped = existing.filterNot { scopeMatches(scopeKey, it.scopeKey) }
-    return listOf(LastUrlEntry(scopeKey = scopeKey, url = url, updatedAtMillis = now))
+    val deduped = existing.filterNot { WebPanelScope.matches(canonicalScope, it.scopeKey) }
+    return listOf(LastUrlEntry(scopeKey = canonicalScope, url = url, updatedAtMillis = now))
         .plus(deduped)
         .take(200)
 }
@@ -2155,13 +2239,14 @@ private fun upsertRecentEntry(
     scopeKey: String,
     value: String,
 ): List<RecentEntry> {
+    val canonicalScope = WebPanelScope.normalize(scopeKey)
     val now = System.currentTimeMillis()
     val deduped = existing.filterNot {
-        scopeMatches(scopeKey, it.scopeKey) && it.value.equals(value, ignoreCase = true)
+        WebPanelScope.matches(canonicalScope, it.scopeKey) && it.value.equals(value, ignoreCase = true)
     }
     val ordered = listOf(
         RecentEntry(
-            scopeKey = scopeKey,
+            scopeKey = canonicalScope,
             value = value,
             createdAtMillis = now,
         ),
@@ -2228,15 +2313,16 @@ private fun upsertRecentSearchEntry(
     query: String,
     url: String,
 ): List<RecentSearchEntry> {
+    val canonicalScope = WebPanelScope.normalize(scopeKey)
     val now = System.currentTimeMillis()
     val newKey = normalizeWebSearchKey(query)
     val deduped = existing.filterNot { entry ->
-        scopeMatches(scopeKey, entry.scopeKey) &&
+        WebPanelScope.matches(canonicalScope, entry.scopeKey) &&
             normalizeWebSearchKey(entry.query) == newKey
     }
     val ordered = listOf(
         RecentSearchEntry(
-            scopeKey = scopeKey,
+            scopeKey = canonicalScope,
             query = query,
             url = url,
             createdAtMillis = now,
@@ -2271,28 +2357,15 @@ private fun trimSearchRecentsPerScope(entries: List<RecentSearchEntry>, maxPerSc
     }
 }
 
-private fun scopeMatches(activeScopeKey: String, candidateScopeKey: String): Boolean {
-    if (activeScopeKey == candidateScopeKey) return true
-    val activeSubfolder = subfolderIdFromScope(activeScopeKey) ?: return false
-    val candidateSubfolder = subfolderIdFromScope(candidateScopeKey) ?: return false
-    return activeSubfolder == candidateSubfolder
-}
-
-private fun subfolderIdFromScope(scopeKey: String): Long? {
-    LEGACY_EDITOR_SCOPE_REGEX.matchEntire(scopeKey)?.let { match ->
-        return match.groupValues.getOrNull(1)?.toLongOrNull()
-    }
-    if (!scopeKey.startsWith("editor:")) return null
-    val parts = scopeKey.split(':')
-    if (parts.size != 3) return null
-    return parts[2].toLongOrNull()
-}
-
 private fun isSearchResultUrl(url: String): Boolean {
     if (url.startsWith(SEARCH_ENGINE_URL, ignoreCase = true)) return true
     val uri = runCatching { url.toUri() }.getOrNull() ?: return false
     val host = uri.host?.lowercase().orEmpty()
-    return host.contains("duckduckgo.com") && !uri.getQueryParameter("q").isNullOrBlank()
+    return when {
+        host.contains("search.brave.com") -> !uri.getQueryParameter("q").isNullOrBlank()
+        host.contains("duckduckgo.com") -> !uri.getQueryParameter("q").isNullOrBlank()
+        else -> false
+    }
 }
 
 private fun compactUrlForDisplay(url: String): String {

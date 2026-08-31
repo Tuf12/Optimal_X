@@ -9,9 +9,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +28,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,7 +59,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.example.optimalx.OptimalXApplication
-import com.example.optimalx.data.eidos.EidosIndexFeature
+import com.example.optimalx.data.eidos.EidosSystemMemoryFormat
+import com.example.optimalx.data.eidos.EidosSystemMemoryRepository
 import com.example.optimalx.data.db.SystemFolderNames
 import com.example.optimalx.data.model.Subfolder
 import com.example.optimalx.ui.folders.components.FolderCard
@@ -65,23 +70,8 @@ import com.example.optimalx.ui.theme.LocalOptimalXColors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import java.text.SimpleDateFormat
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
@@ -95,7 +85,6 @@ enum class EidosSystemKind(
     LOG("log", "Eidos Log", SystemFolderNames.EIDOS_LOG, true),
     DAILY("daily", "Eidos Daily", SystemFolderNames.EIDOS_DAILY, true),
     MEMORY("memory", "Eidos Memory", SystemFolderNames.EIDOS_MEMORY, true),
-    INDEX("index", "Eidos Index", SystemFolderNames.EIDOS_INDEX, true),
     CHATS("chats", "Chats", SystemFolderNames.EIDOS_CHATS, false),
     ;
 
@@ -117,7 +106,6 @@ class EidosSystemFolderViewModel(
 ) : ViewModel() {
     private val appRef = app as OptimalXApplication
     private val db = appRef.database
-    private val appIndexSync = appRef.appIndexSyncService
 
     private val _entries = MutableStateFlow<List<Subfolder>>(emptyList())
     val entries: StateFlow<List<Subfolder>> = _entries.asStateFlow()
@@ -139,7 +127,6 @@ class EidosSystemFolderViewModel(
             db.withTransaction {
                 selectedIds.forEach { db.subfolderDao().deleteById(it) }
             }
-            appIndexSync.requestSync("eidos_system_delete_selected:${kind.routeValue}:${selectedIds.size}")
         }
     }
 }
@@ -155,48 +142,59 @@ class EidosSystemFolderViewModelFactory(
 }
 
 private val updatedAtFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-private val memoryLineTimestampRegex = Regex("""^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})]\s*(.*)$""")
-private val memoryTimestampInputFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-private val memoryTimestampOutputFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-private data class MemoryNoteEntry(
-    val id: String,
-    val subfolderName: String,
-    val timestampLabel: String?,
-    val content: String,
-    val sortKey: Long,
-)
+class EidosSystemMemoryInboxViewModel(
+    app: Application,
+    private val kind: EidosSystemKind,
+) : ViewModel() {
+    private val appRef = app as OptimalXApplication
+    private val repository = EidosSystemMemoryRepository(
+        db = appRef.database,
+        semanticIndexer = appRef.semanticIndexer,
+        semanticChunkBuilder = appRef.semanticChunkBuilder,
+    )
 
-private data class EidosIndexNode(
-    val ref: String,
-    val tag: String,
-    val hint: String,
-    val objectName: String,
-    val parentFolderName: String? = null,
-    val subfolderName: String? = null,
-)
+    private val _entries = MutableStateFlow<List<EidosSystemMemoryFormat.Entry>>(emptyList())
+    val entries: StateFlow<List<EidosSystemMemoryFormat.Entry>> = _entries.asStateFlow()
 
-private data class EidosSubfolderNode(
-    val branch: EidosIndexNode,
-    val note: EidosIndexNode?,
-    val files: List<EidosIndexNode>,
-    val subfolderChats: List<EidosIndexNode>,
-    val subfolderMemoryCache: EidosIndexNode?,
-)
+    init {
+        viewModelScope.launch {
+            val parent = appRef.database.parentFolderDao().getSystemFolderByName(kind.systemFolderName)
+                ?: return@launch
+            appRef.database.subfolderDao().getAllActiveByParent(parent.id).collect { subfolders ->
+                val parsed = subfolders
+                    .filter { it.deletedAt == null }
+                    .flatMap { sf ->
+                        val note = appRef.database.noteDao().getBySubfolderOnce(sf.id)
+                        EidosSystemMemoryFormat.parseEntries(
+                            subfolderId = sf.id,
+                            subfolderName = sf.name,
+                            noteContent = note?.content.orEmpty(),
+                            fallbackUpdatedAt = sf.updatedAt,
+                        )
+                    }
+                    .sortedByDescending { it.sortKey }
+                _entries.value = parsed
+            }
+        }
+    }
 
-private data class EidosParentNode(
-    val branch: EidosIndexNode,
-    val subfolders: List<EidosSubfolderNode>,
-    val parentChats: List<EidosIndexNode>,
-)
+    fun deleteEntry(entry: EidosSystemMemoryFormat.Entry) {
+        viewModelScope.launch {
+            repository.deleteEntry(entry.subfolderId, entry.chunkIndex)
+        }
+    }
+}
 
-private data class EidosIndexTree(
-    val parents: List<EidosParentNode>,
-    val generalChats: List<EidosIndexNode>,
-    val journal: List<EidosIndexNode>,
-    val quickNotes: List<EidosIndexNode>,
-    val ltm: List<EidosIndexNode>,
-)
+class EidosSystemMemoryInboxViewModelFactory(
+    private val app: Application,
+    private val kind: EidosSystemKind,
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        @Suppress("UNCHECKED_CAST")
+        return EidosSystemMemoryInboxViewModel(app, kind) as T
+    }
+}
 
 @Composable
 fun EidosSectionScreen(
@@ -231,9 +229,7 @@ fun EidosSectionScreen(
         }
 
         val sectionKinds = EidosSystemKind.entries.filterNot {
-            it == EidosSystemKind.CHATS ||
-                // ON HOLD — Eidos Index UI (see EidosIndexFeature); retrieval uses search_semantic.
-                (!EidosIndexFeature.isActive && it == EidosSystemKind.INDEX)
+            it == EidosSystemKind.CHATS
         }
 
         LazyColumn(
@@ -271,11 +267,6 @@ fun EidosSystemFolderScreen(
 ) {
     if (kind == EidosSystemKind.DAILY || kind == EidosSystemKind.MEMORY) {
         EidosSystemInboxListScreen(kind = kind, onBack = onBack)
-        return
-    }
-    if (kind == EidosSystemKind.INDEX) {
-        // ON HOLD — Eidos Index screen kept for revival; menu entry hidden via EidosIndexFeature.
-        EidosIndexScreen(onBack = onBack)
         return
     }
 
@@ -391,132 +382,18 @@ fun EidosSystemFolderScreen(
 }
 
 @Composable
-private fun EidosIndexScreen(
-    onBack: () -> Unit,
-) {
-    // ON HOLD — full index tree/JSON UI; see EidosIndexFeature and buildEidosIndexPayload below.
-    if (!EidosIndexFeature.isActive) {
-        val colors = LocalOptimalXColors.current
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colors.background)
-                .statusBarsPadding()
-                .padding(16.dp),
-        ) {
-            TextButton(onClick = onBack) {
-                Text("Back", color = colors.textMid, fontFamily = DmSansFamily)
-            }
-            Text(
-                text = "Eidos Index is on hold. Use semantic search for retrieval.",
-                color = colors.textMid,
-                fontFamily = DmSansFamily,
-                fontSize = 15.sp,
-            )
-        }
-        return
-    }
-    val colors = LocalOptimalXColors.current
-    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as OptimalXApplication
-    var indexPayload by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        app.database.parentFolderDao().getAllActive().collect {
-            indexPayload = buildEidosIndexPayload(app)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colors.background),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) {
-                Text("Back", color = colors.textMid, fontFamily = DmSansFamily)
-            }
-            Text(
-                text = "Eidos Index",
-                color = colors.textPrimary,
-                fontFamily = DmSansFamily,
-                fontWeight = FontWeight.Medium,
-                fontSize = 18.sp,
-            )
-        }
-
-        val payload = indexPayload
-        if (payload == null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "Loading index...",
-                    color = colors.textDim,
-                    fontFamily = DmSansFamily,
-                    fontSize = 15.sp,
-                )
-            }
-        } else {
-            val scrollState = androidx.compose.foundation.rememberScrollState()
-            AndroidView(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                factory = { context ->
-                    TextView(context).apply {
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                        typeface = android.graphics.Typeface.MONOSPACE
-                        setTextColor(colors.textPrimary.toArgb())
-                        setTextIsSelectable(true)
-                    }
-                },
-                update = { tv ->
-                    tv.setTextColor(colors.textPrimary.toArgb())
-                    tv.text = payload
-                },
-            )
-        }
-    }
-}
-
-@Composable
 private fun EidosSystemInboxListScreen(
     kind: EidosSystemKind,
     onBack: () -> Unit,
 ) {
     val colors = LocalOptimalXColors.current
-    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as OptimalXApplication
-    var entries by remember(kind) { mutableStateOf<List<MemoryNoteEntry>>(emptyList()) }
-
-    LaunchedEffect(kind) {
-        val parent = app.database.parentFolderDao().getSystemFolderByName(kind.systemFolderName)
-        if (parent == null) {
-            entries = emptyList()
-            return@LaunchedEffect
-        }
-        app.database.subfolderDao().getAllActiveByParent(parent.id).collect { subfolders ->
-            val parsed = subfolders
-                .filter { it.deletedAt == null }
-                .flatMap { sf ->
-                    val note = app.database.noteDao().getBySubfolderOnce(sf.id)
-                    parseMemoryNoteEntries(
-                        subfolderId = sf.id,
-                        subfolderName = sf.name,
-                        noteContent = note?.content.orEmpty(),
-                        fallbackUpdatedAt = sf.updatedAt,
-                    )
-                }
-                .sortedByDescending { it.sortKey }
-            entries = parsed
-        }
-    }
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
+    val vm: EidosSystemMemoryInboxViewModel = viewModel(
+        key = "eidos_memory_inbox_${kind.routeValue}",
+        factory = EidosSystemMemoryInboxViewModelFactory(app, kind),
+    )
+    val entries by vm.entries.collectAsState()
+    var pendingDelete by remember { mutableStateOf<EidosSystemMemoryFormat.Entry?>(null) }
 
     Column(
         modifier = Modifier
@@ -539,8 +416,17 @@ private fun EidosSystemInboxListScreen(
                 fontFamily = DmSansFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 18.sp,
+                modifier = Modifier.weight(1f),
             )
         }
+
+        Text(
+            text = "Long-press an entry to delete",
+            color = colors.textDim,
+            fontFamily = DmSansFamily,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
 
         if (entries.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -559,449 +445,104 @@ private fun EidosSystemInboxListScreen(
                     .padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(entries, key = { it.id }) { entry ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.surface)
-                            .border(1.dp, colors.borderSoft, RoundedCornerShape(12.dp))
-                            .padding(10.dp),
-                    ) {
-                        val heading = listOfNotNull(entry.subfolderName, entry.timestampLabel).joinToString(" • ")
-                        if (heading.isNotBlank()) {
-                            Text(
-                                text = heading,
-                                color = colors.textDim,
-                                fontFamily = DmMonoFamily,
-                                fontSize = 11.sp,
-                            )
-                        }
-                        Text(
-                            text = entry.content,
-                            color = colors.textPrimary,
-                            fontFamily = DmSansFamily,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
+                items(
+                    entries,
+                    key = { "${it.subfolderId}_${it.chunkIndex}_${it.rawChunk.hashCode()}" },
+                ) { entry ->
+                    EidosSystemMemoryEntryRow(
+                        entry = entry,
+                        onLongClick = { pendingDelete = entry },
+                    )
                 }
             }
         }
     }
-}
 
-private fun parseMemoryNoteEntries(
-    subfolderId: Long,
-    subfolderName: String,
-    noteContent: String,
-    fallbackUpdatedAt: Long,
-): List<MemoryNoteEntry> {
-    if (noteContent.isBlank()) return emptyList()
-    val dayStartMillis = parseSubfolderDayStartMillis(subfolderName)
-    return noteContent
-        .split(Regex("\n\\s*\n"))
-        .map { it.trim() }
-        .filter { it.isNotBlank() }
-        .mapIndexed { index, chunk ->
-            val firstLine = chunk.lineSequence().firstOrNull().orEmpty().trim()
-            val tsMatch = memoryLineTimestampRegex.find(firstLine)
-            val parsedMillis = tsMatch?.groupValues
-                ?.getOrNull(1)
-                ?.let { raw -> runCatching { raw.toLocalDateTimeAtSystemZoneMillis() }.getOrNull() }
-            val resolvedMillis = parsedMillis ?: dayStartMillis ?: fallbackUpdatedAt
-            val resolvedTimestampLabel = parsedMillis?.let {
-                memoryTimestampOutputFormatter.format(
-                    Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime(),
-                )
-            }
-            val cleanedContent = if (tsMatch != null && tsMatch.groupValues.size >= 3) {
-                val firstLineWithoutTimestamp = tsMatch.groupValues[2].trim()
-                val remainder = chunk.lineSequence().drop(1).joinToString("\n")
-                listOf(firstLineWithoutTimestamp, remainder)
-                    .filter { it.isNotBlank() }
-                    .joinToString("\n")
-            } else {
-                chunk
-            }
-            MemoryNoteEntry(
-                id = "${subfolderId}_${index}_${cleanedContent.hashCode()}",
-                subfolderName = subfolderName,
-                timestampLabel = resolvedTimestampLabel,
-                content = cleanedContent,
-                sortKey = resolvedMillis,
-            )
-        }
-}
-
-private fun parseSubfolderDayStartMillis(subfolderName: String): Long? {
-    return runCatching {
-        val day = java.time.LocalDate.parse(subfolderName)
-        day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-    }.getOrNull()
-}
-
-private suspend fun buildEidosIndexTree(app: OptimalXApplication): EidosIndexTree {
-    // ON HOLD — index tree for Eidos Index UI/export; see EidosIndexFeature.
-    val db = app.database
-    val json = Json { ignoreUnknownKeys = true }
-    val parents = db.parentFolderDao().getAllActive().first()
-        .filter { it.deletedAt == null && !it.isSystemFolder }
-        .sortedBy { it.createdAt }
-
-    val parentNodes = parents.map { parent ->
-        val allSubfolders = db.subfolderDao().getAllByParentOnce(parent.id)
-            .filter { it.deletedAt == null }
-        val userSubfolders = allSubfolders
-            .filter { !it.isSystemSubfolder }
-            .sortedBy { it.createdAt }
-        val cacheSubfolder = allSubfolders.firstOrNull {
-            it.isSystemSubfolder &&
-                (it.name == SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER || it.name == "__memory_cache__")
-        }
-        val cacheMap = cacheSubfolder
-            ?.let { db.noteDao().getBySubfolderOnce(it.id)?.content.orEmpty() }
-            .orEmpty()
-            .let { decodeMemoryCacheMap(it, json) }
-
-        val subfolderNodes = userSubfolders.map { subfolder ->
-            val note = db.noteDao().getBySubfolderOnce(subfolder.id)
-            val files = db.fileReferenceDao().getBySubfolderOnce(subfolder.id)
-            val chats = db.conversationDao().getAllBySubfolder(subfolder.id)
-            EidosSubfolderNode(
-                branch = semanticNode(
-                    ref = "subfolder:${subfolder.id}",
-                    objectType = "subfolder",
-                    hintSeed = subfolder.name,
-                    objectName = subfolder.name,
-                    parentFolderName = parent.name,
-                    subfolderName = subfolder.name,
-                ),
-                note = note?.let {
-                    semanticNode(
-                        ref = "note:${it.id}",
-                        objectType = "note",
-                        hintSeed = it.content,
-                        objectName = subfolder.name,
-                        parentFolderName = parent.name,
-                        subfolderName = subfolder.name,
+    pendingDelete?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete memory entry?", fontFamily = DmSansFamily) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val heading = listOfNotNull(entry.subfolderName, entry.timestampLabel).joinToString(" • ")
+                    if (heading.isNotBlank()) {
+                        Text(
+                            text = heading,
+                            color = colors.textDim,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Text(
+                        text = entry.content,
+                        color = colors.textPrimary,
+                        fontFamily = DmSansFamily,
+                        fontSize = 14.sp,
                     )
-                },
-                files = files.map { file ->
-                    semanticNode(
-                        ref = "file:${file.id}",
-                        objectType = "file",
-                        hintSeed = listOf(file.fileName, file.fileType).joinToString(" ").trim(),
-                        objectName = file.fileName,
-                        parentFolderName = parent.name,
-                        subfolderName = subfolder.name,
+                    Text(
+                        text = "This cannot be undone.",
+                        color = colors.textMid,
+                        fontFamily = DmSansFamily,
+                        fontSize = 13.sp,
                     )
-                },
-                subfolderChats = chats.map { chat ->
-                    semanticNode(
-                        ref = "chat:subfolder:${subfolder.id}:${chat.id}",
-                        objectType = "chat_subfolder",
-                        hintSeed = chat.title,
-                        objectName = chat.title.ifBlank { "Chat ${chat.id}" },
-                        parentFolderName = parent.name,
-                        subfolderName = subfolder.name,
-                    )
-                },
-                subfolderMemoryCache = cacheMap[subfolder.id]?.let { cacheText ->
-                    semanticNode(
-                        ref = "cache:subfolder:${subfolder.id}",
-                        objectType = "cache",
-                        hintSeed = cacheText,
-                        objectName = "Memory cache",
-                        parentFolderName = parent.name,
-                        subfolderName = subfolder.name,
-                    )
-                },
-            )
-        }
-        val parentChats = db.conversationDao().getAllByParentFolder(parent.id).map { chat ->
-            semanticNode(
-                ref = "chat:parent:${parent.id}:${chat.id}",
-                objectType = "chat_parent",
-                hintSeed = chat.title,
-                objectName = chat.title.ifBlank { "Chat ${chat.id}" },
-                parentFolderName = parent.name,
-            )
-        }
-        EidosParentNode(
-            branch = semanticNode(
-                ref = "parent:${parent.id}",
-                objectType = "parent",
-                hintSeed = parent.name,
-                objectName = parent.name,
-            ),
-            subfolders = subfolderNodes,
-            parentChats = parentChats,
-        )
-    }
-
-    val generalChats = db.conversationDao().getAllGeneral().map { chat ->
-        semanticNode(
-            ref = "chat:general:${chat.id}",
-            objectType = "chat_general",
-            hintSeed = chat.title,
-            objectName = chat.title.ifBlank { "Chat ${chat.id}" },
-            parentFolderName = SystemFolderNames.EIDOS_CHATS,
-        )
-    }
-
-    val journal = systemEntries(db = db, parentName = SystemFolderNames.EIDOS_JOURNAL, objectType = "journal")
-    val quickNotes = quickNoteEntries(db = db)
-    val ltm = systemEntries(db = db, parentName = SystemFolderNames.EIDOS_MEMORY, objectType = "ltm")
-
-    return EidosIndexTree(
-        parents = parentNodes,
-        generalChats = generalChats,
-        journal = journal,
-        quickNotes = quickNotes,
-        ltm = ltm,
-    )
-}
-
-private suspend fun buildEidosIndexPayload(app: OptimalXApplication): String {
-    val model = buildEidosIndexTree(app)
-    val payload = buildJsonObject {
-        put(
-            "hierarchy",
-            buildJsonObject {
-                put(
-                    "parents",
-                    buildJsonArray {
-                        model.parents.forEach { parent ->
-                            add(
-                                buildJsonObject {
-                                    putIndexNode(parent.branch)
-                                    put(
-                                        "children",
-                                        buildJsonObject {
-                                            put(
-                                                "subfolders",
-                                                buildJsonArray {
-                                                    parent.subfolders.forEach { subfolder ->
-                                                        add(
-                                                            buildJsonObject {
-                                                                putIndexNode(subfolder.branch)
-                                                                put(
-                                                                    "children",
-                                                                    buildJsonObject {
-                                                                        subfolder.note?.let { note ->
-                                                                            put("note", buildJsonObject { putIndexNode(note) })
-                                                                        }
-                                                                        put(
-                                                                            "files",
-                                                                            buildJsonArray {
-                                                                                subfolder.files.forEach { file ->
-                                                                                    add(buildJsonObject { putIndexNode(file) })
-                                                                                }
-                                                                            },
-                                                                        )
-                                                                        put(
-                                                                            "subfolder_chat_conversations",
-                                                                            buildJsonArray {
-                                                                                subfolder.subfolderChats.forEach { chat ->
-                                                                                    add(buildJsonObject { putIndexNode(chat) })
-                                                                                }
-                                                                            },
-                                                                        )
-                                                                        subfolder.subfolderMemoryCache?.let { cache ->
-                                                                            put(
-                                                                                "subfolder_memory_cache",
-                                                                                buildJsonObject { putIndexNode(cache) },
-                                                                            )
-                                                                        }
-                                                                    },
-                                                                )
-                                                            },
-                                                        )
-                                                    }
-                                                },
-                                            )
-                                            put(
-                                                "parent_chat_conversations",
-                                                buildJsonArray {
-                                                    parent.parentChats.forEach { chat ->
-                                                        add(buildJsonObject { putIndexNode(chat) })
-                                                    }
-                                                },
-                                            )
-                                        },
-                                    )
-                                },
-                            )
-                        }
-                    },
-                )
+                }
             },
-        )
-        put(
-            "chats_general",
-            buildJsonObject {
-                put(
-                    "general_chat_conversations",
-                    buildJsonArray {
-                        model.generalChats.forEach { chat ->
-                            add(buildJsonObject { putIndexNode(chat) })
-                        }
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.deleteEntry(entry)
+                        pendingDelete = null
                     },
-                )
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error, fontFamily = DmSansFamily)
+                }
             },
-        )
-        put(
-            "journal",
-            buildJsonObject {
-                put(
-                    "entries",
-                    buildJsonArray {
-                        model.journal.forEach { entry ->
-                            add(buildJsonObject { putIndexNode(entry) })
-                        }
-                    },
-                )
-            },
-        )
-        put(
-            "quick_notes",
-            buildJsonObject {
-                put(
-                    "entries",
-                    buildJsonArray {
-                        model.quickNotes.forEach { entry ->
-                            add(buildJsonObject { putIndexNode(entry) })
-                        }
-                    },
-                )
-            },
-        )
-        put(
-            "ltm",
-            buildJsonObject {
-                put(
-                    "entries",
-                    buildJsonArray {
-                        model.ltm.forEach { entry ->
-                            add(buildJsonObject { putIndexNode(entry) })
-                        }
-                    },
-                )
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Cancel", fontFamily = DmSansFamily)
+                }
             },
         )
     }
-    return Json { prettyPrint = true }.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), payload)
 }
 
-private fun kotlinx.serialization.json.JsonObjectBuilder.putIndexNode(node: EidosIndexNode) {
-    put("ref", JsonPrimitive(node.ref))
-    put("tag", JsonPrimitive(node.tag))
-    put("hint", JsonPrimitive(node.hint))
-    put("objectName", JsonPrimitive(node.objectName))
-    put("parentFolderName", node.parentFolderName?.let(::JsonPrimitive) ?: JsonNull)
-    put("subfolderName", node.subfolderName?.let(::JsonPrimitive) ?: JsonNull)
-}
-
-private suspend fun systemEntries(
-    db: com.example.optimalx.data.db.AppDatabase,
-    parentName: String,
-    objectType: String,
-): List<EidosIndexNode> {
-    val parent = db.parentFolderDao().getSystemFolderByName(parentName) ?: return emptyList()
-    return db.subfolderDao().getAllByParentOnce(parent.id)
-        .filter { it.deletedAt == null }
-        .sortedByDescending { it.updatedAt }
-        .mapNotNull { subfolder ->
-            val note = db.noteDao().getBySubfolderOnce(subfolder.id) ?: return@mapNotNull null
-            if (note.content.isBlank()) return@mapNotNull null
-            val ref = when (objectType) {
-                "journal" -> "journal:${subfolder.name}"
-                else -> "ltm:${subfolder.name}"
-            }
-            semanticNode(
-                ref = ref,
-                objectType = objectType,
-                hintSeed = note.content,
-                objectName = subfolder.name,
-                parentFolderName = parentName,
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EidosSystemMemoryEntryRow(
+    entry: EidosSystemMemoryFormat.Entry,
+    onLongClick: () -> Unit,
+) {
+    val colors = LocalOptimalXColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.borderSoft, RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongClick,
+            )
+            .padding(10.dp),
+    ) {
+        val heading = listOfNotNull(entry.subfolderName, entry.timestampLabel).joinToString(" • ")
+        if (heading.isNotBlank()) {
+            Text(
+                text = heading,
+                color = colors.textDim,
+                fontFamily = DmMonoFamily,
+                fontSize = 11.sp,
             )
         }
-}
-
-private suspend fun quickNoteEntries(db: com.example.optimalx.data.db.AppDatabase): List<EidosIndexNode> {
-    val parent = db.parentFolderDao().getSystemFolderByName(SystemFolderNames.QUICK_NOTES) ?: return emptyList()
-    val out = mutableListOf<EidosIndexNode>()
-    db.subfolderDao().getAllByParentOnce(parent.id)
-        .filter { it.deletedAt == null && !it.isSystemSubfolder }
-        .forEach { daySubfolder ->
-            val note = db.noteDao().getBySubfolderOnce(daySubfolder.id) ?: return@forEach
-            val blocks = note.content
-                .split(Regex("\n\\s*\n"))
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-            blocks.forEachIndexed { idx, block ->
-                out += semanticNode(
-                    ref = "quick_note:${daySubfolder.name}:${idx + 1}",
-                    objectType = "quick_note",
-                    hintSeed = block,
-                    objectName = "Quick note ${idx + 1}",
-                    parentFolderName = SystemFolderNames.QUICK_NOTES,
-                    subfolderName = daySubfolder.name,
-                )
-            }
-        }
-    return out
-}
-
-private fun semanticNode(
-    ref: String,
-    objectType: String,
-    hintSeed: String,
-    objectName: String,
-    parentFolderName: String? = null,
-    subfolderName: String? = null,
-): EidosIndexNode {
-    val normalized = normalizeIndexHint(hintSeed)
-    val tag = when {
-        objectName.isNotBlank() && objectName.length <= 48 -> objectName
-        else -> normalized.split(Regex("\\s+")).filter { it.isNotBlank() }.take(4).joinToString(" ").take(48)
-    }.ifBlank { objectType.replace('_', ' ') }
-    val hint = normalized.ifBlank { objectName.ifBlank { "Untitled" } }
-    return EidosIndexNode(
-        ref = ref,
-        tag = tag,
-        hint = hint,
-        objectName = objectName.ifBlank { tag },
-        parentFolderName = parentFolderName,
-        subfolderName = subfolderName,
-    )
-}
-
-private fun normalizeIndexHint(raw: String): String {
-    val normalized = raw
-        .replace('\n', ' ')
-        .replace(Regex("\\s+"), " ")
-        .trim()
-    return if (normalized.isBlank()) "Untitled" else normalized.take(180)
-}
-
-private fun decodeMemoryCacheMap(content: String, json: Json): Map<Long, String> {
-    if (content.isBlank()) return emptyMap()
-    val parsed = runCatching { json.parseToJsonElement(content).jsonObject }.getOrNull() ?: return emptyMap()
-    return buildMap {
-        parsed.forEach { (k, v) ->
-            val id = k.toLongOrNull() ?: return@forEach
-            val value = (v as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
-            if (value.isNotBlank()) put(id, value)
-        }
+        Text(
+            text = entry.content,
+            color = colors.textPrimary,
+            fontFamily = DmSansFamily,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
-}
-
-private fun String.toLocalDateTimeAtSystemZoneMillis(): Long {
-    val parsed = java.time.LocalDateTime.parse(this, memoryTimestampInputFormatter)
-    return parsed.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 }
 
 @Composable

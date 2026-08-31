@@ -37,6 +37,16 @@ interface ConversationDao {
     )
     suspend fun getRecentPanelRunner(subfolderId: Long, limit: Int): List<Conversation>
 
+    @Query(
+        """
+        SELECT * FROM conversations
+        WHERE scopeType = 'image_studio' AND subfolderId = :subfolderId
+        ORDER BY updatedAt DESC
+        LIMIT :limit
+        """,
+    )
+    suspend fun getRecentImageStudio(subfolderId: Long, limit: Int): List<Conversation>
+
     @Query("SELECT * FROM conversations WHERE scopeType = 'general' ORDER BY updatedAt DESC LIMIT :limit")
     suspend fun getRecentGeneral(limit: Int): List<Conversation>
 
@@ -194,4 +204,13 @@ interface ConversationDao {
     /** Cascade: delete all conversations when a subfolder is deleted. */
     @Query("DELETE FROM conversations WHERE subfolderId = :subfolderId")
     suspend fun deleteAllBySubfolder(subfolderId: Long)
+
+    @Query("SELECT * FROM conversations WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): Conversation?
+
+    @Query("SELECT * FROM conversations WHERE updatedAt > :since ORDER BY updatedAt")
+    suspend fun getChangedSince(since: Long): List<Conversation>
+
+    @Query("SELECT * FROM conversations ORDER BY updatedAt")
+    suspend fun getAllForSyncLookup(): List<Conversation>
 }

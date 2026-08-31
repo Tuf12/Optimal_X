@@ -98,13 +98,40 @@ WebView access is available in two locations:
 - This supports quick global browsing outside the in-app folder/editor navigation stack.
 
 ### Scope behavior rule
-- Editor Web panel is subfolder-scoped and persists separately per subfolder.
-- Widget Web panel uses an isolated widget scope.
-- Scope isolation applies to:
-  - current session URL restore
-  - recent pages
-  - recent searches
-  - bookmarks
+
+Each browser surface is a **separate entity**. State must never leak across scopes.
+
+| Surface | Scope key (canonical) | Identity |
+|---------|----------------------|----------|
+| Editor Web tab (per subfolder / project) | `editor:subfolder:{subfolderId}` | One browser per subfolder |
+| Widget quick-access Web panel | `widget:quick_web` | App-wide browser outside folder navigation |
+
+Legacy keys (`editor:{parentId}:{subfolderId}`, `editor_subfolder_{id}`, `widget_quick_web`) are accepted on **read** for migration; new writes use the canonical forms above.
+
+#### Isolated per scope (must not sync across rows in the table)
+- Last restored URL for that browser
+- Recent pages (history chips and history sheet)
+- Recent searches (address bar + widget search entry)
+- Bookmarks / favorites
+- Eidos web-scoped chat threads (`web_editor` + `subfolderId` + `webSearchKey`, or `web_widget` + `webSearchKey` in Room)
+
+#### Shared app-wide (intentional)
+- Default shortcut chips when a scope has no recent pages yet (DuckDuckGo, GitHub, etc.) — not user history
+- Network / DNS stack (process-level)
+
+#### WebView cookies and site logins (platform limit)
+Android allows **one WebView data profile per app process**. OptimalX does not claim private/isolated browsing. Site cookies and `localStorage` may appear across browsers until all WebViews for that process are destroyed. Per-scope **bookmarks, history, searches, and URL restore** are still stored separately in DataStore.
+
+Mitigations in code:
+- Compose `key(scopeKey)` resets in-panel URL state when the scope changes
+- Each scope writes persistence with its canonical `scopeKey` only
+- Editor Web uses `subfolderId` only (parent folder id is not part of browser identity)
+
+#### Implementation references
+- Scope helpers: `ui/web/WebPanelScope.kt`
+- Panel UI + persistence: `ui/web/WebPanel.kt`
+- Widget entry: `widget/WidgetWebActivity.kt`, `widget/WidgetWebSearchActivity.kt`
+- Editor entry: `ui/editor/EditorScreen.kt` (Web pager page)
 
 ---
 

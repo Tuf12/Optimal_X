@@ -83,31 +83,8 @@ object WorkshopEidosModeResolver {
     }
 
     /**
-     * One-shot primary-button kickoffs — authoritative over stored Plan/Edit chip while active.
-     */
-    fun modeForActiveBuildKickoff(
-        phase: WorkshopProjectPhase?,
-        activeBuildKickoff: WorkshopBuildKickoff?,
-    ): WorkshopEidosMode? = when (activeBuildKickoff) {
-        WorkshopBuildKickoff.DESIGN ->
-            if (phase == WorkshopProjectPhase.DESIGN_BUILD) WorkshopEidosMode.BUILD_DESIGN else null
-        WorkshopBuildKickoff.LOGIC ->
-            if (phase == WorkshopProjectPhase.LOGIC_BUILD) WorkshopEidosMode.BUILD_LOGIC else null
-        WorkshopBuildKickoff.PLAN ->
-            if (phase == WorkshopProjectPhase.UPDATE) WorkshopEidosMode.BUILD_PLAN else null
-        null -> null
-    }
-
-    /**
-     * Accept-design / accept-logic doc-align passes always run as Plan (spec .md writes only).
-     */
-    fun modeForDocAlign(docAlignScope: WorkshopDocAlignScope?): WorkshopEidosMode? =
-        if (docAlignScope != null) WorkshopEidosMode.PLAN else null
-
-    /**
      * Preserves user chip selection; does not auto-upgrade Plan → BUILD_* (primary buttons only).
      * Doc-align passes use PLAN and must not be coerced.
-     * Active [WorkshopBuildKickoff] wins over stored chip (Generate specs → Build design handoff).
      */
     fun coerceModeForPhase(
         mode: WorkshopEidosMode,
@@ -115,8 +92,7 @@ object WorkshopEidosModeResolver {
         docAlignScope: WorkshopDocAlignScope? = null,
         activeBuildKickoff: WorkshopBuildKickoff? = null,
     ): WorkshopEidosMode {
-        modeForDocAlign(docAlignScope)?.let { return it }
-        modeForActiveBuildKickoff(phase, activeBuildKickoff)?.let { return it }
+        if (docAlignScope != null && mode == WorkshopEidosMode.PLAN) return mode
         if (phase == null) return WorkshopEidosMode.normalizeToUserChip(mode)
         val chip = WorkshopEidosMode.normalizeToUserChip(mode)
         return when (phase) {
@@ -126,10 +102,6 @@ object WorkshopEidosModeResolver {
             }
             WorkshopProjectPhase.LOGIC_BUILD -> when {
                 activeBuildKickoff == WorkshopBuildKickoff.LOGIC && mode.isBuildFamily -> mode
-                else -> chip
-            }
-            WorkshopProjectPhase.UPDATE -> when {
-                activeBuildKickoff == WorkshopBuildKickoff.PLAN && mode == WorkshopEidosMode.BUILD_PLAN -> mode
                 else -> chip
             }
             else -> chip
@@ -142,12 +114,15 @@ object WorkshopEidosModeResolver {
         phase: WorkshopProjectPhase?,
         activeBuildKickoff: WorkshopBuildKickoff? = null,
     ): Boolean {
-        val kickoffMode = modeForActiveBuildKickoff(phase, activeBuildKickoff) ?: return false
-        return mode == kickoffMode ||
-            (mode == WorkshopEidosMode.BUILD && kickoffMode in setOf(
-                WorkshopEidosMode.BUILD_DESIGN,
-                WorkshopEidosMode.BUILD_LOGIC,
-            ))
+        if (activeBuildKickoff == null) return false
+        return when (activeBuildKickoff) {
+            WorkshopBuildKickoff.DESIGN ->
+                phase == WorkshopProjectPhase.DESIGN_BUILD &&
+                    (mode == WorkshopEidosMode.BUILD_DESIGN || mode == WorkshopEidosMode.BUILD)
+            WorkshopBuildKickoff.LOGIC ->
+                phase == WorkshopProjectPhase.LOGIC_BUILD &&
+                    (mode == WorkshopEidosMode.BUILD_LOGIC || mode == WorkshopEidosMode.BUILD)
+        }
     }
 
     fun countUserTurns(history: List<EidosMessage>): Int =

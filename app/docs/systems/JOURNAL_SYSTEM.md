@@ -4,7 +4,7 @@
 
 This file describes **Eidos Journal**, **Eidos Log**, and **Eidos Chats** in OptimalX: how they are stored, what they are for, and which Eidos tools apply to them.
 
-It does **not** define the app-wide **Tag & Hint** routing layer (see [TAG_HINT_SYSTEM.md](../agent_loops/TAG_HINT_SYSTEM.md)) or the full continuity stack (Daily Memory, Long-Term Memory, rollover) — that lives in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) and the code under `data/eidos/`.
+It does **not** define the full continuity stack (Daily Memory, Long-Term Memory, rollover) — that lives in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) and [ROLLOVER.md](../systems/ROLLOVER.md).
 
 ---
 
@@ -13,7 +13,7 @@ It does **not** define the app-wide **Tag & Hint** routing layer (see [TAG_HINT_
 | Topic | File |
 |------|------|
 | Chat UI, scope (general / parent / subfolder), folder paths | [CHAT_UI.md](../architecture/CHAT_UI.md) |
-| Tag & Hint (piece / lens / hint / ref, not a summary system) | [TAG_HINT_SYSTEM.md](../agent_loops/TAG_HINT_SYSTEM.md) |
+| Rollover audit (markdown) | [ROLLOVER.md](ROLLOVER.md) |
 | Memory, navigation vs reasoning vs chats, tools | [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) |
 | Data shapes | [DATA_MODEL.md](../architecture/DATA_MODEL.md) |
 
@@ -28,7 +28,7 @@ It does **not** define the app-wide **Tag & Hint** routing layer (see [TAG_HINT_
 - **Eidos Chats** — this document  
 - **Eidos Daily** — Daily Memory (see MEMORY_SYSTEM)  
 - **Eidos Memory** — Long-Term Memory (see MEMORY_SYSTEM)  
-- **Eidos Index** — app-wide Tag & Hint index storage (see TAG_HINT_SYSTEM)  
+- **Eidos Reasoning** — rollover audit log (dated subfolders)  
 - **Quick Notes** — voice / quick capture  
 
 **UI:** Main list shows **Quick Notes** and **Panel Workshop** per [ParentFolderDao.kt](../../src/main/java/com/example/optimalx/data/dao/ParentFolderDao.kt). Journal, Log, Daily, Index, and Memory are **Eidos-menu-only**. Chat and provider-thinking storage is summarized in MEMORY_SYSTEM (single place of truth).
@@ -76,7 +76,7 @@ Exact layout may evolve; the source of truth is how [RoomToolExecutor.kt](../../
 
 ### What Eidos may write
 
-Reflection, continuity, and context Eidos chooses to record — not raw duplicates of the Log or user preferences.
+Reflection on sessions — what was discussed, open threads, follow-ups, and continuity notes Eidos chooses to record. **Not** user biographical facts (location, age, preferences → Long-Term Memory via `write_long_term_memory`). Not raw duplicates of the Log.
 
 ### User access
 
@@ -152,7 +152,7 @@ Uses normal **ParentFolder** / **Subfolder** / **Note** / conversation tables; s
 
 ## System prompt context (journal-related slice)
 
-Per [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md), the **target** default prompt includes **full location awareness** and **Daily Memory** only. **Long-Term Memory** and **journal** content are **not** meant to be auto-injected; Eidos uses `read_long_term_memory` and `read_journal` when it needs them. The **Tag & Hint index** is not injected wholesale — use `read_tag_hints` when needed (see TAG_HINT_SYSTEM).
+Per [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md), the **target** default prompt includes **full location awareness** and **Daily Memory** only. **Long-Term Memory** and **journal** content are **not** meant to be auto-injected; Eidos uses `read_long_term_memory`, `read_journal`, and `search_semantic` when it needs more context.
 
 **Implementation:** [EidosApiClient.kt](../../src/main/java/com/example/optimalx/data/eidos/EidosApiClient.kt) may still inject LTM and recent journal until the client matches that contract.
 

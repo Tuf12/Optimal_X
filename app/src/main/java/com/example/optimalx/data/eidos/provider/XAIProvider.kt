@@ -24,7 +24,7 @@ data class XaiModelChoice(val modelId: String, val label: String)
 
 val XAI_MODEL_CHOICES: List<XaiModelChoice> = listOf(
     XaiModelChoice("grok-4.3", "Grok 4.3"),
-
+    XaiModelChoice("grok-build-0.1", "Grok Build 0.1"),
 )
 
 class XAIProvider(
@@ -37,7 +37,11 @@ class XAIProvider(
     override suspend fun send(request: EidosRequest): EidosResponse {
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
-            put("reasoning_effort", JsonPrimitive("medium"))
+            if (!model.startsWith("grok-build")) {
+                request.reasoningEffort?.let { effort ->
+                    put("reasoning_effort", JsonPrimitive(effort))
+                }
+            }
             put("input", buildInput(request))
             put("tools", buildTools(request))
             if (!request.previousResponseId.isNullOrBlank()) {
@@ -167,21 +171,12 @@ class XAIProvider(
             }
         }
 
-        if (request.userMessage.isNotBlank()) {
+        if (request.userMessage.isNotBlank() || request.attachedImagePaths.isNotEmpty()) {
+            val images = ChatVisionUserContent.encodePaths(request.attachedImagePaths)
             add(
                 buildJsonObject {
                     put("role", JsonPrimitive("user"))
-                    put(
-                        "content",
-                        buildJsonArray {
-                            add(
-                                buildJsonObject {
-                                    put("type", JsonPrimitive("input_text"))
-                                    put("text", JsonPrimitive(request.userMessage))
-                                }
-                            )
-                        }
-                    )
+                    put("content", ChatVisionUserContent.openAiInputContent(request.userMessage, images))
                 }
             )
         }

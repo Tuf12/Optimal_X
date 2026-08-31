@@ -1,6 +1,9 @@
 package com.example.optimalx.data.eidos
 
 import com.example.optimalx.data.eidos.model.EidosToolDefinition
+import com.example.optimalx.data.eidos.prompt.EidosScopeProfileIds
+import com.example.optimalx.data.eidos.prompt.EidosScopeProfileRegistry
+import com.example.optimalx.data.model.ConversationScopes
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -14,8 +17,9 @@ object EidosToolCatalog {
         "workshop_read_file",
         "workshop_list_pending_review",
         "workshop_write_file",
-        "workshop_create_file",
-        "workshop_replace_string",
+        // workshop_create_file disabled — scaffold files exist at project creation; create always fails.
+        "workshop_edit_file",
+        "workshop_append_file",
         "call_panel_function",
     )
 
@@ -24,7 +28,7 @@ object EidosToolCatalog {
         coreTools.filter { it.name in panelWorkshopFileToolNames }
     }
 
-    private val chatToolNames = setOf(SEARCH_SEMANTIC, "workshop_read_file")
+    private val chatToolNames = setOf(SEARCH_SEMANTIC, "workshop_read_file", "read_file")
 
     private val panelRunnerToolNames = chatToolNames + "call_panel_function"
 
@@ -32,15 +36,15 @@ object EidosToolCatalog {
 
     private val panelRuntimeBlockedWriteTools = setOf(
         "workshop_write_file",
-        "workshop_create_file",
-        "workshop_replace_string",
+        "workshop_edit_file",
+        "workshop_append_file",
     )
     private val planToolNames = setOf(
         SEARCH_SEMANTIC,
         "workshop_read_file",
         "workshop_write_file",
-        "workshop_create_file",
-        "workshop_replace_string",
+        "workshop_edit_file",
+        "workshop_append_file",
     )
     private val panelToolNames = setOf(SEARCH_SEMANTIC) + panelWorkshopFileToolNames
 
@@ -56,7 +60,7 @@ object EidosToolCatalog {
             return coreTools.filter { it.name in chatToolNames }
         }
         val allowed = when {
-            mode.isBuildFamily || mode.isPlanBuildKickoff -> panelToolNames
+            mode.isBuildFamily -> panelToolNames
             else -> when (WorkshopEidosMode.normalizeToUserChip(mode)) {
                 WorkshopEidosMode.CHAT -> chatToolNames
                 WorkshopEidosMode.PLAN -> planToolNames
@@ -80,36 +84,104 @@ object EidosToolCatalog {
     fun toolsForPanelRunner(): List<EidosToolDefinition> =
         coreTools.filter { it.name in panelRunnerToolNames }
 
-    fun isPanelRuntimeWriteTool(toolName: String): Boolean =
-        toolName in panelRuntimeBlockedWriteTools
+    /** Scopes with a subfolder note: subfolder, quick_notes day, web editor. */
+    private val noteScopedChatToolNames = setOf(
+        SEARCH_SEMANTIC,
+        "search_folders",
+        "read_note",
+        "read_note_section",
+        "write_note",
+        "edit_note_section",
+        "write_note_summary",
+        "list_folder_contents",
+        "read_file",
+        "create_subfolder",
+        "rename_folder",
+        "read_conversation",
+    )
+
+    private val parentScopedChatToolNames = noteScopedChatToolNames + setOf(
+        "create_parent_folder",
+        "move_to_trash",
+    )
+
+    private val generalScopedChatToolNames = parentScopedChatToolNames + setOf(
+        "write_daily_memory",
+        "write_long_term_memory",
+        "write_quick_note",
+        "describe_image",
+    )
+
+    fun toolsForScopedChat(scopeType: String?): List<EidosToolDefinition> {
+        val allowed = when (scopeType) {
+            ConversationScopes.SUBFOLDER,
+            ConversationScopes.QUICK_NOTES_DAY,
+            ConversationScopes.WEB_EDITOR,
+            -> noteScopedChatToolNames
+            ConversationScopes.PARENT,
+            ConversationScopes.QUICK_NOTES_ROOT,
+            -> parentScopedChatToolNames
+            ConversationScopes.GENERAL,
+            null,
+            -> generalScopedChatToolNames
+            ConversationScopes.DUMP_EDIT -> setOf(SEARCH_SEMANTIC, "read_dump_edit", "write_quick_note")
+            else -> generalScopedChatToolNames
+        }
+        return coreTools.filter { it.name in allowed }
+    }
 
     /**
-     * ON HOLD — Eidos Index / Tag & Hint tools. Merged into [all] only when [EidosIndexFeature.isActive].
-     * Retrieval uses [search_semantic] instead while the index is disabled.
+     * Profile-scoped tool allowlist — source of truth is [EidosScopeProfileRegistry].
+     * Workshop Edit/Build uses [toolsForWorkshopMode] for phase/mode gates; internal jobs use empty lists.
      */
-    private val eidosIndexToolsOnHold: List<EidosToolDefinition> = listOf(
-        tool("read_tag_hints", "Read app-wide Tag & Hint rows with optional scope/query/ref/date/limit filters. Each row includes tag, hint, objectName, and folder names for human-readable location.", schemaString("scope", "query", "ref", "dateFrom", "dateTo", "limit")),
-        tool("upsert_tag_hint", "Create or update semantic tag and hint for one indexed object by ref.", schemaString("ref", "tag", "hint"), isModifying = true),
-        tool("remove_tag_hint", "Remove one Tag & Hint row by ref.", schemaString("ref"), isModifying = true),
-        tool("notify_user", "Notify the user about indexing actions (stubbed in phase 2).", schemaString("title", "message", "ref"), isModifying = true),
-    )
+    fun toolsForProfile(
+        profileId: String,
+        scopeType: String?,
+        workshopMode: WorkshopEidosMode?,
+        workshopPhase: WorkshopProjectPhase?,
+    ): List<EidosToolDefinition> {
+        when (profileId) {
+            EidosScopeProfileIds.WORKSHOP_EDIT -> return toolsForWorkshopMode(
+                workshopMode ?: WorkshopEidosMode.EDIT,
+                workshopPhase,
+            )
+            EidosScopeProfileIds.INTERNAL_CONTENT_SUMMARY,
+            EidosScopeProfileIds.INTERNAL_MEMORY_ROLLOVER,
+            -> return emptyList()
+        }
+
+        val toolNames = EidosScopeProfileRegistry.require(profileId).toolNames
+        if (toolNames.isEmpty()) return emptyList()
+        return toolsByNames(*toolNames.toTypedArray())
+    }
+
+    /** Resolve catalog definitions for explicit tool names (e.g. rollover synthesis). */
+    fun toolsByNames(vararg names: String): List<EidosToolDefinition> {
+        if (names.isEmpty()) return emptyList()
+        val wanted = names.toSet()
+        return coreTools.filter { it.name in wanted }
+    }
+
+    fun isPanelRuntimeWriteTool(toolName: String): Boolean =
+        toolName in panelRuntimeBlockedWriteTools
 
     private val coreTools: List<EidosToolDefinition> = listOf(
         tool(
             "search_semantic",
-            "Primary retrieval: returns top matching text chunks (chunk_text) with object ids, location, line ranges, and score. " +
-                "Use this alone to answer from notes, files, and chats — no separate read step required for Q&A. " +
-                "Panel Workshop: scope to project via scopeType=local_first + subfolderId; file hits include fileReferenceId for workshop_read_file. " +
-                "Use read_note/read_file/workshop_read_file only to expand a region or before edits. " +
+            "Primary retrieval: returns top matching text chunks (chunk_text) with object ids, location, line ranges, " +
+                "lineNumbersApplyTo (file | note | conversation), filePath on workshop files, and score. " +
+                "Retrieved context may already include passages — call again when editing or when you need a different file region. " +
+                "For workshop_read_file, only use startLine/endLine from hits where lineNumbersApplyTo=file — never conversation chunks. " +
+                "Panel Workshop: scope via scopeType=local_first + subfolderId; file hits include fileReferenceId for workshop_read_file. " +
                 "scopeType: subfolder | parent | local_first | global. expansionPolicy: expand_if_weak (default) | none.",
             schemaString("query", "limit", "dateFrom", "dateTo", "scopeType", "scopeId", "expansionPolicy"),
         ),
         tool(
-            "read_note",
-            "Read note content by subfolder ID. Pass query (from search_semantic or user question) to get only " +
-                "semantically relevant sections with line ranges. Use startLine/endLine for explicit expansion. " +
-                "Large notes without query return summary + truncated hint.",
-            schemaRead("subfolderId", "query", "startLine", "endLine"),
+            "search_folders",
+            "Resolve folder names to ids — same search as the app folder search bar. " +
+                "Matches parent folder names, subfolder names, and note content when the folder name is unknown. " +
+                "Use when the user names a folder/subfolder; then call write_note with the returned subfolderId.",
+            schemaString("query", "limit", "parentFolderId"),
         ),
         tool(
             "read_dump_edit",
@@ -120,13 +192,14 @@ object EidosToolCatalog {
         tool(
             "read_file",
             "Extract text from a file. Pass query for relevant sections with line ranges; startLine/endLine for explicit range. " +
-                "Large files without query return truncated hint — always pass query after search_semantic. " +
-                "For spreadsheets (.xlsx/.xls/.csv) prefer the Kimi `excel` Formula tool — read_file flattens cells and loses structure.",
+                "Large files without query return truncated hint — always pass query after search_semantic.",
             schemaRead("fileReferenceId", "query", "startLine", "endLine"),
         ),
         tool(
             "workshop_read_file",
-            "Read a Panel Workshop project file. Prefer search_semantic first; pass query for relevant sections or startLine/endLine from a search hit before edits. " +
+            "Read a Panel Workshop project file. Large files return truncated head preview (totalLines, previewEndsAtLine) — not EOF. " +
+                "Use search_semantic file hit (lineNumbersApplyTo=file) then startLine/endLine from that hit. " +
+                "Never pass conversation chunk line numbers to this tool. " +
                 "During Diff Review, returns the latest pending proposal content when one exists for that file.",
             schemaRead("fileReferenceId", "query", "startLine", "endLine"),
         ),
@@ -146,30 +219,73 @@ object EidosToolCatalog {
         tool("create_subfolder", "Create a new subfolder under a parent.", schemaString("parentFolderId", "name"), isModifying = true),
         tool("rename_folder", "Rename a parent folder or subfolder.", schemaString("folderId", "newName"), isModifying = true),
         tool("move_to_trash", "Move a folder to trash.", schemaString("folderId"), requiresConfirmation = true, isModifying = true),
-        tool("write_note", "create, add or update a note.", schemaString("subfolderId", "content"), requiresConfirmation = false, isModifying = true),
-        tool("append_note", "Append content to a note.", schemaString("subfolderId", "content"), isModifying = true),
-        tool("edit_note_section", "Replace or delete a section inside a note.", schemaString("subfolderId", "targetText", "newContent"), requiresConfirmation = true, isModifying = true),
         tool(
-            "workshop_create_file",
-            "Create a new file in a Panel Workshop project. subfolderId must be a project under the Panel Workshop parent.",
-            schemaString("subfolderId", "fileName", "content"),
+            "write_note",
+            "Append markdown at the END of the subfolder Note panel. One note per subfolder — subfolderId is the note scope (no separate noteId). " +
+                "Use for \"add to note\" or continuing at the bottom — NOT for editing a section in the middle. " +
+                "Appends when the note already has content; sets on empty notes. " +
+                "Requires content (markdown string), not contentMarkdown. " +
+                "Pass subfolderId from search_folders, or subfolderName (+ optional parentName).",
+            schemaString("subfolderId", "content"),
+            requiresConfirmation = false,
             isModifying = true,
         ),
         tool(
+            "read_note",
+            "Read a subfolder note as markdown. Omit query/startLine/endLine to load the full body when it is under the " +
+                "size cap; otherwise pass query for relevant sections or startLine/endLine to expand a range. " +
+                "Use this before answering questions about the note or before edit_note_section. " +
+                "subfolderId is the note scope (no separate noteId).",
+            schemaRead("subfolderId", "query", "startLine", "endLine"),
+        ),
+        tool(
+            "read_note_section",
+            "Read a line range from a subfolder note. Pass startLine/endLine from a search_semantic or read_note hit; " +
+                "optional contextBefore/contextAfter add surrounding lines. Prefer read_note when you need query or a full body.",
+            schemaNoteSectionRead(),
+        ),
+        tool(
+            "edit_note_section",
+            "Edit or expand part of a note in place (chapter, heading, paragraph). Use for mid-note changes — NOT write_note (that only appends at the end). " +
+                "Preferred: startLine + endLine + newContent from search_semantic + read_note_section. " +
+                "Fallback: oldString + newContent when lines are unreliable (oldString must match exactly once). " +
+                "Optional expectedContent verifies lines before patching. Queued for Diff Review when the note has content.",
+            schemaNoteSectionEdit(),
+            isModifying = true,
+        ),
+        tool(
+            "write_note_summary",
+            "Update folder memory bullets for a subfolder note ([Memory] section only — not body recap). " +
+                "mode: append | replace | remove | set. " +
+                "append: item required. replace/remove: match required (1-based index or bullet substring). " +
+                "set: item = newline-separated bullets (optional leading '- '). Content digest is auto-maintained.",
+            schemaString("subfolderId", "mode", "item", "match"),
+            isModifying = true,
+        ),
+        // workshop_create_file — disabled: FolderRepository.createWorkshopProject seeds all standard
+        // files with FileReference rows; create always fails with "already exists". Re-enable when
+        // panels need ad-hoc files beyond the nine scaffold files.
+        tool(
             "workshop_write_file",
-            "Overwrite an existing workshop project file (by fileReferenceId from list_folder_contents or system prompt). " +
-                "Prefer workshop_replace_string for targeted edits; use this only for initial scaffolds or full rewrites.",
+            "Overwrite an existing workshop project file (by fileReferenceId). Use for new scaffolds or intentional full-file rewrites. " +
+                "For localized changes use workshop_edit_file (startLine/endLine). To add at EOF use workshop_append_file.",
             schemaString("fileReferenceId", "content"),
             isModifying = true,
         ),
         tool(
-            "workshop_replace_string",
-            "Targeted edit of a workshop file: replace exactly one occurrence of oldString with newString. " +
-                "oldString must be unique in the file \u2014 include at least 3 lines of surrounding context so it " +
-                "identifies one specific location. On 0 or multiple matches, the tool returns an error with a " +
-                "current-file snippet (with line numbers) so you can add more context and retry without re-reading. " +
-                "Preferred over workshop_write_file for any change under ~30 lines.",
-            schemaString("fileReferenceId", "oldString", "newString"),
+            "workshop_edit_file",
+            "Replace a line range in a workshop file. Provide startLine + endLine (1-based, inclusive) and newContent. " +
+                "Single-line edit: set startLine and endLine to the same line. " +
+                "Use line numbers from search_semantic file hits (lineNumbersApplyTo=file) or workshop_read_file. " +
+                "Tight ranges only — do NOT set startLine=1 through EOF (use workshop_write_file for full rewrites).",
+            schemaWorkshopEdit(),
+            isModifying = true,
+        ),
+        tool(
+            "workshop_append_file",
+            "Append content after the last line of an existing workshop file. " +
+                "Use for adding sections at EOF. For replacing lines use workshop_edit_file; for full overwrite use workshop_write_file.",
+            schemaString("fileReferenceId", "content"),
             isModifying = true,
         ),
         tool(
@@ -182,18 +298,48 @@ object EidosToolCatalog {
         ),
         tool("describe_image", "Describe an image file.", schemaString("fileReferenceId")),
         tool(
+            "list_images",
+            "List image files (file_references with file_type=image). " +
+                "In pinned Image Studio hub use scope=all for every image in OptimalX; " +
+                "in a subfolder Image Studio tab use scope=subfolder (default) for that folder only. " +
+                "Returns fileName, fileReferenceId, globalId, subfolder location, generation caption when available, and bytesOnDisk. " +
+                "Pass fileReferenceId to describe_image to see image contents.",
+            schemaString("scope", "subfolderId", "limit"),
+        ),
+        tool(
             "search_chat_history",
             "Keyword fallback for past chat threads (title/message substring). Prefer search_semantic for meaning-based chat lookup.",
             schemaString("query", "scopeType", "scopeId", "dateFrom", "dateTo", "limit"),
         ),
         tool("read_daily_memory", "Read today's working-memory entries.", schemaString()),
-        tool("write_daily_memory", "Use often to track daily activities (DECISION, PREFERENCE, ONGOING,)", schemaString("content", "timestamp"), isModifying = true),
-        tool("read_long_term_memory", "Read durable user prefernces and general useful user information (decisions, stable preferences, resolved outcomes).", schemaString("query", "dateFrom", "dateTo")),
-        tool("write_long_term_memory", "Use this to write user preferences and other general useful information. (environment, work, decisions, personal)", schemaString("content", "timestamp"), isModifying = true),
-        tool("prune_long_term_memory", "Permanently remove Long-Term Memory entries when they are old and no longer useful.", schemaString("anchorText"), requiresConfirmation = true, isModifying = true),
-        tool("read_subfolder_memory_cache", "Read subfolder memories for folder context and useful information (local personal memory) for active location.", schemaString("subfolderId")),
-        tool("update_subfolder_memory_cache", "Use this to write to subfolder memory cache to provide simple folder content and useful information", schemaString("subfolderId", "content"), isModifying = true),
-        tool("write_journal_entry", "Write a journal entry.Use this to write about your own expierences not about the user.", schemaString("content", "timestamp"), isModifying = true),
+        tool(
+            "write_daily_memory",
+            "Append to today's Daily Memory — session working context only: tasks in flight, today's decisions, mood, open threads. " +
+                "Do not store durable identity (location, age, sex, long-term preferences); use write_long_term_memory for those.",
+            schemaString("content", "timestamp"),
+            isModifying = true,
+        ),
+        tool(
+            "read_long_term_memory",
+            "Read durable Long-Term Memory by keyword/date.",
+            schemaString("query", "dateFrom", "dateTo"),
+        ),
+        tool(
+            "write_long_term_memory",
+            "Append one durable user fact to Long-Term Memory: location, demographics the user chooses to share, standing preferences, " +
+                "relationships, recurring constraints. One concise bullet per call — not today's session context (use write_daily_memory). " +
+                "Call in the same turn when the user states a durable fact they want remembered.",
+            schemaString("content", "timestamp"),
+            isModifying = true,
+        ),
+        tool("prune_long_term_memory", "Permanently remove Long-Term Memory entries matching anchorText.", schemaString("anchorText"), requiresConfirmation = true, isModifying = true),
+        tool(
+            "write_journal_entry",
+            "Append a journal entry — Eidos reflection on sessions your own expierences, this is your personal journal use it to form an identity. " +
+                "Not user biographical facts (use write_long_term_memory).",
+            schemaString("content", "timestamp"),
+            isModifying = true,
+        ),
         tool("read_journal", "Read journal by keyword/date.", schemaString("query", "dateFrom", "dateTo")),
         tool("read_log", "Read log by keyword/date.", schemaString("query", "dateFrom", "dateTo")),
         tool(
@@ -202,15 +348,9 @@ object EidosToolCatalog {
             schemaString("content", "timestamp"),
             isModifying = true,
         ),
-        tool("voice_handoff", "Update voice handoff state.", schemaString("conversationId", "state", "timestamp", "metadata"), isModifying = true),
     )
 
-    val all: List<EidosToolDefinition> = buildList {
-        addAll(coreTools)
-        if (EidosIndexFeature.isActive) {
-            addAll(eidosIndexToolsOnHold)
-        }
-    }
+    val all: List<EidosToolDefinition> = coreTools
 
     private fun tool(
         name: String,
@@ -248,6 +388,39 @@ object EidosToolCatalog {
                     }
                 }
             }
+        }
+    }
+
+    private fun schemaNoteSectionRead(): JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("subfolderId") { put("type", "string") }
+            putJsonObject("startLine") { put("type", "integer") }
+            putJsonObject("endLine") { put("type", "integer") }
+            putJsonObject("contextBefore") { put("type", "integer") }
+            putJsonObject("contextAfter") { put("type", "integer") }
+        }
+    }
+
+    private fun schemaNoteSectionEdit(): JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("subfolderId") { put("type", "string") }
+            putJsonObject("newContent") { put("type", "string") }
+            putJsonObject("startLine") { put("type", "integer") }
+            putJsonObject("endLine") { put("type", "integer") }
+            putJsonObject("oldString") { put("type", "string") }
+            putJsonObject("expectedContent") { put("type", "string") }
+        }
+    }
+
+    private fun schemaWorkshopEdit(): JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("fileReferenceId") { put("type", "string") }
+            putJsonObject("startLine") { put("type", "integer") }
+            putJsonObject("endLine") { put("type", "integer") }
+            putJsonObject("newContent") { put("type", "string") }
         }
     }
 }

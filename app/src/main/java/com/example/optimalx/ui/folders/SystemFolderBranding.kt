@@ -4,7 +4,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Construction
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.example.optimalx.data.db.SystemFolderNames
 
@@ -32,12 +31,6 @@ fun systemFolderBrandingForName(folderName: String): SystemFolderBranding? = whe
     SystemFolderNames.CHATS_SUBFOLDER -> SystemFolderBranding(
         icon = Icons.Filled.ChatBubbleOutline,
         caption = "Chats",
-    )
-    SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
-    "__memory_cache__",
-    -> SystemFolderBranding(
-        icon = Icons.Filled.Memory,
-        caption = "Memory cache",
     )
     SystemFolderNames.PANEL_WORKSHOP -> SystemFolderBranding(
         icon = Icons.Filled.Construction,

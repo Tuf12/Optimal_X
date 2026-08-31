@@ -7,20 +7,22 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.db.SystemFolderNames
-import com.example.optimalx.data.eidos.agentbyte.TagHintNotifier
 import com.example.optimalx.data.preferences.DumpEditPreferences
 import com.example.optimalx.data.repository.FolderRepository
 import com.example.optimalx.data.eidos.model.ToolExecutionResult
 import com.example.optimalx.data.eidos.model.ToolExecutor
+import com.example.optimalx.data.imagestudio.ListImagesTool
 import com.example.optimalx.data.model.ConversationScopes
 import com.example.optimalx.data.model.Note
 import com.example.optimalx.data.model.ParentFolder
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.Subfolder
-import com.example.optimalx.data.model.TagHintLine
 import com.example.optimalx.data.revision.CheckpointRepository
 import com.example.optimalx.data.revision.ContentDiff
 import com.example.optimalx.data.revision.DirectWriteApplier
+import com.example.optimalx.data.revision.NoteIndexer
+import com.example.optimalx.data.revision.NoteWriteOutcome
+import com.example.optimalx.data.revision.NoteWriteRouter
 import com.example.optimalx.data.revision.PendingChangeService
 import com.example.optimalx.data.revision.WorkshopFileIndexer
 import com.example.optimalx.data.revision.WorkshopWriteOutcome
@@ -33,6 +35,8 @@ import com.example.optimalx.data.semantic.SemanticChunkHit
 import com.example.optimalx.data.semantic.SemanticScopeSearch
 import com.example.optimalx.data.semantic.SemanticIndexer
 import com.example.optimalx.data.semantic.SemanticObjectType
+import com.example.optimalx.data.semantic.SemanticSyncService
+import com.example.optimalx.ui.components.NoteContentCodec
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -58,8 +62,9 @@ class RoomToolExecutor(
     embeddingEngine: EmbeddingEngine = EmbeddingEngine(context),
     private val semanticIndexer: SemanticIndexer = SemanticIndexer(db, embeddingEngine),
     private val folderRepository: FolderRepository? = null,
-    private val tagHintNotifier: TagHintNotifier = TagHintNotifier.NoOp,
     private val panelBridgeRegistry: PanelBridgeRegistry? = null,
+    private val semanticSync: SemanticSyncService? = null,
+    private val onNoteContentSaved: (subfolderId: Long) -> Unit = {},
     private val json: Json = Json { ignoreUnknownKeys = true; explicitNulls = false },
 ) : ToolExecutor {
 
@@ -75,30 +80,43 @@ class RoomToolExecutor(
         conversationDao = db.conversationDao(),
         chatMessageDao = db.chatMessageDao(),
     )
-    // ON HOLD — used only when EidosIndexFeature.isActive (see eidosIndexTool guard).
-    private val appIndexMaterializer = AppIndexMaterializer(db = db, tagHintLineDao = db.tagHintLineDao())
-
-    // DIFF_REVIEW v1 pipeline. The router consults [WorkshopReviewPolicy] and dispatches
-    // to direct write (build phases) or pending review (review/edit/debug/update phases).
-    // See app/docs/implementation/DIFF_REVIEW_IMPLEMENTATION_PLAN.md.
+    private val eidosLogWriter = EidosLogWriter(db, semanticIndexer, semanticChunkBuilder)
     private val checkpointRepository = CheckpointRepository(
         checkpointDao = db.contentCheckpointDao(),
         patchDao = db.contentPatchDao(),
+        pendingChangeDao = db.pendingChangeDao(),
     )
+    private val noteIndexer = NoteIndexer { subfolderId ->
+        val note = db.noteDao().getBySubfolderOnce(subfolderId) ?: return@NoteIndexer
+        val subfolder = db.subfolderDao().getById(subfolderId)
+        val parent = subfolder?.let { db.parentFolderDao().getById(it.parentFolderId) }
+        if (note.aiBlind ||
+            (subfolder != null && !EidosRetrievalGuard.shouldIndexNoteForEidos(subfolder, parent))
+        ) {
+            semanticIndexer.deleteObject(SemanticObjectType.NOTE, subfolderId)
+        } else {
+            semanticChunkBuilder.indexNote(semanticIndexer, subfolderId)
+        }
+        semanticSync?.requestSync("note_tool:$subfolderId")
+    }
     private val directWriteApplier = DirectWriteApplier(
         fileReferenceDao = db.fileReferenceDao(),
         checkpointRepository = checkpointRepository,
         indexer = WorkshopFileIndexer { ref, content ->
             semanticChunkBuilder.indexFile(semanticIndexer, ref, content)
         },
+        noteDao = db.noteDao(),
+        noteIndexer = noteIndexer,
         workshopFilePath = { subfolderId, fileName ->
             val dir = File(context.filesDir, "workshop/$subfolderId").also { it.mkdirs() }
             File(dir, fileName)
         },
+        onNoteContentSaved = onNoteContentSaved,
     )
     private val pendingChangeService = PendingChangeService(
         pendingDao = db.pendingChangeDao(),
         fileReferenceDao = db.fileReferenceDao(),
+        noteDao = db.noteDao(),
         checkpointRepository = checkpointRepository,
         directWriteApplier = directWriteApplier,
     )
@@ -109,17 +127,17 @@ class RoomToolExecutor(
         modeProvider = { WorkshopEidosSession.currentMode() },
         conversationIdProvider = { WorkshopEidosSession.currentConversationId() },
     )
+    private val noteWriteRouter = NoteWriteRouter(
+        noteDao = db.noteDao(),
+        pendingDao = db.pendingChangeDao(),
+        directWriteApplier = directWriteApplier,
+        pendingChangeService = pendingChangeService,
+        checkpointRepository = checkpointRepository,
+        conversationIdProvider = { WorkshopEidosSession.currentConversationId() },
+    )
 
     init {
         PDFBoxResourceLoader.init(context)
-    }
-
-    /** Blocks Eidos Index tool handlers while [EidosIndexFeature] is disabled. */
-    private suspend fun eidosIndexTool(block: suspend () -> ToolExecutionResult): ToolExecutionResult {
-        if (!EidosIndexFeature.isActive) {
-            return ToolExecutionResult.Failure(EidosIndexFeature.ON_HOLD_MESSAGE)
-        }
-        return block()
     }
 
     override suspend fun execute(toolName: String, argumentsJson: String): ToolExecutionResult {
@@ -133,33 +151,32 @@ class RoomToolExecutor(
                 "rename_folder" -> renameFolder(args)
                 "move_to_trash" -> moveToTrash(args)
                 "list_folder_contents" -> listFolderContents(args)
+                "search_folders" -> searchFolders(args)
 
                 // 6.2 Note tools
-                "read_note" -> readNote(args)
                 "read_dump_edit" -> readDumpEdit(args)
+                "read_note" -> readNote(args)
+                "read_note_section" -> readNoteSection(args)
                 "write_note" -> writeNote(args)
-                "append_note" -> appendNote(args)
                 "edit_note_section" -> editNoteSection(args)
+                "write_note_summary" -> writeNoteSummary(args)
 
                 // 6.3 File tools
                 "read_file" -> readFile(args)
                 "workshop_create_file" -> workshopCreateFile(args)
                 "workshop_write_file" -> workshopWriteFile(args)
-                "workshop_replace_string" -> workshopReplaceString(args)
+                "workshop_edit_file" -> workshopEditFile(args)
+                "workshop_append_file" -> workshopAppendFile(args)
                 "workshop_read_file" -> workshopReadFile(args)
                 "workshop_list_pending_review" -> workshopListPendingReview(args)
                 "call_panel_function" -> callPanelFunction(args)
                 "read_conversation" -> readConversation(args)
                 "describe_image" -> describeImage(args)
+                "list_images" -> listImages(args)
 
                 // 6.4 Search tool
                 "search_chat_history" -> searchChatHistory(args)
                 "search_semantic" -> searchSemantic(args)
-                // ON HOLD — Eidos Index tools (see EidosIndexFeature). Use search_semantic instead.
-                "read_tag_hints" -> eidosIndexTool { readTagHints(args) }
-                "upsert_tag_hint" -> eidosIndexTool { upsertTagHint(args) }
-                "remove_tag_hint" -> eidosIndexTool { removeTagHint(args) }
-                "notify_user" -> eidosIndexTool { notifyUser(args) }
 
                 // 6.5 Memory tools
                 "read_daily_memory" -> readDailyMemory(args)
@@ -168,8 +185,6 @@ class RoomToolExecutor(
                 "read_long_term_memory" -> readLongTermMemory(args)
                 "write_long_term_memory" -> writeLongTermMemory(args)
                 "prune_long_term_memory" -> pruneLongTermMemory(args)
-                "read_subfolder_memory_cache" -> readSubfolderMemoryCache(args)
-                "update_subfolder_memory_cache" -> updateSubfolderMemoryCache(args)
 
                 // 6.6 Journal tools
                 "write_journal_entry" -> writeJournalEntry(args)
@@ -181,9 +196,6 @@ class RoomToolExecutor(
 
                 // Quick Notes
                 "write_quick_note" -> writeQuickNote(args)
-
-                // 6.8 Voice handoff
-                "voice_handoff" -> voiceHandoff(args)
 
                 else -> ToolExecutionResult.Failure("Unknown tool: $toolName")
             }
@@ -197,7 +209,7 @@ class RoomToolExecutor(
     }
 
     private fun shouldWriteAutomaticAudit(toolName: String): Boolean {
-        return toolName != "voice_handoff" && toolName != "write_log_entry"
+        return toolName != "write_log_entry"
     }
 
     private suspend fun writeAutomaticAuditEntry(
@@ -284,15 +296,6 @@ class RoomToolExecutor(
         if (name.isEmpty()) return ToolExecutionResult.Failure("name is required")
 
         val id = db.parentFolderDao().insert(ParentFolder(name = name))
-        val memoryCacheSubfolderId = db.subfolderDao().insert(
-            Subfolder(
-                parentFolderId = id,
-                name = SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
-                isSystemSubfolder = true,
-                sortOrder = 9998,
-            )
-        )
-        db.noteDao().insert(Note(subfolderId = memoryCacheSubfolderId))
         return ToolExecutionResult.Success(
             content = "Created parent folder '$name' (id=$id)",
             modifiedSystem = true,
@@ -397,16 +400,20 @@ class RoomToolExecutor(
             val subfolders = db.subfolderDao().getAllByParentOnce(parent.id)
                 .filter { it.deletedAt == null && !it.isSystemSubfolder }
             return ToolExecutionResult.Success(
-                content = buildJsonArray {
-                    subfolders.forEach { sf ->
-                        add(
-                            buildJsonObject {
-                                put("id", JsonPrimitive(sf.id))
-                                put("name", JsonPrimitive(sf.name))
-                                put("updatedAt", JsonPrimitive(sf.updatedAt))
-                            }
-                        )
-                    }
+                content = buildJsonObject {
+                    put("parentFolderId", JsonPrimitive(parent.id))
+                    put("parentName", JsonPrimitive(parent.name))
+                    put("subfolders", buildJsonArray {
+                        subfolders.forEach { sf ->
+                            add(
+                                buildJsonObject {
+                                    put("subfolderId", JsonPrimitive(sf.id))
+                                    put("name", JsonPrimitive(sf.name))
+                                    put("updatedAt", JsonPrimitive(sf.updatedAt))
+                                }
+                            )
+                        }
+                    })
                 }.toString(),
                 modifiedSystem = false,
             )
@@ -414,16 +421,26 @@ class RoomToolExecutor(
 
         val subfolder = db.subfolderDao().getById(folderId)
             ?: return ToolExecutionResult.Failure("Folder not found")
+        val parentFolder = db.parentFolderDao().getById(subfolder.parentFolderId)
+        if (!EidosRetrievalGuard.shouldExposeNoteToEidos(subfolder, parentFolder)) {
+            return ToolExecutionResult.Failure("Folder not available to Eidos")
+        }
         val note = db.noteDao().getBySubfolderOnce(subfolder.id)
         val files = db.fileReferenceDao().getBySubfolderOnce(subfolder.id)
 
         // Blinded notes must not leak any preview text through the folder listing.
         val blinded = note?.aiBlind == true
-        val previewText = if (blinded) "" else note?.content.orEmpty().take(300)
+        val previewText = if (blinded) {
+            ""
+        } else {
+            noteStorageMarkdown(note?.content.orEmpty()).take(300)
+        }
         return ToolExecutionResult.Success(
             content = buildJsonObject {
                 put("subfolderId", JsonPrimitive(subfolder.id))
                 put("subfolderName", JsonPrimitive(subfolder.name))
+                put("parentFolderId", JsonPrimitive(subfolder.parentFolderId))
+                parentFolder?.name?.let { put("parentName", JsonPrimitive(it)) }
                 put("notePreview", JsonPrimitive(previewText))
                 if (blinded) {
                     put("noteBlind", JsonPrimitive(true))
@@ -445,23 +462,145 @@ class RoomToolExecutor(
         )
     }
 
-    private suspend fun readNote(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val note = db.noteDao().getBySubfolderOnce(subfolderId)
-            ?: return ToolExecutionResult.Failure("Note not found")
-        if (note.aiBlind) return ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
+    private suspend fun searchFolders(args: JsonObject): ToolExecutionResult {
+        val query = args.string("query")?.trim().orEmpty()
+        if (query.isEmpty()) return ToolExecutionResult.Failure("query is required")
+        val limit = (args.int("limit") ?: 20).coerceIn(1, 50)
+        val parentScopeId = args.long("parentFolderId")
+
+        val nameMatchedSubfolderIds = db.subfolderDao().searchActive(query).map { it.id }.toSet()
+        val rawResults = folderRepository?.searchAll(query)
+            ?: searchFoldersFallback(query)
+
+        val matches = buildJsonArray {
+            rawResults
+                .asSequence()
+                .filter { row ->
+                    when {
+                        parentScopeId == null -> true
+                        row.isSubfolder -> row.parentFolderId == parentScopeId
+                        else -> row.id == parentScopeId
+                    }
+                }
+                .take(limit)
+                .forEach { row ->
+                    add(
+                        when {
+                            !row.isSubfolder -> {
+                                buildJsonObject {
+                                    put("matchType", JsonPrimitive("parent"))
+                                    put("parentFolderId", JsonPrimitive(row.id))
+                                    put("parentName", JsonPrimitive(row.name))
+                                    put("location", JsonPrimitive(row.name))
+                                }
+                            }
+                            row.id in nameMatchedSubfolderIds -> {
+                                buildJsonObject {
+                                    put("matchType", JsonPrimitive("subfolder"))
+                                    put("subfolderId", JsonPrimitive(row.id))
+                                    put("subfolderName", JsonPrimitive(row.name))
+                                    put("parentFolderId", JsonPrimitive(row.parentFolderId))
+                                    put("parentName", JsonPrimitive(row.parentFolderName))
+                                    put(
+                                        "location",
+                                        JsonPrimitive(
+                                            listOf(row.parentFolderName, row.name)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString(" / "),
+                                        ),
+                                    )
+                                    put("optimalxUri", JsonPrimitive("optimalx://note/${row.id}"))
+                                    put(
+                                        "write_note",
+                                        buildJsonObject { put("subfolderId", JsonPrimitive(row.id)) },
+                                    )
+                                }
+                            }
+                            else -> {
+                                buildJsonObject {
+                                    put("matchType", JsonPrimitive("note_content"))
+                                    put("subfolderId", JsonPrimitive(row.id))
+                                    put("subfolderName", JsonPrimitive(row.name))
+                                    put("parentFolderId", JsonPrimitive(row.parentFolderId))
+                                    put("parentName", JsonPrimitive(row.parentFolderName))
+                                    put(
+                                        "location",
+                                        JsonPrimitive(
+                                            listOf(row.parentFolderName, row.name)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString(" / "),
+                                        ),
+                                    )
+                                    put("noteSnippet", JsonPrimitive(row.noteSnippet))
+                                }
+                            }
+                        },
+                    )
+                }
+        }
 
         return ToolExecutionResult.Success(
-            content = formatScopedTextRead(
-                fullText = note.content,
-                query = args.string("query"),
-                startLine = args.int("startLine"),
-                endLine = args.int("endLine"),
-                mode = SegmentMode.NOTE,
-                summary = note.summary,
-            ),
+            content = buildJsonObject { put("matches", matches) }.toString(),
             modifiedSystem = false,
         )
+    }
+
+    private suspend fun searchFoldersFallback(query: String): List<com.example.optimalx.data.repository.SearchResult> {
+        val results = mutableListOf<com.example.optimalx.data.repository.SearchResult>()
+        val seen = mutableSetOf<Long>()
+        db.parentFolderDao().searchActive(query).forEach { parent ->
+            results.add(
+                com.example.optimalx.data.repository.SearchResult(
+                    id = parent.id,
+                    name = parent.name,
+                    isSubfolder = false,
+                    parentFolderId = 0,
+                    parentFolderName = "",
+                    noteSnippet = "",
+                ),
+            )
+        }
+        db.subfolderDao().searchActive(query).forEach { subfolder ->
+            seen.add(subfolder.id)
+            val parent = db.parentFolderDao().getById(subfolder.parentFolderId)
+            results.add(
+                com.example.optimalx.data.repository.SearchResult(
+                    id = subfolder.id,
+                    name = subfolder.name,
+                    isSubfolder = true,
+                    parentFolderId = subfolder.parentFolderId,
+                    parentFolderName = parent?.name.orEmpty(),
+                    noteSnippet = "",
+                ),
+            )
+        }
+        db.noteDao().searchContent(query).forEach { note ->
+            if (note.subfolderId in seen) return@forEach
+            val subfolder = db.subfolderDao().getById(note.subfolderId) ?: return@forEach
+            if (subfolder.deletedAt != null || subfolder.isSystemSubfolder) return@forEach
+            seen.add(subfolder.id)
+            val parent = db.parentFolderDao().getById(subfolder.parentFolderId)
+            val idx = note.content.indexOf(query, ignoreCase = true)
+            val snippet = if (idx >= 0) {
+                note.content.substring(
+                    maxOf(0, idx - 20),
+                    minOf(note.content.length, idx + 80),
+                ).trim()
+            } else {
+                note.content.take(100)
+            }
+            results.add(
+                com.example.optimalx.data.repository.SearchResult(
+                    id = subfolder.id,
+                    name = subfolder.name,
+                    isSubfolder = true,
+                    parentFolderId = subfolder.parentFolderId,
+                    parentFolderName = parent?.name.orEmpty(),
+                    noteSnippet = "...$snippet...",
+                ),
+            )
+        }
+        return results
     }
 
     private suspend fun readDumpEdit(args: JsonObject): ToolExecutionResult {
@@ -474,7 +613,7 @@ class RoomToolExecutor(
         }
         return ToolExecutionResult.Success(
             content = formatScopedTextRead(
-                fullText = state.content,
+                fullText = noteStorageMarkdown(state.content),
                 query = args.string("query"),
                 startLine = args.int("startLine"),
                 endLine = args.int("endLine"),
@@ -485,56 +624,257 @@ class RoomToolExecutor(
         )
     }
 
-    private suspend fun writeNote(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val content = args.string("content") ?: return ToolExecutionResult.Failure("content is required")
-
+    private suspend fun readNote(args: JsonObject): ToolExecutionResult {
+        val subfolderId = args.long("subfolderId")
+            ?: return ToolExecutionResult.Failure("subfolderId is required")
         val note = db.noteDao().getBySubfolderOnce(subfolderId)
             ?: return ToolExecutionResult.Failure("Note not found")
-        if (note.aiBlind) return ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
-        if (note.aiLocked) return ToolExecutionResult.Failure("Note is AI locked")
-
-        db.noteDao().update(note.copy(content = content, updatedAt = System.currentTimeMillis()))
-        semanticChunkBuilder.indexNote(semanticIndexer, subfolderId)
-        return ToolExecutionResult.Success("Note overwritten", modifiedSystem = true)
+        noteAccessGuard(note)?.let { return it }
+        val content = noteStorageMarkdown(
+            pendingChangeService.effectiveWorkingContentForNote(subfolderId),
+        )
+        if (content.isBlank()) {
+            return ToolExecutionResult.Success("Note is empty.", modifiedSystem = false)
+        }
+        return ToolExecutionResult.Success(
+            content = formatScopedTextRead(
+                fullText = content,
+                query = args.string("query"),
+                startLine = args.int("startLine"),
+                endLine = args.int("endLine"),
+                mode = SegmentMode.NOTE,
+                summary = NoteSummaryCodec.parse(note.summary).contentDigest.takeIf { it.isNotBlank() },
+            ),
+            modifiedSystem = false,
+        )
     }
 
-    private suspend fun appendNote(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val content = args.string("content") ?: return ToolExecutionResult.Failure("content is required")
+    private suspend fun readNoteSection(args: JsonObject): ToolExecutionResult {
+        val subfolderId = args.long("subfolderId")
+            ?: return ToolExecutionResult.Failure("subfolderId is required")
+        val startLine = args.int("startLine")
+            ?: return ToolExecutionResult.Failure("startLine is required")
+        val endLine = args.int("endLine")
+            ?: return ToolExecutionResult.Failure("endLine is required")
 
         val note = db.noteDao().getBySubfolderOnce(subfolderId)
             ?: return ToolExecutionResult.Failure("Note not found")
-        if (note.aiBlind) return ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
-        if (note.aiLocked) return ToolExecutionResult.Failure("Note is AI locked")
+        noteAccessGuard(note)?.let { return it }
 
-        val separator = if (note.content.isBlank()) "" else "\n\n"
-        val merged = note.content + separator + content
-        db.noteDao().update(
-            note.copy(
-                content = merged,
-                updatedAt = System.currentTimeMillis(),
-            )
+        val content = noteStorageMarkdown(
+            pendingChangeService.effectiveWorkingContentForNote(subfolderId),
         )
-        semanticChunkBuilder.indexNote(semanticIndexer, subfolderId)
-        return ToolExecutionResult.Success("Content appended", modifiedSystem = true)
+        return ToolExecutionResult.Success(
+            content = contentSectionRetriever.lineRangeJson(
+                fullText = content,
+                startLine = startLine,
+                endLine = endLine,
+                contextBefore = args.int("contextBefore") ?: 0,
+                contextAfter = args.int("contextAfter") ?: 0,
+            ).json,
+            modifiedSystem = false,
+        )
+    }
+
+    private suspend fun writeNote(args: JsonObject): ToolExecutionResult {
+        when (val resolved = resolveNoteSubfolderTarget(args)) {
+            is NoteSubfolderResolve.Failure -> return ToolExecutionResult.Failure(resolved.message)
+            is NoteSubfolderResolve.Success -> {
+                val subfolderId = resolved.subfolderId
+                val content = args.resolveToolContent()
+                    ?: return ToolExecutionResult.Failure(
+                        "content is required — pass markdown as the \"content\" string parameter (not contentMarkdown).",
+                    )
+                val note = db.noteDao().getBySubfolderOnce(subfolderId)
+                    ?: return ToolExecutionResult.Failure("Note not found")
+                noteAccessGuard(note)?.let { return it }
+                return noteWriteRouter.applyOrProposeMerge(subfolderId, noteStorageMarkdown(content)).toToolResult()
+            }
+        }
+    }
+
+    private sealed class NoteSubfolderResolve {
+        data class Success(val subfolderId: Long) : NoteSubfolderResolve()
+        data class Failure(val message: String) : NoteSubfolderResolve()
+    }
+
+    private suspend fun resolveNoteSubfolderTarget(args: JsonObject): NoteSubfolderResolve {
+        args.long("subfolderId")?.let { return NoteSubfolderResolve.Success(it) }
+        val name = args.string("subfolderName") ?: args.string("name")
+            ?: return NoteSubfolderResolve.Failure("subfolderId or subfolderName is required")
+        val parentFolderId = args.long("parentFolderId")
+        val parentName = args.string("parentName")?.trim().orEmpty()
+        val candidates = db.subfolderDao().searchActive(name)
+            .filter { it.deletedAt == null && !it.isSystemSubfolder }
+            .filter { subfolder ->
+                when {
+                    parentFolderId != null -> subfolder.parentFolderId == parentFolderId
+                    parentName.isNotEmpty() -> {
+                        db.parentFolderDao().getById(subfolder.parentFolderId)?.name
+                            ?.contains(parentName, ignoreCase = true) == true
+                    }
+                    else -> true
+                }
+            }
+        return when (candidates.size) {
+            0 -> NoteSubfolderResolve.Failure(
+                "No subfolder named \"$name\" found. Use search_folders(query=…) first.",
+            )
+            1 -> NoteSubfolderResolve.Success(candidates.first().id)
+            else -> NoteSubfolderResolve.Failure(
+                "Multiple subfolders match \"$name\" — pass parentFolderId or parentName, or use search_folders.",
+            )
+        }
     }
 
     private suspend fun editNoteSection(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val targetText = args.string("targetText") ?: return ToolExecutionResult.Failure("targetText is required")
-        val newContent = args.string("newContent") ?: return ToolExecutionResult.Failure("newContent is required")
+        val subfolderId = args.long("subfolderId")
+            ?: return ToolExecutionResult.Failure("subfolderId is required")
+        val newContent = args.string("newContent")
+            ?: return ToolExecutionResult.Failure("newContent is required")
 
         val note = db.noteDao().getBySubfolderOnce(subfolderId)
             ?: return ToolExecutionResult.Failure("Note not found")
-        if (note.aiBlind) return ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
-        if (note.aiLocked) return ToolExecutionResult.Failure("Note is AI locked")
-        if (!note.content.contains(targetText)) return ToolExecutionResult.Failure("targetText not found")
+        noteAccessGuard(note)?.let { return it }
 
-        val updated = note.content.replace(targetText, newContent, ignoreCase = false)
-        db.noteDao().update(note.copy(content = updated, updatedAt = System.currentTimeMillis()))
-        semanticChunkBuilder.indexNote(semanticIndexer, subfolderId)
-        return ToolExecutionResult.Success("Section updated", modifiedSystem = true)
+        val current = noteStorageMarkdown(
+            pendingChangeService.effectiveWorkingContentForNote(subfolderId),
+        )
+        when (
+            val built = NoteSectionEdit.buildProposedContent(
+                current = current,
+                newContent = noteStorageMarkdown(newContent),
+                startLine = args.int("startLine"),
+                endLine = args.int("endLine"),
+                oldString = args.string("oldString"),
+                expectedContent = args.string("expectedContent"),
+            )
+        ) {
+            is NoteSectionEdit.Result.Error -> return ToolExecutionResult.Failure(built.message)
+            is NoteSectionEdit.Result.Ok -> {
+                return noteWriteRouter.applyOrProposeContent(
+                    subfolderId = subfolderId,
+                    proposedContent = built.content,
+                    label = "Section edit",
+                    successMessage = "Note section replaced",
+                ).toToolResult()
+            }
+        }
+    }
+
+    private suspend fun writeNoteSummary(args: JsonObject): ToolExecutionResult {
+        val subfolderId = args.long("subfolderId")
+            ?: return ToolExecutionResult.Failure("subfolderId is required")
+        val mode = args.string("mode")?.trim()?.lowercase(Locale.US)
+            ?: return ToolExecutionResult.Failure("mode is required")
+        val note = db.noteDao().getBySubfolderOnce(subfolderId)
+            ?: return ToolExecutionResult.Failure("Note not found")
+        if (note.aiBlind) {
+            return ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
+        }
+
+        val sections = NoteSummaryCodec.parse(note.summary)
+        val editResult = when (mode) {
+            "append" -> {
+                val item = args.string("item")?.trim().orEmpty()
+                if (item.isEmpty()) {
+                    return ToolExecutionResult.Failure("item is required for append")
+                }
+                NoteSummaryCodec.appendMemoryBullet(sections, item)
+            }
+            "replace" -> {
+                val match = args.string("match")?.trim().orEmpty()
+                val item = args.string("item")?.trim().orEmpty()
+                if (match.isEmpty()) {
+                    return ToolExecutionResult.Failure("match is required for replace")
+                }
+                if (item.isEmpty()) {
+                    return ToolExecutionResult.Failure("item is required for replace")
+                }
+                NoteSummaryCodec.replaceMemoryBullet(sections, match, item)
+            }
+            "remove" -> {
+                val match = args.string("match")?.trim().orEmpty()
+                if (match.isEmpty()) {
+                    return ToolExecutionResult.Failure("match is required for remove")
+                }
+                NoteSummaryCodec.removeMemoryBullet(sections, match)
+            }
+            "set" -> {
+                val item = args.string("item")?.trim().orEmpty()
+                if (item.isEmpty()) {
+                    return ToolExecutionResult.Failure("item is required for set")
+                }
+                NoteSummaryCodec.setMemoryBullets(sections, item)
+            }
+            else -> return ToolExecutionResult.Failure("Unknown mode: $mode")
+        }
+
+        return when (editResult) {
+            is NoteSummaryEditResult.Success -> {
+                val priorContent = sections.contentDigest
+                val now = System.currentTimeMillis()
+                db.noteDao().update(
+                    note.copy(
+                        summary = editResult.formatted.ifBlank { null },
+                        summaryUpdatedAt = now,
+                    ),
+                )
+                semanticChunkBuilder.indexNote(semanticIndexer, subfolderId)
+                val preserved = NoteSummaryCodec.parse(editResult.formatted).contentDigest == priorContent
+                ToolExecutionResult.Success(
+                    content = buildString {
+                        append("Folder memory updated (mode=$mode)")
+                        if (preserved) append("; content digest preserved")
+                        append(".")
+                    },
+                    modifiedSystem = true,
+                )
+            }
+            is NoteSummaryEditResult.Failure -> ToolExecutionResult.Failure(editResult.message)
+        }
+    }
+
+    /** Canonical markdown bytes for read/segmentation; migrates legacy HTML on the fly. */
+    private fun noteStorageMarkdown(raw: String): String =
+        NoteContentCodec.normalizeLegacyToMarkdown(raw)
+
+    private fun noteWriteGuard(note: Note): ToolExecutionResult.Failure? = when {
+        note.aiBlind -> ToolExecutionResult.Failure("Note is blind from Eidos (content is private)")
+        note.aiLocked -> ToolExecutionResult.Failure("Note is AI locked")
+        else -> null
+    }
+
+    private suspend fun noteAccessGuard(note: Note): ToolExecutionResult.Failure? {
+        noteWriteGuard(note)?.let { return it }
+        val subfolder = db.subfolderDao().getById(note.subfolderId) ?: return null
+        val parent = db.parentFolderDao().getById(subfolder.parentFolderId)
+        if (!EidosRetrievalGuard.shouldExposeNoteToEidos(subfolder, parent)) {
+            return ToolExecutionResult.Failure("Note is not available to Eidos")
+        }
+        return null
+    }
+
+    private fun NoteWriteOutcome.toToolResult(): ToolExecutionResult = when (this) {
+        is NoteWriteOutcome.Written -> ToolExecutionResult.Success(
+            // subfolderId must appear in content so navigation chips resolve in general/widget
+            // scope (no scoped currentSubfolderId to inject into tool args).
+            content = "${description.trimEnd()} (subfolderId=$subfolderId)",
+            modifiedSystem = true,
+        )
+        is NoteWriteOutcome.Queued -> ToolExecutionResult.Success(
+            content = "${description.trimEnd()} (subfolderId=$subfolderId)",
+            modifiedSystem = true,
+        )
+        is NoteWriteOutcome.NoChange -> ToolExecutionResult.Success(
+            content = if (subfolderId != null) {
+                "${description.trimEnd()} (subfolderId=$subfolderId)"
+            } else {
+                description
+            },
+            modifiedSystem = false,
+        )
+        is NoteWriteOutcome.Failed -> ToolExecutionResult.Failure(message)
     }
 
     private suspend fun readFile(args: JsonObject): ToolExecutionResult {
@@ -561,6 +901,15 @@ class RoomToolExecutor(
             ),
             modifiedSystem = false,
         )
+    }
+
+    private suspend fun listImages(args: JsonObject): ToolExecutionResult {
+        val result = ListImagesTool.listImages(db.fileReferenceDao(), args)
+        return if (result.ok) {
+            ToolExecutionResult.Success(content = ListImagesTool.toJson(result), modifiedSystem = false)
+        } else {
+            ToolExecutionResult.Failure(result.error ?: "list_images failed")
+        }
     }
 
     private suspend fun describeImage(args: JsonObject): ToolExecutionResult {
@@ -611,7 +960,7 @@ class RoomToolExecutor(
             ?: return ToolExecutionResult.Failure("Conversation not found")
 
         val messages = if (includeMessages) {
-            val all = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conversationId)
+            val all = db.chatMessageDao().getAllByConversation(conversationId)
             if (limit != null) all.takeLast(limit) else all
         } else {
             emptyList()
@@ -688,7 +1037,7 @@ class RoomToolExecutor(
             .asSequence()
             .filter { inDateRange(it.updatedAt, dateFrom, dateTo) }
             .forEach { conv ->
-                val messages = ChatMessageHistoryLoader.forUi(db.chatMessageDao(), conv.id)
+                val messages = db.chatMessageDao().getAllByConversation(conv.id)
                 val titleMatch = q == null || conv.title.lowercase(Locale.US).contains(q)
                 val matchingMsg = if (q == null) null else messages.firstOrNull { it.content.lowercase(Locale.US).contains(q) }
                 if (!titleMatch && matchingMsg == null) return@forEach
@@ -784,7 +1133,11 @@ class RoomToolExecutor(
         return when (hit.objectType) {
             SemanticObjectType.NOTE -> {
                 val note = db.noteDao().getBySubfolderOnce(hit.objectId) ?: return false
-                note.deletedAt == null && !note.aiBlind && inDateRange(note.updatedAt, dateFrom, dateTo)
+                if (note.deletedAt != null || note.aiBlind) return false
+                val subfolder = db.subfolderDao().getById(hit.objectId) ?: return false
+                val parent = db.parentFolderDao().getById(subfolder.parentFolderId)
+                if (!EidosRetrievalGuard.shouldExposeNoteToEidos(subfolder, parent)) return false
+                inDateRange(note.updatedAt, dateFrom, dateTo)
             }
             SemanticObjectType.FILE -> {
                 val ref = db.fileReferenceDao().getById(hit.objectId) ?: return false
@@ -799,6 +1152,9 @@ class RoomToolExecutor(
     }
 
     private suspend fun writeJournalEntry(args: JsonObject): ToolExecutionResult {
+        if (!EidosSystemFeatureFlags.JOURNAL_ENABLED) {
+            return ToolExecutionResult.Failure("Eidos Journal is paused")
+        }
         val content = args.string("content") ?: return ToolExecutionResult.Failure("content is required")
         val timestamp = args.long("timestamp") ?: System.currentTimeMillis()
 
@@ -832,127 +1188,6 @@ class RoomToolExecutor(
             }.toString(),
             modifiedSystem = false,
         )
-    }
-
-    private suspend fun readTagHints(args: JsonObject): ToolExecutionResult {
-        val scope = args.string("scope")?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() }
-        val query = args.string("query")?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() }
-        val ref = args.string("ref")?.trim()?.takeIf { it.isNotBlank() }
-        val dateFrom = args.long("dateFrom")
-        val dateTo = args.long("dateTo")
-        val limit = args.long("limit")?.coerceAtLeast(1)?.coerceAtMost(500)?.toInt() ?: 100
-        val all = db.tagHintLineDao().getAll(limit = 1000, offset = 0)
-        val filtered = all.filter { line ->
-            if (scope != null && !tagHintScopeMatches(scope, line.ref, line.objectType)) return@filter false
-            if (query != null && !tagHintQueryMatches(query, line)) return@filter false
-            if (ref != null && line.ref != ref) return@filter false
-            inDateRange(line.date, dateFrom, dateTo)
-        }.take(limit)
-        val payload = buildJsonObject {
-            put("schema", JsonPrimitive(TAG_HINTS_READ_SCHEMA_V2))
-            put("count", JsonPrimitive(filtered.size))
-            put("limit", JsonPrimitive(limit))
-            put(
-                "filters",
-                buildJsonObject {
-                    put("scope", scope?.let(::JsonPrimitive) ?: JsonNull)
-                    put("query", query?.let(::JsonPrimitive) ?: JsonNull)
-                    put("ref", ref?.let(::JsonPrimitive) ?: JsonNull)
-                    put("dateFrom", dateFrom?.let(::JsonPrimitive) ?: JsonNull)
-                    put("dateTo", dateTo?.let(::JsonPrimitive) ?: JsonNull)
-                },
-            )
-            put("items", buildJsonArray {
-                filtered.forEach { line ->
-                    add(
-                        buildJsonObject {
-                            put("ref", JsonPrimitive(line.ref))
-                            put("objectType", JsonPrimitive(line.objectType))
-                            put("scopeType", JsonPrimitive(line.scopeType))
-                            put("scopeId", line.scopeId?.let(::JsonPrimitive) ?: JsonNull)
-                            put("parentRef", line.parentRef?.let(::JsonPrimitive) ?: JsonNull)
-                            put("rootBranch", JsonPrimitive(line.rootBranch))
-                            put("tag", JsonPrimitive(line.tag))
-                            put("hint", JsonPrimitive(line.hint))
-                            put("objectName", JsonPrimitive(line.objectName))
-                            put("parentFolderName", line.parentFolderName?.let(::JsonPrimitive) ?: JsonNull)
-                            put("subfolderName", line.subfolderName?.let(::JsonPrimitive) ?: JsonNull)
-                            put("date", JsonPrimitive(line.date))
-                            put("dateKey", JsonPrimitive(dateKeyFromTimestamp(line.date)))
-                            put("createdAt", JsonPrimitive(line.createdAt))
-                            put("updatedAt", JsonPrimitive(line.updatedAt))
-                            put("line", JsonPrimitive(formatTagHintLine(line)))
-                        }
-                    )
-                }
-            })
-        }
-
-        return ToolExecutionResult.Success(content = payload.toString(), modifiedSystem = false)
-    }
-
-    private suspend fun upsertTagHint(args: JsonObject): ToolExecutionResult {
-        val ref = args.string("ref")?.trim().orEmpty()
-        val tag = args.string("tag")?.trim().orEmpty()
-        val hint = args.string("hint")?.trim().orEmpty()
-        if (ref.isBlank()) return ToolExecutionResult.Failure("ref is required")
-        if (tag.isBlank()) return ToolExecutionResult.Failure("tag is required")
-        if (hint.isBlank()) return ToolExecutionResult.Failure("hint is required")
-
-        val meta = appIndexMaterializer.resolveRefMetadata(ref)
-            ?: return ToolExecutionResult.Failure("Invalid ref format")
-        val names = appIndexMaterializer.resolveNamesForRef(ref)
-            ?: AppIndexNames(objectName = tag)
-        val now = System.currentTimeMillis()
-        val existing = db.tagHintLineDao().getByRef(ref)
-        val line = TagHintLine(
-            id = existing?.id ?: 0,
-            ref = ref,
-            objectType = meta.objectType,
-            scopeType = meta.scopeType,
-            scopeId = meta.scopeId,
-            parentRef = meta.parentRef,
-            rootBranch = meta.rootBranch,
-            tag = tag,
-            hint = hint,
-            objectName = names.objectName,
-            parentFolderName = names.parentFolderName,
-            subfolderName = names.subfolderName,
-            date = existing?.date ?: now,
-            createdAt = existing?.createdAt ?: now,
-            updatedAt = now,
-        )
-        db.tagHintLineDao().upsertByRef(line)
-        return ToolExecutionResult.Success(
-            content = "Upserted Tag & Hint for ref=$ref",
-            modifiedSystem = true,
-        )
-    }
-
-    private suspend fun removeTagHint(args: JsonObject): ToolExecutionResult {
-        val ref = args.string("ref")?.trim().orEmpty()
-        if (ref.isBlank()) return ToolExecutionResult.Failure("ref is required")
-        val removed = db.tagHintLineDao().deleteByRef(ref)
-        return ToolExecutionResult.Success(
-            content = if (removed > 0) "Removed Tag & Hint for ref=$ref" else "No Tag & Hint found for ref=$ref",
-            modifiedSystem = removed > 0,
-        )
-    }
-
-    private fun notifyUser(args: JsonObject): ToolExecutionResult {
-        val title = args.string("title")?.trim().orEmpty()
-        val message = args.string("message")?.trim().orEmpty()
-        if (title.isBlank()) return ToolExecutionResult.Failure("title is required")
-        if (message.isBlank()) return ToolExecutionResult.Failure("message is required")
-        val ref = args.string("ref")?.trim()?.takeIf { it.isNotBlank() }
-        tagHintNotifier.notify(title = title, message = message, ref = ref)
-        val payload = buildJsonObject {
-            put("status", JsonPrimitive("notified"))
-            put("title", JsonPrimitive(title))
-            put("message", JsonPrimitive(message))
-            put("ref", JsonPrimitive(ref.orEmpty()))
-        }
-        return ToolExecutionResult.Success(payload.toString(), modifiedSystem = true)
     }
 
     private suspend fun writeDailyMemory(args: JsonObject): ToolExecutionResult {
@@ -1056,70 +1291,10 @@ class RoomToolExecutor(
         }
     }
 
-    private suspend fun readSubfolderMemoryCache(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val subfolder = db.subfolderDao().getById(subfolderId)
-            ?: return ToolExecutionResult.Failure("Subfolder not found")
-        if (subfolder.deletedAt != null) return ToolExecutionResult.Failure("Subfolder is deleted")
-
-        val cacheNote = getOrCreateParentMemoryCacheNote(subfolder.parentFolderId)
-        if (cacheNote.aiBlind) {
-            return ToolExecutionResult.Failure("Memory cache is blind from Eidos (content is private)")
-        }
-        val cacheMap = decodeMemoryCacheMap(cacheNote.content)
-        val content = cacheMap[subfolderId].orEmpty()
-
-        return ToolExecutionResult.Success(
-            content = buildJsonObject {
-                put("subfolderId", JsonPrimitive(subfolderId))
-                put("parentFolderId", JsonPrimitive(subfolder.parentFolderId))
-                put("content", JsonPrimitive(content))
-            }.toString(),
-            modifiedSystem = false,
-        )
-    }
-
-    private suspend fun updateSubfolderMemoryCache(args: JsonObject): ToolExecutionResult {
-        val subfolderId = args.long("subfolderId") ?: return ToolExecutionResult.Failure("subfolderId is required")
-        val content = args.string("content") ?: return ToolExecutionResult.Failure("content is required")
-
-        val subfolder = db.subfolderDao().getById(subfolderId)
-            ?: return ToolExecutionResult.Failure("Subfolder not found")
-        if (subfolder.deletedAt != null) return ToolExecutionResult.Failure("Subfolder is deleted")
-
-        val cacheNote = getOrCreateParentMemoryCacheNote(subfolder.parentFolderId)
-        val cacheMap = decodeMemoryCacheMap(cacheNote.content)
-        val trimmed = content.trim()
-        if (trimmed.isBlank()) {
-            cacheMap.remove(subfolderId)
-        } else {
-            val existing = cacheMap[subfolderId].orEmpty().trim()
-            cacheMap[subfolderId] = if (existing.isBlank()) {
-                trimmed
-            } else {
-                "$existing\n\n$trimmed"
-            }
-        }
-
-        val now = System.currentTimeMillis()
-        val encoded = encodeMemoryCacheMap(cacheMap)
-        db.noteDao().update(cacheNote.copy(content = encoded, updatedAt = now))
-        semanticChunkBuilder.indexNote(semanticIndexer, cacheNote.subfolderId)
-        db.subfolderDao().getById(cacheNote.subfolderId)?.let { sf ->
-            db.subfolderDao().update(sf.copy(updatedAt = now))
-        }
-
-        return ToolExecutionResult.Success(
-            content = if (trimmed.isBlank()) {
-                "Subfolder memory cache cleared (subfolderId=$subfolderId)"
-            } else {
-                "Subfolder memory cache appended (subfolderId=$subfolderId)"
-            },
-            modifiedSystem = true,
-        )
-    }
-
     private suspend fun readJournal(args: JsonObject): ToolExecutionResult {
+        if (!EidosSystemFeatureFlags.JOURNAL_ENABLED) {
+            return ToolExecutionResult.Failure("Eidos Journal is paused")
+        }
         val query = args.string("query")
         val dateFrom = args.long("dateFrom")
         val dateTo = args.long("dateTo")
@@ -1137,21 +1312,15 @@ class RoomToolExecutor(
         val location = args.string("location")
         val anchor = args.string("anchor")
 
-        val parent = db.parentFolderDao().getSystemFolderByName(SystemFolderNames.EIDOS_LOG)
-            ?: return ToolExecutionResult.Failure("Eidos Log system folder not found")
-
-        val subfolder = getOrCreateDailySubfolder(parent.id, timestamp)
-        val note = getOrCreateDailyNote(subfolder.id)
-
-        val line = buildString {
-            append(action)
-            if (!location.isNullOrBlank()) append(" | location=$location")
-            if (!anchor.isNullOrBlank()) append(" | anchor=$anchor")
+        if (!eidosLogWriter.append(
+                action = action,
+                timestamp = timestamp,
+                location = location,
+                anchor = anchor,
+            )
+        ) {
+            return ToolExecutionResult.Failure("Eidos Log system folder not found")
         }
-
-        val updated = note.content.appendEntry(timestamp, line)
-        db.noteDao().update(note.copy(content = updated, updatedAt = System.currentTimeMillis()))
-        semanticChunkBuilder.indexNote(semanticIndexer, subfolder.id)
 
         return ToolExecutionResult.Success("Log entry written", modifiedSystem = true)
     }
@@ -1182,11 +1351,6 @@ class RoomToolExecutor(
             content = "Quick note appended (subfolderId=$subfolderId)",
             modifiedSystem = true,
         )
-    }
-
-    private suspend fun voiceHandoff(args: JsonObject): ToolExecutionResult {
-        val state = args.string("state") ?: return ToolExecutionResult.Failure("state is required")
-        return ToolExecutionResult.Success("Voice handoff updated: $state", modifiedSystem = true)
     }
 
     private suspend fun readSystemEntries(
@@ -1239,41 +1403,6 @@ class RoomToolExecutor(
             )
         )
         return db.subfolderDao().getById(id)!!
-    }
-
-    private suspend fun getOrCreateParentMemoryCacheNote(parentFolderId: Long): Note {
-        val existing = db.subfolderDao().getAllByParentOnce(parentFolderId)
-            .firstOrNull {
-                it.deletedAt == null &&
-                    it.isSystemSubfolder &&
-                    (it.name == SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER || it.name == "__memory_cache__")
-            }
-        val subfolder = if (existing != null) {
-            // Canonicalize any legacy memory-cache system subfolder name to avoid split writes/reads.
-            if (existing.name != SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER) {
-                val now = System.currentTimeMillis()
-                val renamed = existing.copy(
-                    name = SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
-                    updatedAt = now,
-                )
-                db.subfolderDao().update(renamed)
-                renamed
-            } else {
-                existing
-            }
-        } else {
-            val id = db.subfolderDao().insert(
-                Subfolder(
-                    parentFolderId = parentFolderId,
-                    name = SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
-                    isSystemSubfolder = true,
-                    sortOrder = 9998,
-                    updatedAt = System.currentTimeMillis(),
-                )
-            )
-            db.subfolderDao().getById(id)!!
-        }
-        return getOrCreateDailyNote(subfolder.id)
     }
 
     private suspend fun getExistingDailySubfolder(parentFolderId: Long, timestamp: Long): Subfolder? {
@@ -1402,8 +1531,7 @@ class RoomToolExecutor(
 
     private fun parseArgs(argumentsJson: String): JsonObject {
         if (argumentsJson.isBlank()) return JsonObject(emptyMap())
-        val element = runCatching { json.parseToJsonElement(argumentsJson) }
-            .getOrElse { return JsonObject(emptyMap()) }
+        val element = json.parseToJsonElement(argumentsJson)
         return element.jsonObject
     }
 
@@ -1416,6 +1544,24 @@ class RoomToolExecutor(
                 else -> it.toString()
             }
         }
+
+    private fun JsonObject.resolveToolContent(): String? {
+        string("content")?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        for (key in listOf("contentMarkdown", "markdown", "text", "body")) {
+            when (val element = this[key]) {
+                null -> continue
+                is kotlinx.serialization.json.JsonArray -> {
+                    val joined = element.mapNotNull { item ->
+                        (item as? JsonPrimitive)?.contentOrNull
+                    }.joinToString("\n").trim()
+                    if (joined.isNotEmpty()) return joined
+                }
+                is JsonPrimitive -> element.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+                else -> continue
+            }
+        }
+        return null
+    }
 
     private fun JsonObject.long(key: String): Long? {
         val v = this[key] ?: return null
@@ -1454,121 +1600,13 @@ class RoomToolExecutor(
         return contentSectionRetriever.truncatedHintJson(
             fullText = fullText,
             summary = summary,
-            hint = "Content is large (${fullText.length} chars). Use search_semantic for passages; pass startLine/endLine here to expand a region.",
+            hint = "Content is large (${fullText.length} chars). Pass startLine=1 and endLine=totalLines for the full file; " +
+                "or use search_semantic for passages; or pass startLine/endLine to expand a region.",
         ).json
     }
 
     private fun JsonPrimitive.longOrNullCompat(): Long? {
         return this.contentOrNull?.toLongOrNull()
-    }
-
-    private data class ParsedTagHintV2(
-        val ref: String,
-        val tag: String,
-        val hint: String,
-        val date: Long?,
-        val objectType: String,
-        val scopeType: String,
-        val scopeId: String?,
-        val parentRef: String?,
-        val rootBranch: String,
-    )
-
-    private suspend fun parseTagHintLineV2(raw: String): ParsedTagHintV2? {
-        val refMatch = Regex("""\|\s*ref=([^\s|]+)\s*$""").find(raw) ?: return null
-        val ref = refMatch.groupValues.getOrNull(1)?.trim().orEmpty()
-        if (ref.isBlank()) return null
-        val withoutRef = raw.removeRange(refMatch.range).trim()
-        val head = Regex("""^\[([^\]]+)]\s*(.+)$""").find(withoutRef)
-        val dateText = head?.groupValues?.getOrNull(1)?.trim()?.ifBlank { null }
-        val body = head?.groupValues?.getOrNull(2)?.trim().orEmpty().ifBlank { withoutRef }
-
-        val dashIdx = body.indexOf(" — ")
-        if (dashIdx < 0) return null
-        val tag = body.substring(0, dashIdx).trim()
-        val hint = body.substring(dashIdx + 3).trim()
-        if (tag.isBlank() || hint.isBlank()) return null
-
-        val refMeta = appIndexMaterializer.resolveRefMetadata(ref) ?: return null
-        val dateMillis = dateText?.let {
-            runCatching {
-                LocalDate.parse(it)
-                    .atStartOfDay(ZoneId.systemDefault())
-                    .toInstant()
-                    .toEpochMilli()
-            }.getOrNull()
-        }
-
-        return ParsedTagHintV2(
-            ref = ref,
-            tag = tag,
-            hint = hint,
-            date = dateMillis,
-            objectType = refMeta.objectType,
-            scopeType = refMeta.scopeType,
-            scopeId = refMeta.scopeId,
-            parentRef = refMeta.parentRef,
-            rootBranch = refMeta.rootBranch,
-        )
-    }
-
-    private fun decodeMemoryCacheMap(content: String): MutableMap<Long, String> {
-        if (content.isBlank()) return mutableMapOf()
-        val parsed = runCatching { json.parseToJsonElement(content) }.getOrNull() ?: return mutableMapOf()
-        val obj = parsed as? JsonObject ?: return mutableMapOf()
-        val out = linkedMapOf<Long, String>()
-        obj.forEach { (k, v) ->
-            val id = k.toLongOrNull() ?: return@forEach
-            val value = (v as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
-            if (value.isNotBlank()) out[id] = value
-        }
-        return out
-    }
-
-    private fun encodeMemoryCacheMap(map: Map<Long, String>): String {
-        if (map.isEmpty()) return ""
-        return buildJsonObject {
-            map.toSortedMap().forEach { (subfolderId, text) ->
-                put(subfolderId.toString(), JsonPrimitive(text))
-            }
-        }.toString()
-    }
-
-    private fun tagHintScopeMatches(scope: String, ref: String?, objectType: String? = null): Boolean {
-        if (ref.isNullOrBlank()) return false
-        val prefix = objectType?.trim()?.lowercase(Locale.US)
-            ?.takeIf { it.isNotBlank() }
-            ?: ref.substringBefore(":").trim().lowercase(Locale.US)
-        return when (scope) {
-            "note", "notes" -> prefix == "note"
-            "file", "files" -> prefix == "file"
-            "chat", "chats" -> prefix == "chat"
-            "journal", "journals" -> prefix == "journal"
-            "ltm", "longterm", "long-term", "memory" -> prefix == "ltm"
-            "log", "logs" -> prefix == "log"
-            else -> prefix == scope
-        }
-    }
-
-    private fun tagHintQueryMatches(query: String, line: TagHintLine): Boolean {
-        return line.ref.lowercase(Locale.US).contains(query) ||
-            line.tag.lowercase(Locale.US).contains(query) ||
-            line.hint.lowercase(Locale.US).contains(query) ||
-            line.objectName.lowercase(Locale.US).contains(query) ||
-            line.parentFolderName.orEmpty().lowercase(Locale.US).contains(query) ||
-            line.subfolderName.orEmpty().lowercase(Locale.US).contains(query) ||
-            line.objectType.lowercase(Locale.US).contains(query) ||
-            line.scopeType.lowercase(Locale.US).contains(query) ||
-            line.rootBranch.lowercase(Locale.US).contains(query)
-    }
-
-    private fun formatTagHintLine(line: TagHintLine): String {
-        val date = dateKeyFromTimestamp(line.date)
-        val location = listOfNotNull(line.parentFolderName, line.subfolderName)
-            .filter { it.isNotBlank() }
-            .joinToString(" / ")
-        val atSuffix = if (location.isNotBlank()) " | at=$location" else ""
-        return "[$date] ${line.tag} — ${line.hint} | ref=${line.ref}$atSuffix"
     }
 
     private fun String.appendEntry(timestamp: Long, line: String): String {
@@ -1650,6 +1688,80 @@ class RoomToolExecutor(
     }
 
     /**
+     * Line-range edit — replaces `startLine`…`endLine` (1-based inclusive) with [newContent].
+     */
+    private suspend fun workshopEditFile(args: JsonObject): ToolExecutionResult {
+        blockPanelRuntimeScopeWrites(args)?.let { return it }
+        val fileReferenceId = args.long("fileReferenceId")
+            ?: return ToolExecutionResult.Failure("fileReferenceId is required")
+        val newContent = args.string("newContent")
+            ?: return ToolExecutionResult.Failure("newContent is required")
+        val startLine = args.int("startLine")
+        val endLine = args.int("endLine")
+        if (startLine == null || endLine == null) {
+            return ToolExecutionResult.Failure(
+                "startLine and endLine are required (1-based inclusive). " +
+                    "For a single line, set both to the same number.",
+            )
+        }
+        if (endLine < startLine) {
+            return ToolExecutionResult.Failure("endLine must be >= startLine")
+        }
+
+        val pair = requireWorkshopFileRef(fileReferenceId)
+            ?: return ToolExecutionResult.Failure("File not found or not in a Panel Workshop project")
+        val ref = pair.second
+        enforceWorkshopModeForWrite(ref.fileName)?.let { return it }
+
+        if (!File(ref.filePath).exists()) {
+            return ToolExecutionResult.Failure("File not found on disk: ${ref.fileName}")
+        }
+        val current = pendingChangeService.effectiveWorkingContentForFile(ref)
+
+        val built = NoteSectionEdit.buildProposedContent(
+            current = current,
+            newContent = newContent,
+            startLine = startLine,
+            endLine = endLine,
+            oldString = null,
+            expectedContent = null,
+        )
+        return when (built) {
+            is NoteSectionEdit.Result.Error -> ToolExecutionResult.Failure(built.message)
+            is NoteSectionEdit.Result.Ok ->
+                workshopWriteRouter.applyOrProposeWrite(ref = ref, proposedContent = built.content).toToolResult()
+        }
+    }
+
+    /**
+     * Append [content] after the last line of an existing workshop file.
+     */
+    private suspend fun workshopAppendFile(args: JsonObject): ToolExecutionResult {
+        blockPanelRuntimeScopeWrites(args)?.let { return it }
+        val fileReferenceId = args.long("fileReferenceId")
+            ?: return ToolExecutionResult.Failure("fileReferenceId is required")
+        val appendContent = args.string("content") ?: args.string("newContent")
+            ?: return ToolExecutionResult.Failure("content is required")
+
+        val pair = requireWorkshopFileRef(fileReferenceId)
+            ?: return ToolExecutionResult.Failure("File not found or not in a Panel Workshop project")
+        val ref = pair.second
+        enforceWorkshopModeForWrite(ref.fileName)?.let { return it }
+
+        if (!File(ref.filePath).exists()) {
+            return ToolExecutionResult.Failure("File not found on disk: ${ref.fileName}")
+        }
+        val current = pendingChangeService.effectiveWorkingContentForFile(ref)
+        val proposed = if (current.isEmpty()) {
+            appendContent
+        } else {
+            val needsNl = !current.endsWith("\n")
+            current + (if (needsNl) "\n" else "") + appendContent
+        }
+        return workshopWriteRouter.applyOrProposeWrite(ref = ref, proposedContent = proposed).toToolResult()
+    }
+
+    /**
      * Targeted edit of an existing workshop file. Replaces exactly one occurrence of
      * [oldString] with [newString]; fails with a current-file snippet when [oldString]
      * is missing or appears more than once so the LLM can re-anchor without re-reading.
@@ -1691,7 +1803,8 @@ class RoomToolExecutor(
                 buildString {
                     appendLine("oldString not found in ${ref.fileName}.")
                     appendLine("Re-read the file and include more context in oldString, then retry.")
-                    appendLine("Current file (lines ${snippet.startLine}\u2013${snippet.endLine}):")
+                    append(snippet.failureRegionLabel())
+                    appendLine("Line numbers below are display-only — do not include them in oldString.")
                     append(snippet.formatWithLineNumbers())
                 },
             )
@@ -1704,7 +1817,8 @@ class RoomToolExecutor(
                 buildString {
                     appendLine("oldString matched $total occurrences in ${ref.fileName} \u2014 must be unique.")
                     appendLine("Add more surrounding context to oldString so it identifies one specific occurrence, then retry.")
-                    appendLine("Current file (lines ${snippet.startLine}\u2013${snippet.endLine}):")
+                    append(snippet.failureRegionLabel())
+                    appendLine("Line numbers below are display-only — do not include them in oldString.")
                     append(snippet.formatWithLineNumbers())
                 },
             )
@@ -1715,6 +1829,66 @@ class RoomToolExecutor(
             current.substring(firstIndex + oldString.length)
 
         return workshopWriteRouter.applyOrProposeWrite(ref = ref, proposedContent = proposed).toToolResult()
+    }
+
+    /**
+     * Line-range patch without oldString — best for single-line fixes when line number is known
+     * from search_semantic (file hit).
+     */
+    private suspend fun workshopPatchFile(args: JsonObject): ToolExecutionResult {
+        blockPanelRuntimeScopeWrites(args)?.let { return it }
+        val fileReferenceId = args.long("fileReferenceId")
+            ?: return ToolExecutionResult.Failure("fileReferenceId is required")
+        val newText = args.string("newText") ?: args.string("newContent")
+            ?: return ToolExecutionResult.Failure("newText is required")
+
+        val line = args.int("line")
+        val startLine = args.int("startLine")
+        val endLine = args.int("endLine")
+
+        val rangeStart: Int
+        val rangeEnd: Int
+        when {
+            line != null -> {
+                rangeStart = line
+                rangeEnd = line
+            }
+            startLine != null && endLine != null -> {
+                rangeStart = startLine
+                rangeEnd = endLine
+            }
+            startLine != null -> {
+                rangeStart = startLine
+                rangeEnd = startLine
+            }
+            else -> return ToolExecutionResult.Failure(
+                "Provide line (single-line patch) or startLine+endLine (region patch) from a file semantic hit.",
+            )
+        }
+
+        val pair = requireWorkshopFileRef(fileReferenceId)
+            ?: return ToolExecutionResult.Failure("File not found or not in a Panel Workshop project")
+        val ref = pair.second
+        enforceWorkshopModeForWrite(ref.fileName)?.let { return it }
+
+        if (!File(ref.filePath).exists()) {
+            return ToolExecutionResult.Failure("File not found on disk: ${ref.fileName}")
+        }
+        val current = pendingChangeService.effectiveWorkingContentForFile(ref)
+
+        val built = NoteSectionEdit.buildProposedContent(
+            current = current,
+            newContent = newText,
+            startLine = rangeStart,
+            endLine = rangeEnd,
+            oldString = null,
+            expectedContent = null,
+        )
+        return when (built) {
+            is NoteSectionEdit.Result.Error -> ToolExecutionResult.Failure(built.message)
+            is NoteSectionEdit.Result.Ok ->
+                workshopWriteRouter.applyOrProposeWrite(ref = ref, proposedContent = built.content).toToolResult()
+        }
     }
 
     /**
@@ -1864,8 +2038,7 @@ class RoomToolExecutor(
     }
 
     private companion object {
-        const val TAG_HINTS_READ_SCHEMA_V2 = "tag_hints_read_v2"
-        const val FULL_READ_CHAR_THRESHOLD = 2_000
+        const val FULL_READ_CHAR_THRESHOLD = 24_000
     }
 
 }

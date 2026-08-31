@@ -6,7 +6,7 @@ This file documents **every tool** exposed to Eidos through the local Room tool 
 
 Coding agents should treat the Kotlin catalog as **authoritative** for names, parameter keys, `requiresConfirmation`, and `isModifying`. Implementation behavior lives in [RoomToolExecutor.kt](../../src/main/java/com/example/optimalx/data/eidos/RoomToolExecutor.kt).
 
-**Related docs:** [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md), [SEARCH_AND_RETRIEVAL.md](../systems/SEARCH_AND_RETRIEVAL.md), [TAG_HINT_SYSTEM.md](../agent_loops/TAG_HINT_SYSTEM.md), [JOURNAL_SYSTEM.md](../systems/JOURNAL_SYSTEM.md).
+**Related docs:** [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md), [SEARCH_AND_RETRIEVAL.md](../systems/SEARCH_AND_RETRIEVAL.md), [JOURNAL_SYSTEM.md](../systems/JOURNAL_SYSTEM.md).
 
 The following are **not** model-facing catalog tools and are **not** documented here: `search_system`, `update_semantic_tags`, `list_files`, `summarize_file`.
 
@@ -19,14 +19,17 @@ The following are **not** model-facing catalog tools and are **not** documented 
 Eidos must obtain user approval before executing:
 
 - **`move_to_trash`**
-- **`edit_note_section`**
 - **`prune_long_term_memory`**
 
 If the user declines, the tool does not run.
 
 ### No confirmation in catalog (`requiresConfirmation = false`)
 
-All other tools default to **no** confirmation step in the catalog — including **`write_note`**, which can replace full note content. The app may still apply extra UX for destructive edits; the **catalog** remains the contract for what the model is allowed to request without a confirmation flag.
+All other tools default to **no** chat confirmation step in the catalog.
+
+**Note edits** (`write_note` append/patch, `note_replace_string`) do not use the catalog confirmation handler. Instead they route through **Diff Review** when the note already has content — the user accepts or rejects on the Diff Review screen (editor badge or chat banner). **Empty notes** (no body, no pending proposal) auto-apply on first `write_note`.
+
+**Persistence (notes):** User typing flushes to the working copy on leave — not HEAD. **Commit** (top bar) or **auto-commit before Eidos** (when dirty vs HEAD) advances the checkpoint timeline. Diff Review is **Eidos-only**. See [NOTE_PERSISTENCE_MODEL.md](../architecture/NOTE_PERSISTENCE_MODEL.md).
 
 ### Modifying tools
 
@@ -111,20 +114,6 @@ Lists subfolders for a parent, or note preview + files for a subfolder.
 
 ## Note tools
 
-### read_note
-
-Reads the note for a subfolder.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| subfolderId | String | Subfolder ID |
-
-- Confirmation: No  
-- Modifies: No  
-- Respects AI lock rules in the executor (content may be withheld when locked).  
-
----
-
 ### read_dump_edit
 
 Reads the DumpEdit scratch buffer (DataStore). Used when buffer is large, AI locked, or Eidos needs a specific section.
@@ -144,44 +133,34 @@ Reads the DumpEdit scratch buffer (DataStore). Used when buffer is large, AI loc
 
 ### write_note
 
-Creates, replaces, or updates note content (full write path per executor).
+Set markdown on an **empty** note, or **append** (`\n\n` separator) when the note already has content. Prefer **`note_replace_string`** for in-place edits.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | subfolderId | String | Subfolder ID |
-| content | String | Content to write |
+| content | String | Markdown to set or append |
 
 - Confirmation: No (catalog)  
 - Modifies: Yes  
+- **Routing** ([`NoteWriteRouter`](../../src/main/java/com/example/optimalx/data/revision/NoteWriteRouter.kt)): if working copy is dirty vs HEAD, **auto-commit** first; then empty stored body + no open pending proposal → auto-apply; otherwise → queued under `SCOPE_SUBFOLDER` for Diff Review.  
+- See [NOTE_PERSISTENCE_MODEL.md](../architecture/NOTE_PERSISTENCE_MODEL.md), [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md) (notes).  
 
 ---
 
-### append_note
+### note_replace_string
 
-Appends text to the note.
+Find-and-replace patch on a note: exactly one occurrence of `oldString` → `newString` (markdown). Copy `oldString` from a `search_semantic` `chunk_text` hit with enough surrounding lines to match uniquely.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | subfolderId | String | Subfolder ID |
-| content | String | Text to append |
+| oldString | String | Non-empty substring to replace (must match once) |
+| newString | String | Replacement text (may be empty to delete) |
 
 - Confirmation: No  
 - Modifies: Yes  
-
----
-
-### edit_note_section
-
-Replaces or deletes a section identified by `targetText`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| subfolderId | String | Subfolder ID |
-| targetText | String | Existing text to match |
-| newContent | String | Replacement (empty to delete section) |
-
-- Confirmation: **Yes**  
-- Modifies: Yes  
+- **Routing:** if dirty vs HEAD, auto-commit first; then proposes via Diff Review when the note body is non-empty; auto-apply only when filling an empty note.  
+- On `not_found` / `ambiguous`, returns a line-numbered snippet of the current note for retry.  
 
 ---
 
@@ -200,9 +179,27 @@ Extracts and returns text from an attached file.
 
 ---
 
+### list_images
+
+Lists image files (`file_references` with `file_type=image`). Primary gallery browse tool for **Image Studio** Eidos scope.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| scope | `all` \| `subfolder` | Hub defaults to `all`; subfolder tab defaults to `subfolder` |
+| subfolderId | Long | Required when `scope=subfolder` |
+| limit | Int | Max images (default 48, max 200) |
+
+- Confirmation: No  
+- Modifies: No  
+- Returns: `fileReferenceId`, `fileName`, `globalId`, folder labels, generation caption when available, `bytesOnDisk`
+
+In `image_studio` scope, omitted `scope` / `subfolderId` are enriched from the active hub vs subfolder tab.
+
+---
+
 ### describe_image
 
-Describes an attached image (vision path).
+Describes an attached image (vision path) from a **Files** row.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -211,11 +208,13 @@ Describes an attached image (vision path).
 - Confirmation: No  
 - Modifies: No  
 
+**Not the same as chat composer attach.** Desktop chat vision puts pixels on the user message for one send (`models.vision`) without this tool. Mobile chat attach: [CHAT_VISION_ATTACH_PLAN.md](../implementation/CHAT_VISION_ATTACH_PLAN.md). This tool stays for “what’s in this file in Files?”  
+
 ---
 
 ## Panel Workshop tools
 
-All three tools route through `WorkshopWriteRouter`. In **build** phases the
+All write/edit tools route through `WorkshopWriteRouter`. In **build** phases the
 write is auto-accepted and disk + checkpoint are updated immediately. In
 **edit / update / review / debug** phases the proposed bytes are queued under
 `pending_change_items` and the user reviews on `DiffReviewScreen` before they
@@ -228,7 +227,7 @@ phase / mode matrix.
 ### workshop_write_file
 
 Overwrite an existing workshop file with full new content. Prefer
-`workshop_replace_string` for targeted edits.
+`workshop_edit_file` for targeted edits; `workshop_append_file` to add at EOF.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -253,19 +252,32 @@ Create a brand-new file inside a workshop project subfolder.
 - Modifies: Yes  
 - Behavior: auto-accept creates `FileReference` + disk + baseline checkpoint. In review phases the proposal is queued under `sourceType = workshop_new_file`; on accept the `FileReference` is created.  
 
-### workshop_replace_string
+### workshop_edit_file
 
-Targeted edit: replace a unique target substring with replacement bytes.
+Replace a line range (`startLine`…`endLine`, 1-based inclusive) with `newContent`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | fileReferenceId | String | Existing workshop file. |
-| target | String | Exact target substring; must match exactly once. |
-| replacement | String | Replacement bytes (may be empty for deletion). |
+| startLine | Integer | 1-based start line (inclusive). |
+| endLine | Integer | 1-based end line (inclusive). |
+| newContent | String | Replacement for that range (may be multiple lines). |
 
 - Confirmation: No  
 - Modifies: Yes  
-- Errors: `not_found` (with snippet of nearby content) and `ambiguous` (multiple matches) when the target doesn't match exactly once.  
+- Behavior: auto-accept in build phases; queues for review elsewhere.  
+
+### workshop_append_file
+
+Append content after the last line of an existing workshop file.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fileReferenceId | String | Existing workshop file. |
+| content | String | Text to append at EOF. |
+
+- Confirmation: No  
+- Modifies: Yes  
 - Behavior: auto-accept in build phases; queues for review elsewhere.  
 
 ---
@@ -305,7 +317,7 @@ Finds threads by **keyword** in titles or message text (substring match — not 
 
 ---
 
-## Search and Tag & Hint
+## Search
 
 ### search_semantic
 
@@ -320,113 +332,6 @@ Semantic (embedding) search across indexed notes, folder names, and files. Param
 
 - Confirmation: No  
 - Modifies: No  
-
----
-
-### read_tag_hints
-
-Reads app-wide Tag & Hint rows with optional filters. See [TAG_HINT_SYSTEM.md](../agent_loops/TAG_HINT_SYSTEM.md).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| scope | String | Optional filter |
-| query | String | Optional substring filter |
-| ref | String | Optional exact ref match |
-| dateFrom | String | Optional millis |
-| dateTo | String | Optional millis |
-| limit | String | Optional row limit (executor clamps) |
-
-- Confirmation: No  
-- Modifies: No  
-
-Response schema (`tag_hints_read_v1`):
-
-```json
-{
-  "schema": "tag_hints_read_v1",
-  "count": 1,
-  "limit": 10,
-  "filters": {
-    "scope": null,
-    "query": null,
-    "ref": null,
-    "dateFrom": null,
-    "dateTo": null
-  },
-  "items": [
-    {
-      "ref": "chat:general:221",
-      "objectType": "chat",
-      "scopeType": "general",
-      "scopeId": null,
-      "parentRef": null,
-      "rootBranch": "chats",
-      "piece": "KNIGHT",
-      "lens": "exploratory",
-      "hint": "agent training path",
-      "date": 1761513600000,
-      "dateKey": "2025-10-26",
-      "createdAt": 1761513600000,
-      "updatedAt": 1761513605000,
-      "line": "[2025-10-26] KNIGHT|exploratory — agent training path | ref=chat:general:221"
-    }
-  ]
-}
-```
-
----
-
-### upsert_tag_hint
-
-Creates or updates one Tag & Hint row by `ref`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| ref | String | Canonical Eidos index ref |
-| piece | String | Chess piece token |
-| lens | String | Lens token |
-| hint | String | Routing hint text |
-
-- Confirmation: No  
-- Modifies: Yes  
-
----
-
-### remove_tag_hint
-
-Deletes one Tag & Hint row by `ref`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| ref | String | Canonical Eidos index ref |
-
-- Confirmation: No  
-- Modifies: Yes  
-
----
-
-### chess_taxonomy
-
-Returns the piece-to-lens taxonomy used by Tag & Hint.
-
-- Parameters: *(none)*  
-- Confirmation: No  
-- Modifies: No  
-
----
-
-### notify_user
-
-Sends a user-visible notification message.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| title | String | Notification title |
-| message | String | Notification body |
-| ref | String | Optional related ref |
-
-- Confirmation: No  
-- Modifies: Yes  
 
 ---
 
@@ -496,33 +401,6 @@ Removes LTM content matching anchor text.
 | anchorText | String | Text anchor to match for removal |
 
 - Confirmation: **Yes**  
-- Modifies: Yes  
-
----
-
-### read_subfolder_memory_cache
-
-Reads the **operating ruleset** for a subfolder (Memory Cache map — not the user’s main note).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| subfolderId | String | Subfolder ID |
-
-- Confirmation: No  
-- Modifies: No  
-
----
-
-### update_subfolder_memory_cache
-
-Updates the subfolder ruleset (behavioral memory — not a summary of note body).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| subfolderId | String | Subfolder ID |
-| content | String | Ruleset text |
-
-- Confirmation: No  
 - Modifies: Yes  
 
 ---
@@ -605,25 +483,6 @@ Appends a line to today’s Quick Notes capture (creates dated subfolder/note as
 
 ---
 
-## Voice
-
-### voice_handoff
-
-Updates voice handoff state for widget / voice coordination.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| conversationId | String | Optional conversation ID |
-| state | String | Handoff state |
-| timestamp | String | Millis |
-| metadata | String | Optional JSON metadata |
-
-- Confirmation: No  
-- Modifies: Yes  
-- See voice docs for state strings and UX.  
-
----
-
 ## Provider-native web access
 
 Public web search/browse is **not** implemented as Room tools. Provider adapters attach hosted tools (e.g. `web_search`, `web_fetch`) per provider. Local tools stay limited to OptimalX data and **`search_semantic`** / chat / memory / journal / log per catalog.
@@ -641,37 +500,28 @@ Catalog field `requiresConfirmation` shown as **Confirmation**; `isModifying` as
 | rename_folder | No | Yes |
 | move_to_trash | Yes | Yes |
 | list_folder_contents | No | No |
-| read_note | No | No |
 | read_dump_edit | No | No |
 | write_note | No | Yes |
-| append_note | No | Yes |
-| edit_note_section | Yes | Yes |
+| note_replace_string | No | Yes |
 | read_file | No | No |
+| list_images | No | No |
 | describe_image | No | No |
 | read_conversation | No | No |
 | search_chat_history | No | No |
 | search_semantic | No | No |
-| read_tag_hints | No | No |
-| upsert_tag_hint | No | Yes |
-| remove_tag_hint | No | Yes |
-| chess_taxonomy | No | No |
-| notify_user | No | Yes |
 | read_daily_memory | No | No |
 | write_daily_memory | No | Yes |
 | read_long_term_memory | No | No |
 | write_long_term_memory | No | Yes |
 | prune_long_term_memory | Yes | Yes |
-| read_subfolder_memory_cache | No | No |
-| update_subfolder_memory_cache | No | Yes |
 | write_journal_entry | No | Yes |
 | read_journal | No | No |
 | write_log_entry | No | Yes |
 | read_log | No | No |
 | write_quick_note | No | Yes |
-| voice_handoff | No | Yes |
 
 ---
 
 ## Orchestration-only tools (not in `EidosToolCatalog`)
 
-The executor may expose additional names for **rollover / AgentByte** (e.g. `clear_daily_memory`, reasoning traces). Those are **not** part of `EidosToolCatalog.all` and are omitted from the tables above; see Kotlin for availability and guards.
+The executor may expose additional names for **rollover orchestration** (e.g. internal synthesis passes). Those are **not** part of `EidosToolCatalog.all` and are omitted from the tables above; see [ROLLOVER.md](../systems/ROLLOVER.md) and Kotlin for availability and guards.

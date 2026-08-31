@@ -4,7 +4,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.eidos.PanelStateScope
-import com.example.optimalx.data.eidos.PanelStateScope
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals

@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 /**
  * Forward unified-diff between two adjacent checkpoints of the same source. Lets the
@@ -32,6 +33,7 @@ import androidx.room.PrimaryKey
         Index(value = ["sourceType", "sourceId"]),
         Index(value = ["fromCheckpointId"]),
         Index(value = ["toCheckpointId"]),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class ContentPatch(
@@ -46,4 +48,6 @@ data class ContentPatch(
     /** Unified diff text from fromCheckpoint → toCheckpoint. */
     val unifiedDiff: String,
     val createdAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

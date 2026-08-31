@@ -1,15 +1,26 @@
 # STT backends + conversation routing — implementation checklist
 
-Use with: `app/docs/architecture/CONVERSATION_DIRECTORY.md`, `CHAT_UI.md`, `WIDGET_SYSTEM.md`, and **`app/docs/systems/VOICE_SYSTEM.md`** (authoritative for STT).
+Use with: `app/docs/architecture/CONVERSATION_DIRECTORY.md`, `CHAT_UI.md`, `WIDGET_SYSTEM.md`, and **`app/docs/systems/VOICE_SYSTEM.md`** (authoritative for STT/TTS).
 
 ## Product architecture (current)
 
-- **In-app and widget mic:** local continuous pipeline (`AudioCaptureSource` + `VadSegmenter` + `OnDeviceTranscriber`).
-- **Default ASR:** **Sherpa ONNX** (models bundled under `assets/voice/sherpa/` at build time). Works offline.
-- **Optional:** **Whisper** when `WhisperEngineRegistry` has an engine (user-installed model). **Auto** prefers Whisper, then Sherpa.
-- **No Android `SpeechRecognizer`** for chat/widget transcription. If both Whisper and Sherpa are unusable for a session, the pipeline reports errors and the user **types** or uses the **system keyboard’s** voice input — not an in-app recognizer fallback.
+**In-app chat + notes mic** (`VoiceController`):
 
-Do not reintroduce `RecognizerOnDeviceTranscriber` / mic-owning STT without revisiting this document and `VOICE_SYSTEM.md`.
+| Priority | When | Engine |
+|----------|------|--------|
+| 1 | `mic_use_local_gemma_scribe` on | `GemmaLocalScribeEngine` — rolling WAV slices → LiteRT scribe |
+| 2 | `mic_use_whisper_api` on + OpenAI key | `WhisperApiSpeechToTextEngine` — buffer PCM → Whisper API on stop |
+| 3 | Default | `GoogleSpeechToTextEngine` — streaming `SpeechRecognizer` |
+
+**Widget Ask Eidos / Quick Notes** (`WidgetVoiceService`): **Google STT only**.
+
+**Web search fields** (`WebSearchSttSession`): **Google STT only**.
+
+**Read aloud (TTS):** Android `TextToSpeech` via `ReadAloudSession` (chunked long text). See `VOICE_SYSTEM.md`.
+
+**Retired (not in codebase):** Sherpa ONNX, Parakeet, Silero VAD, `ContinuousSpeechToTextEngine`, local Whisper.cpp, `SpeechToTextEngine` wrapper. Legacy `stt_backend` keys are migrated at startup and do not affect routing.
+
+Do not reintroduce removed local ASR pipelines without revisiting `VOICE_SYSTEM.md` and this checklist.
 
 ---
 
@@ -41,22 +52,24 @@ Quick Notes / Memory / Reasoning inboxes use additional scopes (see `Conversatio
 - [ ] Manual device walk (recommended): ParentFolderScreen Eidos = General → SubfolderScreen Eidos = parent → Editor Eidos = subfolder.
 - [x] **Widget general vs Quick Note** — `ensureGeneralWidgetConversation` vs `ensureQuickNotesConversation` / `captureTarget`.
 - [x] **Distinct general pointers** — `ChatSessionPointers` only under `MAIN_APP`; widget uses `WidgetPrefs`.
-- [x] **Shared STT routing** — **`VoiceController`** and **`WidgetVoiceService`** both use **`SpeechToTextEngine`**, which builds **`ContinuousSpeechToTextEngine`** with **`VoiceRuntime.createTranscriber`**. Global preference: **`VoiceRuntime.backendPreference`** (synced from DataStore in `SettingsViewModel` + startup in `OptimalXApplication`). Transcriber selection: **`VoiceRuntime.buildTranscriber`** (`WhisperLocalTranscriber` vs `SherpaOnnxTranscriber`).
+- [x] **Shared STT routing** — `VoiceController.recreateSttEngineIfNeeded()` selects `VoiceRuntime.createChatSttEngine` backend (Gemma scribe → Whisper API → Google). `WidgetVoiceService` uses `VoiceRuntime.createGoogleOnlySttEngine()`.
 - [x] **Wake word** — `WakeWordDetector` is separate from chat STT (`VOICE_SYSTEM.md`).
 
 ### Mic / composer entry inventory
 
 | Entry surface | Engine construction | Notes |
 |---------------|----------------------|-------|
-| **EidosBottomSheet** (in-app) | **`VoiceController`** → `SpeechToTextEngine` → `VoiceRuntime` | Same Sherpa/Whisper policy as settings. |
-| **WidgetChatActivity** | Separate **`VoiceController`** instance → same global `VoiceRuntime` preference. | |
-| **WidgetVoiceService** (home mic) | **`SpeechToTextEngine(this)`** in `onCreate` | Transcript → `handleTranscript` / Eidos; not `VoiceRuntime.newEngine` (that helper exists for tests/alternate wiring). |
+| **Eidos chat** (in-app) | `VoiceController` → routed `SttEngine` | Same prefs as Settings toggles. |
+| **Notes / DumpEdit** | `VoiceController` per editor | Same routing; note dictation avoids duplicating note body. |
+| **WidgetChatActivity** | `VoiceController` | Same routing as in-app chat. |
+| **WidgetVoiceService** (home mic) | `VoiceRuntime.createGoogleOnlySttEngine()` | Ask Eidos / Quick Notes — Google only. |
+| **Web search** | `WebSearchSttSession` | Google only. |
 
 ---
 
 ## Phase 1 — Session contract (conversation + STT)
 
-Optional hardening (not yet required by VOICE_SYSTEM):
+Optional hardening (not yet required by `VOICE_SYSTEM.md`):
 
 - [ ] Immutable **voice session descriptor** at mic start: `conversationId`, scope, `entrySurface`.
 - [ ] **Stop/cancel** clears descriptor to avoid bleed-through.
@@ -65,7 +78,7 @@ Optional hardening (not yet required by VOICE_SYSTEM):
 
 ## Phase 2 — Per-session STT override (optional)
 
-Today, STT backend is **process-wide** via `VoiceRuntime.backendPreference`. Future: allow override per `ContinuousSpeechToTextEngine` instance (e.g. `transcriberFactory` parameter) without races — see `VoiceRuntime.transcriberOverride` for tests.
+Today, STT backend is **process-wide** via Settings toggles (`mic_use_local_gemma_scribe`, `mic_use_whisper_api`). Future: per-session override without races when switching engines mid-flight.
 
 ---
 
@@ -77,20 +90,22 @@ Today, STT backend is **process-wide** via `VoiceRuntime.backendPreference`. Fut
 
 ## Phase 4 — Settings, copy, errors
 
-- [x] Settings STT section: Auto / Sherpa ONNX only / Local Whisper only (**no** Android recognizer).
-- [ ] User-visible copy when Sherpa fails to init (optional toast): point user to typed input.
-- [ ] Optional: analytics `stt_surface=...`.
+- [x] Settings Voice section: Google default; optional Whisper API; optional local Gemma scribe.
+- [ ] User-visible copy when Whisper API fails (snackbar + optional Google retry — see `VOICE_CHAT_STT_COMPLETION_PLAN.md` Phase 2).
+- [ ] Optional: analytics `stt_surface=...`, `stt_backend=google|whisper|gemma_scribe`.
 
 ---
 
 ## Phase 5 — Test matrix (manual)
 
-Log: surface, backend (`VoiceRuntime.activeBackendLabel()`), conversation id, scope.
+Log: surface, backend (`VoiceController` / engine class), conversation id, scope.
 
 - [ ] In-app General: mic → transcript in input → send.
 - [ ] Widget: mic → send → thread under General; open main app → same messages.
-- [ ] Auto with Whisper installed → Whisper path; Auto without → Sherpa path.
-- [ ] Sherpa-only setting → always Sherpa.
+- [ ] Gemma scribe on → rolling partials during long dictation.
+- [ ] Whisper API on + key → pause/resume → transcribe on send.
+- [ ] Whisper on, network off → error feedback (and retry if Phase 2 shipped).
+- [ ] Google default → streaming partials, utterance restart while mic open.
 
 ---
 
@@ -98,10 +113,14 @@ Log: surface, backend (`VoiceRuntime.activeBackendLabel()`), conversation id, sc
 
 | Area | File(s) |
 |------|---------|
-| STT routing | `voice/pipeline/VoiceRuntime.kt`, `SpeechToTextEngine.kt`, `ContinuousSpeechToTextEngine.kt`, `SherpaOnnxTranscriber.kt` |
+| STT routing | `voice/VoiceRuntime.kt`, `voice/VoiceController.kt` |
+| STT engines | `GoogleSpeechToTextEngine.kt`, `WhisperApiSpeechToTextEngine.kt`, `GemmaLocalScribeEngine.kt` |
+| Transcript merge | `voice/pipeline/TranscriptAssembler.kt`, `VoicePipelineConfig.kt` |
+| Audio capture | `AudioCaptureBuffer.kt`, `AudioWavCodec.kt` |
+| TTS read aloud | `ReadAloudSession.kt`, `TextToSpeechEngine.kt` |
 | Widget voice | `widget/WidgetVoiceService.kt`, `widget/WidgetPrefs.kt` |
-| In-app voice VM | `voice/VoiceController.kt` |
-| ONNX load order | `voice/pipeline/OnnxRuntimeNativeLoader.kt` |
+| Web search STT | `WebSearchSttSession` in `VoiceController.kt` |
 | Chat / scope | `ui/eidos/EidosChatViewModel.kt`, `AppNavigation.kt` |
+| Scribe policy | `data/litert/GemmaLocalPolicy.kt`, `GemmaLocal.md` |
 
-_Last updated: aligned with Sherpa-primary, no in-app Android STT (2026-05-10)._
+_Last updated: aligned with Google + Whisper API + Gemma scribe routing (2026-08-13)._

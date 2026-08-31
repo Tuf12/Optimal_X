@@ -11,7 +11,8 @@ import kotlinx.serialization.json.jsonPrimitive
  * Normalizes provider-specific `usage` JSON into [EidosTokenUsage].
  *
  * Field names differ by API:
- * - Responses (xAI, OpenAI): `input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens`
+ * - Responses (xAI, OpenAI): `input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens`,
+ *   `input_tokens_details.cache_write_tokens` (GPT-5.6+)
  * - Anthropic Messages: `cache_read_input_tokens`, `cache_creation_input_tokens`
  * - Chat Completions (Kimi): `prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`
  */
@@ -26,13 +27,14 @@ object ProviderUsageParser {
         val input = firstInt(usage, "input_tokens", "prompt_tokens")
         val output = firstInt(usage, "output_tokens", "completion_tokens")
         val total = firstInt(usage, "total_tokens")
-        val cacheCreation = firstInt(usage, "cache_creation_input_tokens")
+        val inputDetails = usage["input_tokens_details"]?.jsonObject
+        val promptDetails = usage["prompt_tokens_details"]?.jsonObject
+        val cacheWriteFromDetails = inputDetails?.let { firstInt(it, "cache_write_tokens") }
+            ?: promptDetails?.let { firstInt(it, "cache_write_tokens") }
+        val cacheCreation = firstInt(usage, "cache_creation_input_tokens") ?: cacheWriteFromDetails
         val cacheRead = firstInt(usage, "cache_read_input_tokens")
-        val cachedFromDetails = usage["input_tokens_details"]?.jsonObject?.let {
-            firstInt(it, "cached_tokens")
-        } ?: usage["prompt_tokens_details"]?.jsonObject?.let {
-            firstInt(it, "cached_tokens")
-        }
+        val cachedFromDetails = inputDetails?.let { firstInt(it, "cached_tokens") }
+            ?: promptDetails?.let { firstInt(it, "cached_tokens") }
         val cachedTopLevel = firstInt(usage, "cached_tokens")
         val cached = cachedFromDetails ?: cachedTopLevel
         val reasoning = firstInt(usage, "reasoning_tokens")

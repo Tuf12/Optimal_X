@@ -5,8 +5,10 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.widget.RemoteViews
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.R
 import com.example.optimalx.data.preferences.SettingsDefaults
@@ -45,10 +47,17 @@ class OptimalXWidget : AppWidgetProvider() {
             val prefs = context.settingsDataStore.data.first()
             val wakeWord = prefs[SettingsKeys.WAKE_WORD] ?: SettingsDefaults.WAKE_WORD
             wakeWordDetector(context).startDetecting(wakeWord) {
-                context.startService(
-                    Intent(context, WidgetVoiceService::class.java).apply {
+                val app = context.applicationContext
+                if (ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    return@startDetecting
+                }
+                ContextCompat.startForegroundService(
+                    app,
+                    Intent(app, WidgetVoiceService::class.java).apply {
                         action = WidgetVoiceService.ACTION_START_VOICE
-                    }
+                    },
                 )
             }
         }
@@ -147,21 +156,23 @@ fun buildWidgetViews(
         ),
     )
 
-    val micIntent = Intent(context, WidgetVoiceService::class.java).apply {
+    val micIntent = Intent(context, WidgetVoiceLauncherActivity::class.java).apply {
         action = WidgetVoiceService.ACTION_START_VOICE
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     views.setOnClickPendingIntent(
         R.id.btn_mic,
-        widgetVoiceServicePendingIntent(context, 0, micIntent, flags, preferForeground = true),
+        PendingIntent.getActivity(context, 0, micIntent, flags),
     )
 
     // ── Quick Note — temporary routing to widget voice capture action ─────────
-    val quickNoteIntent = Intent(context, WidgetVoiceService::class.java).apply {
+    val quickNoteIntent = Intent(context, WidgetVoiceLauncherActivity::class.java).apply {
         action = WidgetVoiceService.ACTION_QUICK_NOTE
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     views.setOnClickPendingIntent(
         R.id.btn_quick_note,
-        widgetVoiceServicePendingIntent(context, 5, quickNoteIntent, flags, preferForeground = true),
+        PendingIntent.getActivity(context, 5, quickNoteIntent, flags),
     )
 
     // ── Send — commits the active voice draft via service action ──────────────
@@ -198,22 +209,4 @@ fun buildWidgetViews(
     )
 
     return views
-}
-
-/**
- * Mic / Quick Note start a microphone [Foreground Service]. On API 26+ use
- * [PendingIntent.getForegroundService] so the tap works on cold process / background limits.
- */
-private fun widgetVoiceServicePendingIntent(
-    context: Context,
-    requestCode: Int,
-    intent: Intent,
-    flags: Int,
-    preferForeground: Boolean,
-): PendingIntent {
-    return if (preferForeground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        PendingIntent.getForegroundService(context, requestCode, intent, flags)
-    } else {
-        PendingIntent.getService(context, requestCode, intent, flags)
-    }
 }

@@ -41,6 +41,10 @@ object MemoryRolloverScheduler {
      * does not reset an already-scheduled run.
      */
     fun ensureScheduled(context: Context) {
+        if (!EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+            cancelScheduled(context)
+            return
+        }
         enqueue(context, ExistingWorkPolicy.KEEP)
     }
 
@@ -48,7 +52,16 @@ object MemoryRolloverScheduler {
      * Called after a rollover attempt to queue the next local midnight.
      */
     fun scheduleFollowingMidnight(context: Context) {
+        if (!EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+            cancelScheduled(context)
+            return
+        }
         enqueue(context, ExistingWorkPolicy.REPLACE)
+    }
+
+    fun cancelScheduled(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
+        Log.i(LOG_TAG, "Cancelled scheduled rollover work (rollover paused or disabled)")
     }
 
     private fun enqueue(context: Context, policy: ExistingWorkPolicy) {

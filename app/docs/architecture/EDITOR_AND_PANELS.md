@@ -14,6 +14,7 @@ Coding agents should use this file to understand everything that happens inside 
 
 - Tapping a subfolder opens directly into the editor view
 - The default panel is always the Note Panel
+- **Default mode is View** (read-only markdown preview) — tap **Edit** in the toolbar or the bottom-right **Edit** button to type
 - No intermediate screens
 - No extra taps
 
@@ -31,13 +32,18 @@ Panels do not create new screens. They are swipeable content areas within the sa
 |---|---|---|
 | Center | Note | Default, always opens here |
 | Right of Note | Files | Swipe left from Note to access |
-| Right of Files | Web | Subfolder-scoped in-app web panel |
-| Right of Web | Open file panels | Each opened file adds a panel to the right |
+| Right of Files | Image Studio | Generate/browse images for this subfolder |
+| Right of Image | Web | Subfolder-scoped in-app web panel |
+| Right of Web | Custom panels | Panel Workshop assignments (if any) |
+| Right of custom panels | Open file panels | Each opened file adds a panel to the right |
 
 ### Panel navigation rules
 - Swipe left → move to the next panel to the right
 - Swipe right → move back to the previous panel
-- Android back button from any panel returns to the previous panel
+- Android back button from any open file panel returns to Files
+- Android back button from Web returns to Image Studio
+- Android back button from Image Studio returns to Files
+- Android back button from Files returns to Note
 - Android back button from the Note Panel returns to the Subfolder Page
 - Panels are horizontal only — no vertical swipe navigation inside the editor
 
@@ -57,6 +63,28 @@ Users add completed workshop panels via **Add Panel** on a subfolder. Each assig
 
 The Note Panel is the core working space of the app.
 
+### Storage vs editing surface
+
+| Layer | Format | Notes |
+|---|---|---|
+| **Room `notes.content`** | Markdown | Canonical bytes for Eidos tools, semantic search line ranges, and backup |
+| **WYSIWYG editor** | Rich text (visual) | User edits with the markdown-persisting toolbar subset — no `#` symbols required |
+| **View mode** | Rich text (read-only) | Same `RichTextNoteEditor` as Edit mode (`readOnly=true`) — headings, lists, bold match Edit |
+| **Edit mode** | Rich text (WYSIWYG) | User can type; saves only after `userHasEdited` |
+
+**Canonical rule:** `notes.content` markdown bytes do not change on open or while in View mode. Re-encoding through `NoteContentCodec` happens only when the user edits in Edit mode and saves. View mode loads the richeditor buffer for display only (no edit session until the user switches to Edit).
+
+Load/save boundary: [`NoteContentCodec`](../../src/main/java/com/example/optimalx/ui/components/NoteContentCodec.kt) (`loadIntoRichText` / `persistFromRichText`). Legacy HTML rows migrate to markdown lazily on first open (background DB write only).
+
+Shared panel chrome: [`RichTextNotePanel.kt`](../../src/main/java/com/example/optimalx/ui/editor/components/RichTextNotePanel.kt) (`RichTextNotePanelSupport`, `RichTextNoteEditor`, `MarkdownNoteViewPanel`).
+
+### Eidos co-editing
+
+- Eidos writes via `write_note` / `note_replace_string` (see [DIFF_REVIEW.md](DIFF_REVIEW.md) when the note body is non-empty).
+- The open editor reloads the View preview when Room `updatedAt` advances and the user has not started an edit session (`userHasEdited` guard in `NotePanel`).
+- Before Eidos sends from the subfolder editor, pending user edits flush to Room (`flushNoteToDbForEidos`). If working copy is **dirty vs HEAD**, edits are **auto-committed** before Eidos tools run.
+- While editing, changes persist to the working copy on **leave / back flush only** (no debounced save). Use **Commit** in the top bar to advance HEAD. See [NOTE_PERSISTENCE_MODEL.md](NOTE_PERSISTENCE_MODEL.md).
+
 ### Layout
 - Full screen text editor
 - Formatting toolbar visible at the top of the editor
@@ -64,22 +92,34 @@ The Note Panel is the core working space of the app.
 
 ### Formatting Toolbar
 
-The toolbar sits above the editing area and contains the most used formatting actions.
+The toolbar sits above the editing area and contains markdown-persisting formatting actions (see [NOTE_EDITOR_HARDENING_PLAN.md](../implementation/NOTE_EDITOR_HARDENING_PLAN.md) for the supported subset).
 
 | Action | Description |
 |---|---|
 | Bold | Toggles bold on selected text |
 | Italic | Toggles italic on selected text |
-| Underline | Toggles underline on selected text |
-| Font size | Cycles through sizes: Small / Medium / Large / Extra Large |
+| Strikethrough | Toggles strikethrough on selected text |
+| Heading | Cycles line style: Body → Title (`#`) → Section (`##`) → Subsection (`###`) |
+| Link | Adds `[text](url)` — prompts for URL |
+| Inline code | Toggles `` `code` `` on selected text |
 | Bullet list | Formats selected or new lines as a bulleted list |
 | Numbered list | Formats selected or new lines as a numbered list |
-| Undo | Restores to previous **checkpoint** (see [DIFF_REVIEW.md](DIFF_REVIEW.md)); keystroke undo uses the editor’s native stack while typing |
-| Redo | Restores forward among recent checkpoints |
+| Dictate | Voice-to-text into the note (Edit mode only) |
 | Dropdown menu | Opens the extended options menu |
 
-Font size is not numerical input. It uses four fixed size steps: Small, Medium, Large, Extra Large.
-The user highlights text and taps the size option to apply.
+**No toolbar Undo / Redo.** Those icons previously walked a save-time content deque, not keystroke undo — misleading UX. While typing, use the Android text field’s native undo where available.
+
+### Version history and Commit (top bar)
+
+Persistence uses **working copy** (`notes.content`) vs **HEAD** (latest checkpoint). See [NOTE_PERSISTENCE_MODEL.md](NOTE_PERSISTENCE_MODEL.md).
+
+| Control | Behavior |
+|---------|----------|
+| **Commit** | Visible when working copy ≠ HEAD. Appends a user checkpoint without Diff Review. |
+| **Review N** | Eidos pending proposals only → `DiffReviewScreen` Accept / Reject. |
+| **History** | `ContentHistorySheet` — checkpoint timeline (user commits, auto-commits, Eidos accepts, restores). Restore replaces the editor buffer and appends a “Restored to seq N” checkpoint. |
+
+Leave-flush alone updates the working copy but does **not** create a History seq. See [DIFF_REVIEW.md](DIFF_REVIEW.md).
 
 ### Dropdown Menu
 
@@ -87,11 +127,21 @@ The dropdown contains less frequently used actions and system level options.
 
 | Action | Description |
 |---|---|
-| Additional formatting | Less common text formatting options |
+| Additional formatting | Strikethrough moved to toolbar in Phase 2; dropdown holds system actions |
 | Edit / View mode toggle | Switches between edit mode (user can type) and view mode (read only for user). Eidos can still edit in view mode. Stays in whatever mode the user sets — does not auto switch. |
 | AI lock toggle | Locks or unlocks Eidos access to this note. When locked, Eidos can read the note for context but cannot write or modify it. When unlocked, Eidos has full access. User controls this manually. |
-| Export note | Exports the note content as a file |
-| Share note | Shares the note content via Android share sheet |
+| Export as PDF | Saves a **PDF** file — markdown → HTML → PDF; opens in any PDF viewer |
+| Export as HTML | Saves a **rendered HTML** file (`.html`) |
+| Share note | Shares **rendered HTML** via Android share sheet (`text/html`); plain-text fallback for apps that ignore HTML |
+
+**Mobile office formats:** Word (`.docx`) and OpenDocument (`.odt`) are **desktop-only** (Pandoc). Mobile ships PDF + HTML in Phase 4b.
+
+| Format | Storage | Export |
+|--------|---------|--------|
+| Markdown | Canonical (`notes.content`) | Desktop only (`.md` menu item) |
+| HTML | Export-only | Mobile + desktop |
+| PDF | Export-only | Mobile + desktop |
+| DOCX / ODT | Export-only | Desktop when Pandoc is installed |
 
 The dropdown is accessed from the toolbar. It does not clutter the main toolbar.
 
@@ -140,6 +190,26 @@ The Files Panel shows all files attached to the current subfolder.
 
 ---
 
+## Image Studio Panel
+
+The Image Studio panel sits between Files and Web. It generates cloud images (xAI Grok Imagine) into the current subfolder and shows a subfolder-scoped gallery.
+
+### Layout
+- File name, prompt, optional negative prompt
+- Model tier (Draft / Quality) and aspect ratio chips
+- Generate / Cancel with progress
+- Preview + Share / Open Files after success
+- Gallery filtered to this subfolder (All / Generated / Imported)
+
+### Persistence
+- Form fields persist in `panel_state` with `scopeKey = image_studio` and host = subfolder id
+- Generated images are saved as `file_references` rows with `metadata_json` (see `app/docs/image_studio/`)
+
+### Requirements
+- xAI API key must be configured in Settings → AI before Generate is enabled
+
+---
+
 ## Web Panel
 
 The Web panel is available in the editor only and is scoped to the current subfolder context.
@@ -150,8 +220,10 @@ The Web panel is available in the editor only and is scoped to the current subfo
 - History/search UI filtered to the current subfolder scope
 
 ### Scope behavior
-- Web recents/searches are isolated per subfolder editor scope
-- Widget web browsing uses a separate widget-only scope
+- Each subfolder has its **own browser** — canonical scope key `editor:subfolder:{subfolderId}`
+- Bookmarks, recent pages, recent searches, and last URL restore are stored per subfolder and must not appear in other subfolders or the widget browser
+- Widget web browsing uses a separate scope: `widget:quick_web` (see `WEB_SYSTEM.md` for the full isolation contract)
+- Eidos web chat in the editor is keyed by subfolder + search/page thread in Room; switching subfolders must not reuse another subfolder's active web search thread
 
 ---
 

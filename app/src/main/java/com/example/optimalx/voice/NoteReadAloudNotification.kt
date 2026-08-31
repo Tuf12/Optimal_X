@@ -20,7 +20,11 @@ internal object NoteReadAloudNotification {
     private const val CHANNEL_DESC = "Playback controls for note text-to-speech."
     private const val NOTIFICATION_ID = 9417
 
-    fun show(context: Context, isPlaying: Boolean) {
+    fun show(
+        context: Context,
+        isPlaying: Boolean,
+        contentTitle: String = "Reading note aloud",
+    ) {
         ensureChannel(context)
         if (!canPostNotifications(context)) return
 
@@ -48,7 +52,7 @@ internal object NoteReadAloudNotification {
 
         val notif = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher_round)
-            .setContentTitle("Reading note aloud")
+            .setContentTitle(contentTitle)
             .setContentText(if (isPlaying) "Playback in progress" else "Playback paused")
             .setOnlyAlertOnce(true)
             .setSilent(true)

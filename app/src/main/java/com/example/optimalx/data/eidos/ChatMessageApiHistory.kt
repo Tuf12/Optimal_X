@@ -14,6 +14,8 @@ fun ChatMessage.toEidosApiMessage(): EidosMessage = EidosMessage(
 /**
  * Builds conversation history for [EidosApiClient.send], excluding the latest user turn when it
  * matches [userText] (that text is sent separately as [EidosRequest.userMessage]).
+ *
+ * Prefer [ConversationOutboundHistory.build] for outbound API history.
  */
 fun List<ChatMessage>.toEidosApiHistoryExcludingLatestUser(userText: String): List<EidosMessage> {
     if (isEmpty()) return emptyList()

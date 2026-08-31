@@ -3,6 +3,7 @@ package com.example.optimalx.data.repository
 import com.example.optimalx.data.dao.PanelStateDao
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.model.PanelState
+import com.example.optimalx.data.sync.SyncContentHash
 
 class PanelStateRepository(
     private val panelStateDao: PanelStateDao,
@@ -22,6 +23,7 @@ class PanelStateRepository(
             scopeKey = scopeKey,
             stateJson = trimmed,
             updatedAt = now,
+            contentHash = SyncContentHash.panelStateContentHash(trimmed),
         )
         if (updated == 0) {
             panelStateDao.insert(
@@ -30,6 +32,7 @@ class PanelStateRepository(
                     scopeKey = scopeKey,
                     stateJson = trimmed,
                     updatedAt = now,
+                    contentHash = SyncContentHash.panelStateContentHash(trimmed),
                 ),
             )
         }

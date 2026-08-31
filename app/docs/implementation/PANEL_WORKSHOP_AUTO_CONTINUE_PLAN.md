@@ -2,10 +2,12 @@
 
 | Field | Value |
 |--------|--------|
-| **Status** | Active — canonical plan for Auto-Continue + prompt/token fixes (2026-06) |
+| **Status** | **Superseded** 2026-06-14 — Auto-Continue + synthetic handoff retired; see [PROMPT_SCOPE_ROUTER_PLAN.md](./PROMPT_SCOPE_ROUTER_PLAN.md) (Retired section) |
 | **Audience** | Product, Kotlin implementers, Eidos prompt authors |
 | **Supersedes** | `WORKSHOP_EIDOS_TOKEN_LOOP_PLAN.md` (renamed; same content lineage) |
-| **Related** | [WORKSHOP_MODES.md](../architecture/WORKSHOP_MODES.md), [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md), [PANEL_WORKSHOP_RECOVERY_PLAN.md](./PANEL_WORKSHOP_RECOVERY_PLAN.md), [EIDOS_LLM_CONTEXT_CLEANUP.md](./EIDOS_LLM_CONTEXT_CLEANUP.md), [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md), [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md) |
+| **Related** | [WORKSHOP_MODES.md](../architecture/WORKSHOP_MODES.md), [PANEL_WORKSHOP.md](../architecture/PANEL_WORKSHOP.md), [PANEL_WORKSHOP_RECOVERY_PLAN.md](./PANEL_WORKSHOP_RECOVERY_PLAN.md), [EIDOS_LLM_CONTEXT_CLEANUP.md](./EIDOS_LLM_CONTEXT_CLEANUP.md), [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md), [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md), [DIFF_REVIEW.md](../architecture/DIFF_REVIEW.md) |
+
+> **Superseded (2026-06-14):** Auto-Continue, synthetic handoff user messages, `WorkshopToolRoundPause`, and chunked chaining in ViewModel are **retired**. Do not implement from this doc. See [PROMPT_SCOPE_ROUTER_PLAN.md](./PROMPT_SCOPE_ROUTER_PLAN.md) — *Retired: workshop auto-continue*.
 
 ---
 
@@ -26,10 +28,10 @@ Auto-Continue replaces “one giant tool loop per user tap” with **chunk → h
 
 Supporting cleanup (Phase 1) fixes prompt bloat that hurts every workshop send:
 
-1. Resending full system prompt every tool hop (workshop; intentional — prefix cache).
-2. Unbounded tool rounds in build/plan kickoffs (only Chat capped today).
-3. Duplicate retrieval policy in system context.
-4. Misleading global tool-first prose (folder/note tools not in workshop API).
+1. Resending full system prompt every tool hop (workshop) — **legacy bug**, not intentional; fix in [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md) Phase 1.
+2. Unbounded tool rounds in build/plan kickoffs — **shipped** (`WORKSHOP_EDIT_BUILD_MAX_TOOL_ROUNDS`).
+3. Duplicate retrieval policy in system context — transport plan Phase 2.
+4. Misleading global tool-first prose (folder/note tools not in workshop API) — transport plan Phase 2.
 
 | Phase | Deliverable |
 |-------|----------------|
@@ -120,46 +122,43 @@ Open product question: ~~should **Build plan** execution match main build~~ **Re
 
 ---
 
-## How one user send actually flows (workshop + Kimi)
+## How one user send actually flows (workshop)
 
-Correct mental model:
+### Target mental model
 
 ```
 User taps Send
+  → assembleSystemPrompt() once in Kotlin
   → HTTP round 1 (FULL)
-      system: [full assembled workshop system prompt]
+      system: [turn context — workshop block + base rules]
       messages: [trimmed chat history] + user message
       tools: [workshop subset + Kimi Formula tools]
-  → model may return tool_calls (no final text yet)
+  → model may return tool_calls
 
 While tool_calls not empty:
   → HTTP round 2..N (TOOL_CONTINUATION)
-      system: [same full assembled system prompt again]   ← workshop always
-      messages: [entire history including prior tool results] + new tool results
-      userMessage: "" (empty; turn seeded in history)
+      xAI/OpenAI:  system=""  +  previous_response_id  +  incremental input (last round only)
+      Kimi/Anthropic:  same stable system (cache)  +  messages[] with new rows appended only
+      userMessage: "" (user turn already in history)
 ```
 
-**Not** `userMessage → system → tool → userMessage → system` as alternating roles. The **user message is once per send**; later hops append **assistant** (tool call) and **tool** (result) rows, then call the API again with the **same system string** re-attached.
+The **user message is once per `send()`**; later hops append **assistant** (tool call) and **tool** (result) rows. Auto-Continue uses a **new** `send()` with a synthetic user handoff between chunks — not inside the `while (toolCalls)` loop.
 
-Code: `EidosApiClient.send()` — `useIncremental = !isPanelWorkshop` for xAI/OpenAI only; workshop keeps `assembledSystemPrompt` every hop.
+Canonical transport spec: [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md).
 
-```481:491:app/src/main/java/com/example/optimalx/data/eidos/EidosApiClient.kt
-                    // Workshop multi-tool runs need full system + history every hop (file manifest, mode, IDs).
-                    val useIncremental = !isPanelWorkshop &&
-                        providerFamilyUsesIncrementalToolContinuation(family) &&
-                        !currentResponseId.isNullOrBlank()
-                    workingRequest = EidosRequest(
-                        systemPrompt = if (useIncremental) "" else assembledSystemPrompt,
-                        conversationHistory = if (useIncremental) {
-                            continuationSlice
-                        } else {
-                            mutableHistory
-                        },
+### Transport by provider (2026-06-08)
+
+| Provider family | Workshop tool hop 2+ |
+|-----------------|----------------------|
+| xAI / OpenAI (`RESPONSES_CHAINED`) | ✅ Incremental — empty system, `previous_response_id`, last tool round only (`shouldUseIncrementalToolContinuation`) |
+| Kimi / Anthropic (`MESSAGES_CACHED`) | ✅ Empty system hop 2+ (`shouldOmitSystemPromptOnToolContinuation`) + full history with bulk-tool stubs |
+
+```513:517:app/src/main/java/com/example/optimalx/data/eidos/EidosApiClient.kt
+                    val useIncremental = shouldUseIncrementalToolContinuation(
+                        family = family,
+                        previousResponseId = currentResponseId,
+                    )
 ```
-
-**Why it was written this way:** Workshop system context includes live manifest, phase, mode, open-tab excerpt, and gates — authors wanted the model to never “lose” `fileReferenceId`s or phase rules mid-loop.
-
-**Why it still hurts on Kimi:** Moonshot caches the **stable prefix**, but you still pay latency and input-token accounting on growth; repeated reasoning and tool bodies dominate when loops run long.
 
 ---
 
@@ -252,7 +251,7 @@ Do **not** rely on code-only tickets for the happy path; the model should steer 
 | Cap N tool hops per chunk | Ends one in-flight Kimi `keep: all` chain |
 | New `send()` per chunk | Fresh tool-round budget |
 | Handoff as **short** next `userMessage` | Next chunk’s steering text without re-pasting all tool JSON |
-| Phase 2 lean history | Optional: chunk 2+ history = original human ask + last handoff + last assistant summary |
+| Phase 2 lean history | ✅ chunk 2+ API history = kickoff human + last assistant summary (handoff = `userMessage`; `WorkshopAutoContinueLeanHistory`) |
 
 ### Relationship to existing kickoffs
 
@@ -394,15 +393,16 @@ Workshop **does** allow Formula execution in `EidosApiClient` (Fiber dispatch) �
 
 ### Kimi / Anthropic caching vs resending the system prompt
 
-**Resending the system string each hop is correct** for `MESSAGES_CACHED` providers when using Chat Completions / Messages with `cache_control` on a stable prefix:
+**Cache hits ≠ permission to spam stable context.**
 
-- Moonshot/Anthropic match a **prefix hash**; cache hit reduces **cost** on repeated prefix tokens.
-- You still send the bytes; the server recognizes duplication.
-- Workshop **does not** use OpenAI/xAI `previous_response_id` incremental mode (empty system on continuation).
+- `cache_control` + `prompt_cache_key` let Moonshot/Anthropic match a **prefix hash** — cache hit reduces **billed** tokens on repeated prefix bytes.
+- Wire bytes may still be sent; latency and context limits still apply.
+- **Target:** system block stable per user turn; hop 2+ appends only new assistant/tool messages. Investigate omitting identical system on TOOL_CONTINUATION (transport plan Phase 4).
+- **Responses (xAI/OpenAI):** workshop must use `previous_response_id` + empty system on continuation like other scopes (transport plan Phase 1).
 
-Logcat “cached tokens” growing on later hops often means **prefix cache hits** on system + early messages — good — but **new** tool results and reasoning at the tail are never cached on first sight.
+Logcat “cached tokens” on later hops often means prefix cache hits on system + early messages — that is good for **cost**, not evidence that re-sending 8k of mode instructions each hop helps the model.
 
-**If cache hits are high but it still feels slow:** tail growth (reasoning + tool JSON) and **many HTTP round trips** dominate latency, not prefix misses.
+**If cache hits are high but it still feels slow:** tail growth (tool results + current-turn reasoning) and **many HTTP round trips** dominate — fix hop transport and trim stale reads (transport plan Phases 1–3).
 
 ---
 

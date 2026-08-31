@@ -35,6 +35,31 @@ class ProviderUsageParserTest {
     }
 
     @Test
+    fun responses_api_parses_cache_write_tokens_from_details() {
+        val root = json.parseToJsonElement(
+            """
+            {
+              "id": "resp_2",
+              "usage": {
+                "input_tokens": 15000,
+                "output_tokens": 120,
+                "total_tokens": 15120,
+                "input_tokens_details": {
+                  "cached_tokens": 12000,
+                  "cache_write_tokens": 3000
+                }
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val usage = ProviderUsageParser.fromResponseRoot(root)
+        requireNotNull(usage)
+        assertEquals(12000, usage.cachedInputTokens)
+        assertEquals(3000, usage.cacheCreationInputTokens)
+    }
+
+    @Test
     fun anthropic_parses_cache_read_and_creation() {
         val root = json.parseToJsonElement(
             """

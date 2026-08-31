@@ -6,7 +6,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -47,6 +52,25 @@ fun ChatMessageBubbleFooter(
             horizontalArrangement = Arrangement.spacedBy(0.dp),
             verticalAlignment = Alignment.CenterVertically,
             content = actions,
+        )
+    }
+}
+
+@Composable
+fun ChatMessageRetryButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOptimalXColors.current
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.size(28.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Retry",
+            tint = colors.textDim,
+            modifier = Modifier.size(18.dp),
         )
     }
 }

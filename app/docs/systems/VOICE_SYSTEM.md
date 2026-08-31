@@ -1,276 +1,275 @@
-
 # VOICE_SYSTEM.md
 
 ## Purpose
 
-This file defines the voice interaction architecture for OptimalX.
+This file documents the **shipped** voice stack in OptimalX Android — what the code does today, not retired experiments.
 
-**Shipped STT routing (2026-05-31):**
+Use alongside `WIDGET_SYSTEM.md`, `CHAT_UI.md`, and `GemmaLocal.md` (local Gemma scribe tuning).
 
-| Surface | Engine |
-|---------|--------|
-| Chat + notes mics | OpenAI Whisper API when Settings toggle on + key saved; else `GoogleSpeechToTextEngine` |
-| Widget Quick Ask + Quick Notes | `GoogleSpeechToTextEngine` only |
-| Web search mics | `GoogleSpeechToTextEngine` only |
-| Keyboard (Gboard, etc.) | User’s IME — no app API |
-
-Chat/notes use `VoiceController` + `VoiceRuntime`. Widget voice uses `WidgetVoiceService`. Web search uses `WebSearchSttSession`.
-
-Use this file alongside `WIDGET_SYSTEM.md` and `EIDOS_AGENT.md`.
+**Desktop counterpart:** OptimalX Desktop uses Kokoro TTS + sherpa-onnx Parakeet STT (`electron/voice/`). See `app/docs/cross-repo/README.md`.
 
 ---
 
-## Where Voice Is Available
+## Shipped summary (2026)
 
-Voice interaction is available in three places:
+| Role | Chat + notes | Widget Quick Ask / Quick Notes | Web search fields |
+|------|----------------|--------------------------------|-------------------|
+| **STT** | See routing below | Google only | Google only |
+| **TTS (read aloud)** | Android `TextToSpeech` via `ReadAloudSession` | Same when widget hands-free is on | — |
 
-| Location | Access method |
-|---|---|
-| Home screen widget | Mic button on the widget |
-| Eidos bottom sheet (inside app) | Mic button in chat UI |
-| Any in-app chat screen | Mic button in chat UI |
+### Chat + notes STT routing (`VoiceController`)
 
-Voice is not a separate mode. It is an input/output layer for Eidos chat.
+Priority when starting a mic session (`recreateSttEngineIfNeeded`):
 
----
+1. **Local Gemma scribe** — if `mic_use_local_gemma_scribe` is on → `GemmaLocalScribeEngine`
+2. **OpenAI Whisper API** — if `mic_use_whisper_api` is on **and** OpenAI API key is saved → `WhisperApiSpeechToTextEngine`
+3. **Google STT** (default) → `GoogleSpeechToTextEngine`
 
-## Core STT Model (v3)
-
-### Interaction model (unchanged UX)
-
-Voice input remains push-to-talk:
-
-- user taps mic → capture starts
-- user speaks freely, including pauses for thinking
-- user taps send (or mic stop action) → transcript is finalized and sent
-
-There is no auto-send on silence.
-There is no forced session timeout while mic is active.
-
-### Architectural model (internals)
-
-STT pipeline is continuous and local:
-
-1. `AudioRecord` continuously captures PCM audio while mic is active.
-2. Frames flow through a VAD stage (energy gate; optional Silero ONNX neural gate when available).
-3. VAD emits utterance segments (speech start/speech end).
-4. On-device ASR transcribes each segment (`SherpaOnnxTranscriber` and/or `WhisperLocalTranscriber`).
-5. Partial/final text is merged into a persistent transcript buffer.
-6. Buffer is displayed live in input UI and committed on user send.
-
-The app does **not** use Android’s `SpeechRecognizer` for this pipeline. If both configured engines fail to run (e.g. rare native load failure), the user **types with the system keyboard** (and may use the IME’s voice input outside the app). There is no second in-app ASR fallback.
+There is **no** in-app Sherpa ONNX, Parakeet, Silero VAD, or local Whisper.cpp path in shipped Kotlin. Legacy preference keys (`stt_backend`, `sherpa_onnx`, etc.) are migrated to `google_recognizer` at startup and are not used for routing.
 
 ---
 
-## Persistent Transcript Buffer
+## Where voice is available
 
-All spoken text is accumulated in a buffer owned by ViewModel/controller state, not in the recognizer/model runtime.
+| Location | Mic (STT) | Read aloud (TTS) |
+|----------|-----------|------------------|
+| Eidos chat (in-app) | `VoiceController` | `ReadAloudSession` |
+| Note editor / DumpEdit | `VoiceController` | `ReadAloudSession` |
+| Home widget Quick Ask / Quick Notes | Google STT only (`WidgetVoiceService`) | Optional widget hands-free |
+| Web panel address / search | Google only (`WebSearchSttSession`) | `ReadAloudSession` on chat-style surfaces |
+| Widget wake word | Separate `WakeWordDetector` path | — |
+| System keyboard (Gboard, etc.) | User’s IME — **not** OptimalX STT | — |
+
+Voice is an input/output layer for chat and notes, not a separate app mode.
+
+---
+
+## Interaction model
+
+### Push-to-talk (default)
+
+- User opens mic → capture starts.
+- User speaks (pauses for thinking are allowed).
+- User commits via **Send**, **Transcribe and insert** (notes), or mic stop — behavior depends on surface and STT backend.
+
+There is **no** auto-send on silence for chat. There is **no** forced session timeout while the mic is open (Google uses long silence windows; buffered engines record until stop).
+
+### Starting mic never clears typed text
+
+`TranscriptAssembler.setBase(existingText)` seeds the buffer so speech **appends** to whatever is already in the composer or note field.
+
+### Pause / resume (Whisper API and Gemma scribe only)
+
+- **Pause** stops `AudioRecord` without calling the cloud or Gemma — audio stays buffered.
+- **Resume** continues into the same buffer.
+- **Discard** drops buffered audio/text.
+- **Google STT** does not use this path; tapping mic while listening finalizes Google text into the composer instead of pausing.
+
+---
+
+## Persistent transcript buffer
+
+All engines merge into `TranscriptAssembler` (`voice/pipeline/TranscriptAssembler.kt`):
+
+| Method | Behavior |
+|--------|----------|
+| `setBase(text)` | Seed from existing input |
+| `setPartial(text)` | Live hypothesis only |
+| `commitFinal(text)` | Append to committed with a space |
+| `displayText()` | `committed + partial` for UI |
+| `takeAndReset()` | Flush partial as final, return all, clear |
 
 Rules:
 
-- Buffer holds all captured speech since mic activation.
-- Buffer is displayed live in the input bar.
-- Buffer survives segment boundaries and model inference passes.
-- Buffer is only cleared after successful send or explicit cancel.
-- Starting mic never clears typed text; speech appends to existing input.
-- Pause/resume appends new speech to current input content.
+- Committed text survives segment boundaries and engine restarts.
+- Buffer clears on successful commit/cancel, not on internal STT segments.
+- Note dictation passes `existingText = ""` so the note body is not duplicated — heard text is appended in the editor callback only.
+
+Partial updates to Compose are throttled to **90 ms** (`VoicePipelineConfig.UI_UPDATE_THROTTLE_MS`).
 
 ---
 
-## Audio Pipeline Requirements
+## STT engines (detail)
 
-### Capture
+### Google STT — default (`GoogleSpeechToTextEngine`)
 
-- Use mono PCM (`PCM_16BIT`) at `16 kHz`.
-- Capture on a dedicated audio thread with stable buffering.
-- Maintain a small ring buffer to absorb scheduling jitter.
+- Android `SpeechRecognizer`, preferring Google Quick Search recognition services when installed.
+- **Streaming partials** while mic is open.
+- **Continuous dictation:** after each utterance `onResults`, commits text and **restarts** listening (~120 ms delay) until `stopListening`.
+- Dictation-oriented extras: 6 s possibly-complete / 10 s complete silence, 60 s minimum session length.
+- `pauseCapture` / `resumeCapture` keep assembler state but release the recognizer (used when pausing Google path via `finalizeListeningForEdit`).
+- **No app-level PCM chunking** — the OS recognizer handles segmentation.
 
-### VAD segmentation
+### OpenAI Whisper API (`WhisperApiSpeechToTextEngine`)
 
-- Use frame-level VAD over short frames (10–30 ms).
-- Segment speech with start/end hysteresis (speech threshold + silence hangover).
-- Allow natural pauses without dropping session state.
+- Records **16 kHz mono PCM16** via `AudioCaptureBuffer` while mic is open.
+- **No live partials** during capture — UI shows base/committed text only until stop.
+- On `stopListening`: full buffer → WAV → OpenAI `whisper-1` HTTP API (`WhisperTranscriptionClient`).
+- Requires Settings toggle + saved OpenAI API key + network.
+- Supports pause/resume/discard without transcribing mid-session.
 
-### Transcription
+### Local Gemma scribe (`GemmaLocalScribeEngine`)
 
-- **Sherpa ONNX:** Models ship under `assets/voice/sherpa/`; ONNX Runtime must load before Sherpa JNI (`OnnxRuntimeNativeLoader`). Works offline; no network required for ASR.
-- **Whisper (optional):** If `WhisperEngineRegistry` holds an engine (user installed a model in Settings), **Auto** and **Local Whisper** preferences may route segments to Whisper instead of Sherpa per `VoiceRuntime`.
-- Emit partial/final text per backend capabilities; merge into the persistent buffer without clobbering prior text.
+- On-device transcription via **Gemma 4 E4B** multimodal LiteRT path (`LitertLmScribeService`).
+- Enabled when Settings → **Use local Gemma scribe for mic** is on.
+- **Rolling slice** long-form capture (see `GemmaLocal.md` § Local scribe):
+  - `SCRIBE_SLICE_SECONDS` = **8**
+  - `SCRIBE_SLICE_OVERLAP_SECONDS` = **0.5**
+  - `SCRIBE_MIN_FLUSH_SECONDS` = **0.4**
+- Continuous `AudioRecord` → peel overlapping WAV windows → one reused LiteRT conversation per recording session → `commitFinal` → live partials in UI.
+- Committed PCM prefix dropped after each slice (`dropPcmBefore`) so RAM stays bounded.
+- Supports pause/resume/discard like Whisper API.
+- **No VAD** — fixed-time windows with audio overlap to avoid clipped words at boundaries (no text dedup at joins).
 
-### UI continuity
+### Widget + web search
 
-- Mic UI must remain continuously active while listening.
-- No visible "off/on" flicker during segmentation/transcription.
-- User should not perceive internal segment boundaries.
-
----
-
-## Performance Profile (Target)
-
-Default "balanced real-time" target:
-
-- capture: 16 kHz mono PCM
-- VAD frame step: 20 ms
-- speech start gate: ~200 ms voiced frames
-- speech end gate: ~700 ms silence hangover
-- max segment length before forced flush: ~6 s
-- partial update cadence: avoid UI flooding (throttle updates)
-
-Device goals (mid-range Android):
-
-- low-latency perceived transcript updates
-- sustained operation without thermal runaway
-- bounded RAM overhead for model + buffers
+- `WidgetVoiceService` → `VoiceRuntime.createGoogleOnlySttEngine()` always.
+- `WebSearchSttSession` → Google only for browser search fields.
 
 ---
 
-## Sending a Message
+## Text-to-speech (read aloud)
 
-While mic is active:
+### Engine
 
-| Action | Behavior |
-|---|---|
-| Tap send | Stop capture, finalize transcript buffer, send |
-| Tap mic stop | Stop capture, finalize transcript buffer, send (or cancel if workflow requires) |
+- Android system **`TextToSpeech`** (`TextToSpeechEngine`) — user’s preferred TTS engine from system settings.
+- Language from device `LocaleList` (fallback US English).
+- Markdown/citations stripped before speak (`stripMarkdownForTts`, `TtsTextSanitizer`).
 
-Implementation must always send the full accumulated buffer content.
+### Session orchestration (`ReadAloudSession`)
 
----
+App-scoped session shared by chat, notes, DumpEdit, and web chat surfaces:
 
-## Eidos Response + TTS
+- Long text split into chunks (`chunkNoteForReadAloud` / `NoteReadAloudChunking.kt`) under `TextToSpeech.getMaxSpeechInputLength()`.
+- Chunks spoken sequentially via `TextToSpeech.QUEUE_ADD`.
+- Notification controls: play/pause, ±10 s skip, stop.
+- Chat uses `startFromChat`; notes use `startFromNote` (rich-text sanitized separately).
 
-Text-to-speech behavior is unchanged:
+`VoiceController.speakResponse()` still wraps `TextToSpeechEngine` for narrow legacy paths; **primary read-aloud UX uses `ReadAloudSession`**, not `VoiceController` TTS directly.
 
-- Eidos responds in text.
-- If read-aloud is on, response is spoken via Android `TextToSpeech`.
-- If read-aloud is on, mic can auto-reactivate after TTS completion.
-- If read-aloud is off, user manually starts next input.
+### When read aloud runs
 
-There is no voice handoff phrase.
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `read_aloud` | Off | Speak assistant replies after send |
+| `read_aloud_mic_passback` | On | Re-open mic after TTS completes (user still taps Send to send) |
+| `widget_voice_hands_free` | — | Widget speaks reply after send |
 
----
-
-## Wake Word
-
-Wake word remains widget-scoped (see `WakeWordDetector`):
-
-- default phrase: "Hey Eidos"
-- customizable in settings
-- runs only when widget voice features are enabled
-
-This path is **separate** from the chat/widget mic STT pipeline above and is not described as the primary in-app transcription engine.
+Eidos chat: after assistant message, `ReadAloudSession.startFromChat` → optional mic passback via `VoiceController.startListening`.
 
 ---
 
-## Voice Settings
+## Wake word
 
-| Setting | Default (see `SettingsPreferences`) | Description |
-|---|---|---|
-| Wake word | "Hey Eidos" | Phrase for widget wake path |
-| Read aloud | Off | Speak assistant responses aloud |
-| STT backend | `sherpa_onnx` | Auto (Whisper then Sherpa), Sherpa only, or Local Whisper only |
+- Widget-scoped (`WakeWordDetector`), default phrase **"Hey Eidos"** (`wake_word` setting).
+- Uses Google `SpeechRecognizer` for phrase detection — **separate** from chat/widget mic STT above.
+- Triggers `WidgetVoiceService`, not in-app chat mic.
 
 ---
 
-## Widget Voice vs In-App Voice
+## Voice settings (DataStore)
 
-Voice interaction behavior should be identical across widget and in-app chat.
-Only conversation storage scope differs.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `wake_word` | `"Hey Eidos"` | Widget wake phrase |
+| `read_aloud` | `false` | TTS for assistant replies |
+| `read_aloud_mic_passback` | `true` | Mic after read aloud |
+| `widget_voice_hands_free` | — | Widget TTS after send |
+| `mic_use_whisper_api` | `false` | Whisper API for chat/notes mic |
+| `mic_use_local_gemma_scribe` | `false` | Gemma local scribe for chat/notes mic |
+| `stt_backend` | `google_recognizer` | **Legacy** — migrated at startup; routing uses toggles above |
 
-| Location | Conversation saved to |
-|---|---|
-| Widget | Eidos Chats system folder (app root) |
-| In subfolder | That subfolder's chat folder |
-| In-app outside subfolder | Eidos Chats system folder (app root) |
-
-See `WIDGET_SYSTEM.md` and `JOURNAL_SYSTEM.md` for storage details.
-
----
-
-## Fallback Strategy
-
-- **In-app / widget mic:** **Sherpa ONNX** is the default shipped path; **Auto** prefers **Whisper** when registered, else **Sherpa**.
-- **No Android `SpeechRecognizer` fallback** for chat/widget STT.
-- If initialization fails (e.g. assets/native load), the session ends with a non-fatal/fatal error per `ContinuousSpeechToTextEngine`; the user may type in the field or use the system keyboard’s voice input.
+Whisper toggle is cleared automatically if no OpenAI key is saved (`OptimalXApplication.migrateLegacySttPreferences`).
 
 ---
 
-## Privacy and Data Handling
+## Privacy and data handling
 
-- Audio and transcription stay on device for local engine modes.
-- Do not upload raw microphone audio to external providers for STT.
-- Persist only transcript text required for chat/conversation flow.
-- Temporary audio buffers must be in-memory when feasible and cleared at session end.
+| Backend | Audio leaves device? |
+|---------|----------------------|
+| Google STT | Yes — Google recognition service (device/network per OEM) |
+| Whisper API | Yes — OpenAI on commit |
+| Gemma scribe | No — on-device LiteRT |
+| Android TTS | Depends on system TTS engine |
 
----
-
-## Technical Notes
-
-- Local STT accuracy/latency depends on model size and device performance.
-- Optimize for predictable latency over maximum benchmark accuracy.
-- Avoid blocking UI thread during model inference.
-- Keep the transcript buffer as source of truth; model outputs are incremental updates.
-- Treat VAD/ASR internal state as replaceable implementation details.
+- Persist only **transcript text** required for chat/notes.
+- Whisper/Gemma buffers are in-memory; cleared on discard/stop.
+- Gemma scribe drops committed PCM prefixes during long sessions.
 
 ---
 
-## Implementation Map (shipped)
+## Implementation map (shipped)
 
-Pipeline code lives in `app/src/main/java/com/example/optimalx/voice/pipeline/`:
+### Routing and façade
 
 | Class | Role |
-|---|---|
-| `VoicePipelineConfig` | Sample rate, frame size, VAD thresholds, segment limits, UI throttle |
-| `AudioCaptureSource` | `AudioRecord` 16 kHz mono PCM on a dedicated audio thread |
-| `VadSegmenter` | Frame-level VAD; optional `NeuralSpeechGate` (Silero ONNX) |
-| `TranscriptAssembler` | Persistent draft buffer; merges partial / final; flush on stop |
-| `OnDeviceTranscriber` | Pluggable backend; **all shipped paths are PCM-consuming** (`ownsMicrophone = false`) |
-| `SherpaOnnxTranscriber` | **Default** on-device ASR (Sherpa-ONNX + bundled assets) |
-| `WhisperLocalTranscriber` | Optional when `WhisperEngineRegistry` has an engine |
-| `ContinuousSpeechToTextEngine` | Orchestrator — assembler, capture + VAD, callbacks |
-| `VoiceRuntime` | Selects transcriber from `Settings` / `WhisperEngineRegistry` |
+|-------|------|
+| `VoiceRuntime` | `createChatSttEngine` / `createGoogleOnlySttEngine` |
+| `VoiceController` | Chat + notes mic/TTS state, STT backend selection |
+| `SttEngine` | Common contract (partial/final, pause/resume, discard) |
+| `WidgetVoiceService` | Widget mic — Google STT only |
+| `WebSearchSttSession` | Web search mic — Google STT only |
 
-Shared entry façade:
+### STT engines
 
-| Component | Wiring |
-|---|---|
-| `SpeechToTextEngine` | Wraps `ContinuousSpeechToTextEngine` with `VoiceRuntime.createTranscriber` |
-| `VoiceController` | In-app chat — `SpeechToTextEngine` |
-| `WidgetVoiceService` | Widget mic — `SpeechToTextEngine` |
+| Class | Role |
+|-------|------|
+| `GoogleSpeechToTextEngine` | Default streaming STT |
+| `WhisperApiSpeechToTextEngine` | Buffered PCM → OpenAI Whisper |
+| `GemmaLocalScribeEngine` | Rolling slices → LiteRT scribe |
+| `WhisperTranscriptionClient` | OpenAI HTTP client |
 
-Both surfaces honor the same `VoiceRuntime.backendPreference` and the same transcript semantics.
+### Audio + merge
 
-### Backend selection matrix
+| Class | Role |
+|-------|------|
+| `AudioCaptureBuffer` | 16 kHz PCM ring for Whisper/Gemma |
+| `AudioWavCodec` | WAV encode + byte length helpers |
+| `TranscriptAssembler` | Committed + partial merge |
+| `VoicePipelineConfig` | Sample rate, UI throttle |
 
-| Preference | Whisper registered | Result |
-|---|---|---|
-| AUTO | yes | `WhisperLocalTranscriber` |
-| AUTO | no | `SherpaOnnxTranscriber` |
-| LOCAL_WHISPER | yes | `WhisperLocalTranscriber` |
-| LOCAL_WHISPER | no | `SherpaOnnxTranscriber` + warning log |
-| SHERPA_ONNX | either | `SherpaOnnxTranscriber` |
+### TTS
 
-Legacy `STT_BACKEND = "android_recognizer"` in preferences is migrated at startup to `sherpa_onnx` (see `OptimalXApplication`).
+| Class | Role |
+|-------|------|
+| `ReadAloudSession` | Chunked read-aloud + notification controls |
+| `TextToSpeechEngine` | Android TTS wrapper |
+| `NoteReadAloudChunking` | Sentence-boundary chunking for long notes |
+| `TtsTextSanitizer` / `stripMarkdownForTts` | Strip markup for speech |
+
+### UI wiring
+
+| Surface | Mic | Read aloud |
+|---------|-----|------------|
+| `EidosChatScreen` | `VoiceController` | `ReadAloudSession` |
+| `NotePanel` / `RichTextNotePanel` | `VoiceController` | `ReadAloudSession` |
+| `DumpEditPanel` | `VoiceController` | `ReadAloudSession` |
+| `WidgetChatActivity` | `WidgetVoiceService` | `ReadAloudSession` |
 
 ---
 
-## Integrating a Whisper backend (optional)
+## Retired / not in codebase
 
-Whisper remains optional for evaluation; registration is unchanged.
+The following were planned or documented previously but are **not** shipped in Kotlin:
 
-### Classes involved
+- Sherpa ONNX / Parakeet local ASR
+- Silero VAD segmentation pipeline
+- `ContinuousSpeechToTextEngine`, `SherpaOnnxTranscriber`, `WhisperLocalTranscriber`
+- `SpeechToTextEngine` wrapper around the above
+- STT backend preference matrix (`AUTO` / `SHERPA_ONNX` / `LOCAL_WHISPER`)
 
-| Class | Role |
-|---|---|
-| `WhisperEngine` | `transcribe(pcm: FloatArray): String`, `release()` |
-| `WhisperEngineRegistry` | `register(engine)` / `get()` |
-| `WhisperLocalTranscriber` | PCM segments → `WhisperEngine.transcribe` |
-| `VoiceRuntime.backendPreference` | `AUTO` / `SHERPA_ONNX` / `LOCAL_WHISPER` |
+Do not reintroduce without a new design doc and explicit product sign-off. For long-form local capture today, use **Gemma scribe** or **Whisper API**; for lowest-latency partials, use **Google STT**.
 
-### Runtime flow when Whisper is active
+---
 
-Same capture + VAD as Sherpa; segments are decoded by Whisper when selected by the matrix above.
+## Related docs
 
-### Known UX characteristic
+| Doc | Contents |
+|-----|----------|
+| `app/docs/GemmaLocal.md` | Local Gemma chat transport + scribe slice tuning |
+| `app/docs/LITERT_LM.md` | LiteRT model install and engine lifecycle |
+| `app/docs/systems/WIDGET_SYSTEM.md` | Widget voice wiring |
+| `app/docs/architecture/CHAT_UI.md` | Chat composer + mic chrome (some STT sections may lag this file) |
+| `app/docs/implementation/VOICE_CHAT_STT_COMPLETION_PLAN.md` | Historical completion checklist |
 
-Segment-based (chunked) partials for Whisper-bound paths; Sherpa emits finals per VAD segment. See code for partial behavior per transcriber.
+When this file and older architecture docs disagree, **this file and the Kotlin sources listed above are authoritative**.

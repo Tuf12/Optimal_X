@@ -7,7 +7,6 @@ import com.example.optimalx.data.panel.PanelReleaseStore
 import com.example.optimalx.data.eidos.PanelPlatformSpec
 import com.example.optimalx.data.eidos.WorkshopAndroidLayoutRules
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
-import com.example.optimalx.data.eidos.AppIndexSyncService
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.Note
@@ -17,6 +16,8 @@ import com.example.optimalx.data.quicknotes.QuickNotesFormat
 import com.example.optimalx.data.semantic.SemanticChunkBuilder
 import com.example.optimalx.data.semantic.SemanticIndexer
 import com.example.optimalx.data.semantic.SemanticSyncService
+import com.example.optimalx.data.sync.SyncContentHash.withSyncFields
+import com.example.optimalx.data.sync.SyncGlobalIds
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 import java.time.Instant
@@ -35,7 +36,6 @@ data class SearchResult(
 class FolderRepository(
     private val db: AppDatabase,
     private val semanticIndexer: SemanticIndexer? = null,
-    private val appIndexSync: AppIndexSyncService? = null,
     private val semanticSync: SemanticSyncService? = null,
     private val semanticChunkBuilder: SemanticChunkBuilder? = null,
     private val homePinRepository: HomePinRepository? = null,
@@ -503,26 +503,16 @@ class FolderRepository(
 
     suspend fun createParentFolder(name: String): Long {
         val id = db.withTransaction {
-            val id = db.parentFolderDao().insert(ParentFolder(name = name))
-            val memoryCacheSubfolderId = db.subfolderDao().insert(
-                Subfolder(
-                    parentFolderId = id,
-                    name = SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER,
-                    isSystemSubfolder = true,
-                    sortOrder = 9998,
-                )
-            )
-            db.noteDao().insert(Note(subfolderId = memoryCacheSubfolderId))
-            id
+            db.parentFolderDao().insert(ParentFolder(name = name))
         }
-        requestIndexAndSemanticSync("create_parent_folder:$id")
+        requestSemanticSync("create_parent_folder:$id")
         return id
     }
 
     suspend fun renameParentFolder(id: Long, newName: String) {
         val folder = db.parentFolderDao().getById(id) ?: return
         db.parentFolderDao().update(folder.copy(name = newName, updatedAt = System.currentTimeMillis()))
-        requestIndexAndSemanticSync("rename_parent_folder:$id")
+        requestSemanticSync("rename_parent_folder:$id")
     }
 
     suspend fun softDeleteParentFolder(id: Long) {
@@ -531,9 +521,10 @@ class FolderRepository(
             db.parentFolderDao().softDelete(id, ts)
             db.subfolderDao().softDeleteByParent(id, ts)
             db.noteDao().softDeleteByParentFolder(id, ts)
+            db.fileReferenceDao().softDeleteByParentFolder(id, ts)
         }
         homePinRepository?.onParentFolderDeleted(id)
-        requestIndexAndSemanticSync("soft_delete_parent_folder:$id")
+        requestSemanticSync("soft_delete_parent_folder:$id")
     }
 
     suspend fun restoreParentFolder(id: Long) {
@@ -544,21 +535,22 @@ class FolderRepository(
             subfolders.forEach { sf ->
                 db.subfolderDao().restore(sf.id)
                 db.noteDao().restoreBySubfolder(sf.id)
+                db.fileReferenceDao().restoreBySubfolder(sf.id)
             }
         }
-        requestIndexAndSemanticSync("restore_parent_folder:$id")
+        requestSemanticSync("restore_parent_folder:$id")
     }
 
     suspend fun permanentlyDeleteParentFolder(id: Long) {
         db.withTransaction {
             val subfolders = db.subfolderDao().getAllByParentOnce(id)
             subfolders.forEach { sf ->
-                val files = db.fileReferenceDao().getBySubfolderOnce(sf.id)
+                val files = db.fileReferenceDao().getAllBySubfolderOnce(sf.id)
                 files.forEach { ref -> File(ref.filePath).delete() }
             }
             db.parentFolderDao().deleteById(id) // FK cascade deletes subfolders, notes, file refs
         }
-        requestIndexAndSemanticSync("delete_parent_folder:$id")
+        requestSemanticSync("delete_parent_folder:$id")
     }
 
     // ── Subfolders ────────────────────────────────────────────────────────────
@@ -576,20 +568,20 @@ class FolderRepository(
             db.noteDao().insert(Note(subfolderId = subfolderId))
             subfolderId
         }
-        requestIndexAndSemanticSync("create_subfolder:$subfolderId")
+        requestSemanticSync("create_subfolder:$subfolderId")
         return subfolderId
     }
 
     suspend fun renameSubfolder(id: Long, newName: String) {
         val sf = db.subfolderDao().getById(id) ?: return
         db.subfolderDao().update(sf.copy(name = newName, updatedAt = System.currentTimeMillis()))
-        requestIndexAndSemanticSync("rename_subfolder:$id")
+        requestSemanticSync("rename_subfolder:$id")
     }
 
     suspend fun moveSubfolder(subfolderId: Long, newParentId: Long) {
         val sf = db.subfolderDao().getById(subfolderId) ?: return
         db.subfolderDao().update(sf.copy(parentFolderId = newParentId, updatedAt = System.currentTimeMillis()))
-        requestIndexAndSemanticSync("move_subfolder:$subfolderId")
+        requestSemanticSync("move_subfolder:$subfolderId")
     }
 
     suspend fun softDeleteSubfolder(id: Long) {
@@ -597,29 +589,46 @@ class FolderRepository(
             val ts = System.currentTimeMillis()
             db.subfolderDao().softDelete(id, ts)
             db.noteDao().softDeleteBySubfolder(id, ts)
+            db.fileReferenceDao().softDeleteBySubfolder(id, ts)
         }
         homePinRepository?.onSubfolderDeleted(id)
         panelStateRepository?.deleteForWorkshopProject(id)
-        requestIndexAndSemanticSync("soft_delete_subfolder:$id")
+        requestSemanticSync("soft_delete_subfolder:$id")
     }
 
     suspend fun restoreSubfolder(id: Long) {
         db.withTransaction {
             db.subfolderDao().restore(id)
             db.noteDao().restoreBySubfolder(id)
+            db.fileReferenceDao().restoreBySubfolder(id)
         }
-        requestIndexAndSemanticSync("restore_subfolder:$id")
+        requestSemanticSync("restore_subfolder:$id")
+    }
+
+    fun getDeletedFileReferences(): Flow<List<com.example.optimalx.data.imagestudio.FileReferenceWithFolderLabels>> =
+        db.fileReferenceDao().observeIndividuallyDeletedWithFolderLabels()
+
+    suspend fun restoreFileReference(id: Long) {
+        db.fileReferenceDao().restore(id)
+        requestSemanticSync("restore_file_reference:$id")
+    }
+
+    suspend fun permanentlyDeleteFileReference(id: Long) {
+        val ref = db.fileReferenceDao().getById(id) ?: return
+        File(ref.filePath).delete()
+        db.fileReferenceDao().deleteById(id)
+        requestSemanticSync("permanently_delete_file_reference:$id")
     }
 
     suspend fun permanentlyDeleteSubfolder(context: android.content.Context, id: Long) {
         db.withTransaction {
-            val files = db.fileReferenceDao().getBySubfolderOnce(id)
+            val files = db.fileReferenceDao().getAllBySubfolderOnce(id)
             files.forEach { ref -> File(ref.filePath).delete() }
             db.subfolderDao().deleteById(id) // FK cascade deletes notes and file refs
         }
         panelStateRepository?.deleteForWorkshopProject(id)
         PanelReleaseStore.deleteRelease(context, id)
-        requestIndexAndSemanticSync("delete_subfolder:$id")
+        requestSemanticSync("delete_subfolder:$id")
     }
 
     // ── Panel Workshop ─────────────────────────────────────────────────────────
@@ -655,23 +664,6 @@ class FolderRepository(
                     ),
                 )
             }
-
-            val implPlanFile = File(workshopDir, PanelPlatformSpec.IMPLEMENTATION_PLAN_MD)
-            implPlanFile.writeText(
-                """
-                # Implementation plan
-
-                _Optional — Plan mode may add phased steps, files to touch, and test notes here._
-                """.trimIndent(),
-            )
-            db.fileReferenceDao().insert(
-                FileReference(
-                    subfolderId = subfolderId,
-                    fileName = PanelPlatformSpec.IMPLEMENTATION_PLAN_MD,
-                    fileType = "md",
-                    filePath = implPlanFile.absolutePath,
-                ),
-            )
 
             val indexFile = File(workshopDir, "index.html")
             indexFile.writeText(WORKSHOP_INDEX_HTML_SCAFFOLD.replace("{{TITLE}}", name))
@@ -719,9 +711,12 @@ class FolderRepository(
             subfolderId
         }
         WorkshopProjectPreferences.setProjectPhase(context, subfolderId, WorkshopProjectPhase.INTAKE)
-        requestIndexAndSemanticSync("create_workshop_project:$subfolderId")
+        requestSemanticSync("create_workshop_project:$subfolderId")
         return subfolderId
     }
+
+    suspend fun getImageStudioGeneralSubfolderId(): Long? =
+        db.subfolderDao().getByGlobalId(SyncGlobalIds.IMAGE_STUDIO_GENERAL_SUBFOLDER)?.id
 
     suspend fun getWorkshopParentId(): Long? =
         db.parentFolderDao().getSystemFolderByName(SystemFolderNames.PANEL_WORKSHOP)?.id
@@ -798,7 +793,7 @@ class FolderRepository(
             db.noteDao().insert(Note(subfolderId = sid, updatedAt = now))
             sid
         }
-        requestIndexAndSemanticSync("create_quick_notes_day_subfolder:$sid")
+        requestSemanticSync("create_quick_notes_day_subfolder:$sid")
         return sid
     }
 
@@ -815,11 +810,11 @@ class FolderRepository(
     suspend fun saveQuickNoteFullContent(subfolderId: Long, content: String) {
         val note = db.noteDao().getBySubfolderOnce(subfolderId) ?: return
         val now = System.currentTimeMillis()
-        db.noteDao().update(note.copy(content = content, updatedAt = now))
+        db.noteDao().update(note.withSyncFields(content = content, updatedAt = now))
         semanticIndexer?.let { indexer ->
             semanticChunkBuilder?.indexNote(indexer, subfolderId)
         }
-        requestIndexAndSemanticSync("save_quick_note_full_content:$subfolderId")
+        requestSemanticSync("save_quick_note_full_content:$subfolderId")
     }
 
     suspend fun appendQuickNoteLine(subfolderId: Long, body: String, atMillis: Long) {
@@ -848,8 +843,7 @@ class FolderRepository(
         return Result.success(sid)
     }
 
-    private fun requestIndexAndSemanticSync(reason: String) {
-        appIndexSync?.requestSync(reason)
+    private fun requestSemanticSync(reason: String) {
         semanticSync?.requestSync(reason)
     }
 }

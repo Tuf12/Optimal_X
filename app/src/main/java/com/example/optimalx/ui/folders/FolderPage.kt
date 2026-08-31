@@ -74,6 +74,7 @@ fun FolderPage(
     onPinnedPanelsClick: (() -> Unit)? = null,
     onPinnedDumpEditClick: (() -> Unit)? = null,
     onPinnedWorkshopClick: (() -> Unit)? = null,
+    onPinnedImageStudioClick: (() -> Unit)? = null,
     onPinnedQuickNotesClick: (() -> Unit)? = null,
     onPinnedUserPinClick: ((PinnedRowItem.UserPin) -> Unit)? = null,
     onPinnedUserPinUnpin: ((PinnedRowItem.UserPin) -> Unit)? = null,
@@ -119,6 +120,7 @@ fun FolderPage(
                 onPinnedPanelsClick != null &&
                 onPinnedDumpEditClick != null &&
                 onPinnedWorkshopClick != null &&
+                onPinnedImageStudioClick != null &&
                 onPinnedQuickNotesClick != null
             ) {
                 PinnedRow(
@@ -126,6 +128,7 @@ fun FolderPage(
                     onPanelsClick = onPinnedPanelsClick,
                     onDumpEditClick = onPinnedDumpEditClick,
                     onWorkshopClick = onPinnedWorkshopClick,
+                    onImageStudioClick = onPinnedImageStudioClick,
                     onQuickNotesClick = onPinnedQuickNotesClick,
                     onUserPinClick = { pin -> onPinnedUserPinClick?.invoke(pin) },
                     onUserPinLongClick = { pin -> onPinnedUserPinUnpin?.invoke(pin) },

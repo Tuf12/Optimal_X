@@ -2,12 +2,21 @@
 <!-- OptimalX Android Auto Backup — see app/docs/ANDROID_AUTO_BACKUP.md -->
 <full-backup-content>
 
+    <!-- Room DB (checkpointed in OptimalXBackupAgent before each pass) -->
     <include domain="database" path="optimalx.db" />
+    <include domain="database" path="optimalx.db-wal" />
+    <include domain="database" path="optimalx.db-shm" />
+
+    <!-- User content + Panel Workshop sources/docs + published panel runtime -->
     <include domain="file" path="optimalx_files/" />
     <include domain="file" path="workshop/" />
+    <include domain="file" path="panel_releases/" />
     <include domain="file" path="datastore/" />
 
+    <!-- Workshop phase, chat pointers, etc. — API keys stay excluded -->
+    <include domain="sharedpref" path="." />
     <exclude domain="sharedpref" path="optimalx_api_keys.xml" />
+
     <exclude domain="file" path="models/" />
 
     <exclude domain="cache" path="." />

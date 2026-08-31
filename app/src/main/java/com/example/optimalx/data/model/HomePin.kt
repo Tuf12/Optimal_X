@@ -3,11 +3,13 @@ package com.example.optimalx.data.model
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 @Entity(
     tableName = "home_pins",
     indices = [
         Index(value = ["pinType", "targetId"], unique = true),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class HomePin(
@@ -19,4 +21,6 @@ data class HomePin(
     val displayName: String,
     val sortOrder: Int,
     val createdAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

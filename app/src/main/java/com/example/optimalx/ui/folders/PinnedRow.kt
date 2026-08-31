@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Construction
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -62,6 +63,7 @@ fun PinnedRow(
     onPanelsClick: () -> Unit,
     onDumpEditClick: () -> Unit,
     onWorkshopClick: () -> Unit,
+    onImageStudioClick: () -> Unit,
     onQuickNotesClick: () -> Unit,
     onUserPinClick: (PinnedRowItem.UserPin) -> Unit = {},
     onUserPinLongClick: (PinnedRowItem.UserPin) -> Unit = {},
@@ -74,12 +76,14 @@ fun PinnedRow(
         onPanelsClick,
         onDumpEditClick,
         onWorkshopClick,
+        onImageStudioClick,
         onQuickNotesClick,
     ) {
         listOf(
             PinnedRowSystemSlot(PinnedRowItem.SystemPanels, "Panels", Icons.Filled.ViewModule, onPanelsClick),
             PinnedRowSystemSlot(PinnedRowItem.SystemDumpEdit, "DumpEdit", Icons.Filled.EditNote, onDumpEditClick),
             PinnedRowSystemSlot(PinnedRowItem.SystemWorkshop, "Workshop", Icons.Filled.Construction, onWorkshopClick),
+            PinnedRowSystemSlot(PinnedRowItem.SystemImageStudio, "Image Studio", Icons.Filled.Image, onImageStudioClick),
             PinnedRowSystemSlot(
                 PinnedRowItem.SystemQuickNotes,
                 "Quick Notes",

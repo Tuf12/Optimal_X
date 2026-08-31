@@ -4,7 +4,6 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.optimalx.data.db.AppDatabase
-import com.example.optimalx.data.eidos.agentbyte.TagHintNotifier
 import com.example.optimalx.data.eidos.model.ToolExecutionResult
 import com.example.optimalx.data.model.Note
 import com.example.optimalx.data.model.ParentFolder
@@ -52,7 +51,6 @@ class RoomToolExecutorSemanticRetrievalTest {
             context = context,
             db = db,
             semanticIndexer = semanticIndexer,
-            tagHintNotifier = TagHintNotifier.NoOp,
         )
     }
 
@@ -104,28 +102,5 @@ class RoomToolExecutorSemanticRetrievalTest {
         val first = arr.first().jsonObject
         assertTrue(first["chunk_text"]?.jsonPrimitive?.content?.contains("slate gray") == true)
         assertTrue(first["object_type"]?.jsonPrimitive?.content == SemanticObjectType.NOTE)
-    }
-
-    @Test
-    fun read_note_large_without_query_returns_truncated_hint() = runBlocking {
-        val parentId = db.parentFolderDao().insert(
-            ParentFolder(name = "Work", sortOrder = 0, isSystemFolder = false),
-        )
-        val subfolderId = db.subfolderDao().insert(
-            Subfolder(parentFolderId = parentId, name = "Big", sortOrder = 0),
-        )
-        db.noteDao().insert(
-            Note(
-                subfolderId = subfolderId,
-                content = "x".repeat(3_000),
-                summary = "Overview of big note.",
-            ),
-        )
-
-        val result = executor.execute("read_note", """{"subfolderId":"$subfolderId"}""")
-        val payload = json.parseToJsonElement((result as ToolExecutionResult.Success).content).jsonObject
-        assertTrue(payload["truncated"]?.jsonPrimitive?.content == "true")
-        assertTrue(payload["content"]?.jsonPrimitive?.content?.isNotBlank() == true)
-        assertTrue(payload["hint"]?.jsonPrimitive?.content?.contains("search_semantic") == true)
     }
 }

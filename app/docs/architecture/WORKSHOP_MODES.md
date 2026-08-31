@@ -7,7 +7,7 @@
 | **Status** | **v2 spec** — phased workflow (partial legacy v1 implemented; see [Migration from v1](#migration-from-v1)) |
 | **Audience** | Product, Eidos prompt authors, Kotlin implementers |
 | **Related** | [PANEL_WORKSHOP.md](PANEL_WORKSHOP.md), [PANEL_PLATFORM.md](PANEL_PLATFORM.md), [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](../implementation/PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md), [PANEL_WORKSHOP_RECOVERY_PLAN.md](../implementation/PANEL_WORKSHOP_RECOVERY_PLAN.md), [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md) Phase 3.6 |
-| **Explicitly out of scope** | Chess-piece AgentByte routing — [Separation from AgentByte chess](#separation-from-agentbyte-chess) |
+| **Explicitly out of scope** | Chess-piece AgentByte routing (removed from shipping app) |
 
 ---
 
@@ -321,7 +321,7 @@ Prefer **intake summary** and **checkpoint doc snapshots** over replaying long t
 | ViewModel | `WorkshopEditorViewModel.kt` | ✅ Phase 0 — `projectPhase` StateFlow |
 | Eidos chat VM | `EidosChatViewModel.kt` | ✅ Phase 0 — `workshopProjectPhase` StateFlow |
 
-**Deferred:** `panel_verify` tool; chess-piece AgentByte loop; DIFF_REVIEW pending batches (see [DIFF_REVIEW.md](DIFF_REVIEW.md)).
+**Deferred:** `panel_verify` tool; DIFF_REVIEW pending batches (see [DIFF_REVIEW.md](DIFF_REVIEW.md)).
 
 ---
 

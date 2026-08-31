@@ -1,5 +1,6 @@
 package com.example.optimalx.widget
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,16 +8,21 @@ import android.app.Service
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.db.seedDatabaseIfNeeded
 import com.example.optimalx.data.conversation.buildConversationTitleFromText
 import com.example.optimalx.data.conversation.looksLikeAutoTimestampTitle
-import com.example.optimalx.data.eidos.ChatMessageHistoryLoader
-import com.example.optimalx.data.eidos.ChatMessagePersistLimits
-import com.example.optimalx.data.eidos.toEidosApiMessage
+import com.example.optimalx.data.eidos.ConversationOutboundHistory
+import com.example.optimalx.data.litert.GemmaLocalPolicy
+import com.example.optimalx.data.eidos.prompt.EidosEntrySurface
+import com.example.optimalx.data.eidos.prompt.EidosIdentityPrompt
 import com.example.optimalx.data.eidos.model.persistableReasoningContent
 import com.example.optimalx.data.model.ChatMessage
 import com.example.optimalx.data.model.Conversation
@@ -69,12 +75,6 @@ class WidgetVoiceService : Service(), CoroutineScope {
 
         private val conversationTitleFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd — h:mm a").withZone(ZoneId.systemDefault())
-
-        private val widgetBaseSystemPrompt = """
-            You are Eidos inside OptimalX.
-            Be concise, clear, and operationally helpful.
-            Use tools when needed and explain actions briefly.
-        """.trimIndent()
     }
 
     private enum class State { IDLE, LISTENING, PROCESSING, SPEAKING }
@@ -169,10 +169,22 @@ class WidgetVoiceService : Service(), CoroutineScope {
     private fun handleMicTap(target: WidgetCaptureTarget) {
         when (state) {
             State.IDLE -> {
-                startForeground(
-                    NOTIFICATION_ID,
-                    buildNotification("Listening… tap Send to send, Ask Eidos to cancel"),
-                )
+                if (!hasRecordAudioPermission()) {
+                    Log.w(TAG, "RECORD_AUDIO not granted — cannot start widget voice session")
+                    setMicState(WidgetMicState.IDLE)
+                    startActivity(
+                        Intent(this, WidgetVoiceLauncherActivity::class.java).apply {
+                            action = when (target) {
+                                WidgetCaptureTarget.QUICK_NOTE -> ACTION_QUICK_NOTE
+                                else -> ACTION_START_VOICE
+                            }
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        },
+                    )
+                    stopSelf()
+                    return
+                }
+                promoteToMicrophoneForeground("Listening… tap Send to send, Ask Eidos to cancel")
                 state = State.LISTENING
                 captureTarget = target
                 transcriptDraft = ""
@@ -245,31 +257,43 @@ class WidgetVoiceService : Service(), CoroutineScope {
         val now = System.currentTimeMillis()
 
         db.chatMessageDao().insert(
-            ChatMessagePersistLimits.clampForStorage(
-                ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
-            ),
+            ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
         )
         conversation = maybeRetitleConversation(conversation, text, now)
 
+        val convForHistory = db.conversationDao().getById(conversation.id) ?: conversation
+        val useLocalGemma = GemmaLocalPolicy.isActiveProvider(this)
+        val history = if (useLocalGemma) {
+            ConversationOutboundHistory.buildForLocalGemma(
+                chatMessageDao = db.chatMessageDao(),
+                conversation = convForHistory,
+                activeUserText = text,
+            )
+        } else {
+            ConversationOutboundHistory.build(
+                chatMessageDao = db.chatMessageDao(),
+                conversation = convForHistory,
+                activeUserText = text,
+            )
+        }
         val response = app.eidosApiClient.send(
             userMessage = text,
             conversationId = conversation.id,
             currentSubfolderId = null,
-            conversationHistory = emptyList(),
-            baseSystemPrompt = widgetBaseSystemPrompt,
+            conversationHistory = history,
+            baseSystemPrompt = EidosIdentityPrompt.TEXT,
+            entrySurface = EidosEntrySurface.WIDGET_ASK,
             previousResponseId = null,
         )
 
         val reply = response.textResponse.ifBlank { "I could not generate a response." }
         val reasoningContent = response.persistableReasoningContent()
         val replyMsgId = db.chatMessageDao().insert(
-            ChatMessagePersistLimits.clampForStorage(
-                ChatMessage(
-                    conversationId = conversation.id,
-                    role = "eidos",
-                    content = reply,
-                    assistantReasoningContent = reasoningContent,
-                ),
+            ChatMessage(
+                conversationId = conversation.id,
+                role = "eidos",
+                content = reply,
+                assistantReasoningContent = reasoningContent,
             ),
         )
         db.conversationDao().update(conversation.copy(updatedAt = System.currentTimeMillis()))
@@ -287,23 +311,36 @@ class WidgetVoiceService : Service(), CoroutineScope {
         }
         var conversation = ensureQuickNotesConversation(daySubfolderId, text)
         val now = System.currentTimeMillis()
-        val history = ChatMessageHistoryLoader
-            .forApi(db.chatMessageDao(), conversation.id)
-            .map { it.toEidosApiMessage() }
 
         db.chatMessageDao().insert(
-            ChatMessagePersistLimits.clampForStorage(
-                ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
-            ),
+            ChatMessage(conversationId = conversation.id, role = "user", content = text, createdAt = now),
         )
         conversation = maybeRetitleConversation(conversation, text, now)
+
+        val convForHistory = db.conversationDao().getById(conversation.id) ?: conversation
+        val useLocalGemma = GemmaLocalPolicy.isActiveProvider(this)
+        val history = if (useLocalGemma) {
+            ConversationOutboundHistory.buildForLocalGemma(
+                chatMessageDao = db.chatMessageDao(),
+                conversation = convForHistory,
+                activeUserText = text,
+            )
+        } else {
+            ConversationOutboundHistory.build(
+                chatMessageDao = db.chatMessageDao(),
+                conversation = convForHistory,
+                activeUserText = text,
+            )
+        }
 
         val response = app.eidosApiClient.send(
             userMessage = text,
             conversationId = conversation.id,
             currentSubfolderId = daySubfolderId,
+            currentScopeType = ConversationScopes.QUICK_NOTES_DAY,
             conversationHistory = history,
-            baseSystemPrompt = widgetBaseSystemPrompt,
+            baseSystemPrompt = EidosIdentityPrompt.TEXT,
+            entrySurface = EidosEntrySurface.WIDGET_QUICK_NOTE,
             previousResponseId = quickNotePreviousResponseId,
         )
         quickNotePreviousResponseId = response.providerResponseId ?: quickNotePreviousResponseId
@@ -312,13 +349,11 @@ class WidgetVoiceService : Service(), CoroutineScope {
         val reasoningContent = response.persistableReasoningContent()
         val parentFolderId = db.subfolderDao().getById(daySubfolderId)?.parentFolderId
         val replyMsgId = db.chatMessageDao().insert(
-            ChatMessagePersistLimits.clampForStorage(
-                ChatMessage(
-                    conversationId = conversation.id,
-                    role = "eidos",
-                    content = reply,
-                    assistantReasoningContent = reasoningContent,
-                ),
+            ChatMessage(
+                conversationId = conversation.id,
+                role = "eidos",
+                content = reply,
+                assistantReasoningContent = reasoningContent,
             ),
         )
         db.conversationDao().update(conversation.copy(updatedAt = System.currentTimeMillis()))
@@ -403,11 +438,9 @@ class WidgetVoiceService : Service(), CoroutineScope {
     }
 
     private val db get() = app.database
-    private val appIndexSync get() = app.appIndexSyncService
     private val semanticSync get() = app.semanticSyncService
 
     private fun requestRetrievalSync(reason: String) {
-        appIndexSync.requestSync(reason)
         semanticSync.requestSync(reason)
     }
 
@@ -464,6 +497,24 @@ class WidgetVoiceService : Service(), CoroutineScope {
         db.conversationDao().update(updatedConversation)
         requestRetrievalSync("widget_conversation_auto_retitle:${conversation.id}")
         return updatedConversation
+    }
+
+    private fun hasRecordAudioPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun promoteToMicrophoneForeground(notificationText: String) {
+        val notification = buildNotification(notificationText)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {

@@ -36,7 +36,7 @@ enum class WorkshopProjectPhase {
 
     /**
      * Spec `.md` **writes** are deferred until Accept gates (doc align). Reads stay available
-     * in Edit so Eidos can follow [PanelPlatformSpec.IMPLEMENTATION_PLAN_MD] and compare code.
+     * in Edit so Eidos can compare code to specs.
      */
     fun freezesMarkdownWritesForEidos(updateSection: WorkshopUpdateSection? = null): Boolean =
         this == DESIGN_REVIEW || this == UPDATE
@@ -77,7 +77,6 @@ enum class WorkshopProjectPhase {
         @Suppress("UNUSED_PARAMETER") designLayoutReady: Boolean = false,
         @Suppress("UNUSED_PARAMETER") logicBehaviorReady: Boolean = false,
     ): WorkshopEidosMode {
-        WorkshopEidosModeResolver.modeForActiveBuildKickoff(this, activeBuildKickoff)?.let { return it }
         if (stored != null) {
             if (this == DESIGN_BUILD &&
                 activeBuildKickoff == WorkshopBuildKickoff.DESIGN &&
@@ -90,12 +89,6 @@ enum class WorkshopProjectPhase {
                 (stored == WorkshopEidosMode.BUILD_LOGIC || stored == WorkshopEidosMode.BUILD)
             ) {
                 return WorkshopEidosMode.BUILD_LOGIC
-            }
-            if (this == UPDATE &&
-                activeBuildKickoff == WorkshopBuildKickoff.PLAN &&
-                stored == WorkshopEidosMode.BUILD_PLAN
-            ) {
-                return WorkshopEidosMode.BUILD_PLAN
             }
             val chip = WorkshopEidosMode.normalizeToUserChip(stored)
             if (chip in selectorModes(updateSection)) return chip

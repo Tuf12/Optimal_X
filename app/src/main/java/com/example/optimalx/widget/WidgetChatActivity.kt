@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -75,20 +76,28 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.optimalx.MainActivity
 import com.example.optimalx.OptimalXApplication
+import com.example.optimalx.data.eidos.EidosChatSendWorker
 import com.example.optimalx.data.eidos.model.EidosRole
 import com.example.optimalx.ui.components.ChatComposerBar
 import com.example.optimalx.ui.components.ClearVoiceRecordingDialog
 import com.example.optimalx.ui.components.ChatMessageBubbleFooter
+import com.example.optimalx.ui.components.ChatMessageRetryButton
 import com.example.optimalx.ui.components.ChatTopBar
 import com.example.optimalx.ui.components.MarkdownRichText
 import com.example.optimalx.ui.components.SelectablePlainText
 import com.example.optimalx.ui.eidos.EidosChatEntrySurface
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.eidos.KimiStreamPreviewBubble
+import com.example.optimalx.ui.eidos.components.ChatVisionMessageImage
+import com.example.optimalx.ui.eidos.components.EidosNavigationChips
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.OptimalXTheme
+import com.example.optimalx.ui.editor.components.NoteReadAloudBar
+import com.example.optimalx.voice.ReadAloudSession
 import com.example.optimalx.voice.VoiceController
 import com.example.optimalx.voice.VoiceSessionState
 import kotlinx.coroutines.flow.collect
@@ -100,6 +109,9 @@ class WidgetChatActivity : ComponentActivity() {
         const val EXTRA_AUTO_START_MIC = "auto_start_mic"
     }
 
+    private var openConversationId by mutableStateOf<Long?>(null)
+    private var autoStartMic by mutableStateOf(false)
+
     private var onPermissionResult: ((Boolean) -> Unit)? = null
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -107,11 +119,7 @@ class WidgetChatActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Prefer an explicit conversation ID from the intent, fall back to the widget's active one.
-        val continuedConversationId = intent.getLongExtra(WidgetVoiceService.EXTRA_CONVERSATION_ID, -1L)
-            .takeIf { it > 0L }
-            ?: WidgetPrefs.getActiveConversationId(this)
+        applyLaunchIntent(intent)
 
         setContent {
             val systemUriHandler = LocalUriHandler.current
@@ -141,6 +149,9 @@ class WidgetChatActivity : ComponentActivity() {
             CompositionLocalProvider(LocalUriHandler provides inAppUriHandler) {
             OptimalXTheme {
                 val colors = LocalOptimalXColors.current
+
+                val continuedConversationId = openConversationId
+                    ?: WidgetPrefs.getActiveConversationId(this@WidgetChatActivity)?.takeIf { it > 0L }
 
                 val chatViewModel: EidosChatViewModel = viewModel(
                     factory = viewModelFactory {
@@ -187,7 +198,18 @@ class WidgetChatActivity : ComponentActivity() {
                     onDispose { chatViewModel.setChatUiVisible(false) }
                 }
 
-                val appForBus = LocalContext.current.applicationContext as OptimalXApplication
+                val context = LocalContext.current
+                LaunchedEffect(chatViewModel) {
+                    chatViewModel.toastMessage.collect { message ->
+                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                val appForBus = context.applicationContext as OptimalXApplication
+                val readAloudSession = appForBus.readAloudSession
+                val readAloudBarVisible by readAloudSession.barVisible.collectAsState()
+                val readAloudIsPlaying by readAloudSession.isPlaying.collectAsState()
+
                 LaunchedEffect(appForBus, chatViewModel) {
                     appForBus.widgetChatSessionResetEvents.collect {
                         chatViewModel.newChat()
@@ -195,35 +217,40 @@ class WidgetChatActivity : ComponentActivity() {
                 }
 
                 // Auto-start mic when launched from widget Mic button
-                val autoStartMic = intent.getBooleanExtra(EXTRA_AUTO_START_MIC, false)
-                LaunchedEffect(Unit) {
-                    if (autoStartMic) {
-                        val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                PackageManager.PERMISSION_GRANTED
-                        if (granted) {
-                            voiceController.startListening(existingText = "") { text ->
+                val shouldAutoStartMic = autoStartMic
+                LaunchedEffect(shouldAutoStartMic) {
+                    if (!shouldAutoStartMic) return@LaunchedEffect
+                    val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        voiceController.startListening(existingText = "") { text ->
+                            chatViewModel.setInput(text)
+                        }
+                    } else {
+                        onPermissionResult = { ok ->
+                            if (ok) voiceController.startListening(existingText = "") { text ->
                                 chatViewModel.setInput(text)
                             }
-                        } else {
-                            onPermissionResult = { ok ->
-                                if (ok) voiceController.startListening(existingText = "") { text ->
-                                    chatViewModel.setInput(text)
-                                }
-                            }
-                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }
 
                 val messages by chatViewModel.messages.collectAsState()
                 val input by chatViewModel.input.collectAsState()
+                val pendingImage by chatViewModel.pendingImage.collectAsState()
                 val isSending by chatViewModel.isSending.collectAsState()
+                val showKimiThinking by chatViewModel.showKimiThinkingIndicator.collectAsState()
+                val streamPreview by chatViewModel.streamPreview.collectAsState()
                 val readAloud by chatViewModel.readAloud.collectAsState()
                 val readAloudMicPassback by chatViewModel.readAloudMicPassback.collectAsState()
                 val readAloudInfoDismissed by chatViewModel.readAloudInfoDismissed.collectAsState()
+                val localGemmaToolsEnabled by chatViewModel.localGemmaToolsEnabled.collectAsState()
                 val micUseWhisperApi by chatViewModel.micUseWhisperApi.collectAsState()
+                val micUseLocalGemmaScribe by chatViewModel.micUseLocalGemmaScribe.collectAsState()
                 val hasOpenAiApiKey by chatViewModel.hasOpenAiApiKey.collectAsState()
-                val conversationMemoryLabel by chatViewModel.conversationMemoryLabel.collectAsState()
+                val activeProvider by chatViewModel.activeProvider.collectAsState()
+                val eidosThinkingLevel by chatViewModel.eidosThinkingLevel.collectAsState()
                 val rereadMessageId by chatViewModel.rereadMessageId.collectAsState()
                 val conversationSummaries by chatViewModel.conversationSummaries.collectAsState()
                 val historyDirectoryOptions by chatViewModel.historyDirectoryOptions.collectAsState()
@@ -257,10 +284,10 @@ class WidgetChatActivity : ComponentActivity() {
                 val isListening = sessionState == VoiceSessionState.LISTENING
                 val isTranscribing = sessionState == VoiceSessionState.TRANSCRIBING
                 val isPaused = sessionState == VoiceSessionState.PAUSED
-                val isSpeaking = sessionState == VoiceSessionState.SPEAKING
+                val isSpeaking = sessionState == VoiceSessionState.SPEAKING || readAloudIsPlaying
                 val isCapturingVoice = if (usesWhisperCapture) isListening || isTranscribing else isListening
 
-                LaunchedEffect(micUseWhisperApi) {
+                LaunchedEffect(micUseWhisperApi, micUseLocalGemmaScribe) {
                     chatViewModel.refreshOpenAiKeyPresence()
                     voiceController.applyMicEnginePreferenceFromSettings()
                 }
@@ -275,11 +302,14 @@ class WidgetChatActivity : ComponentActivity() {
                     } else if (messages.size > lastSeenMessageCount) {
                         val last = messages.lastOrNull()
                         if (last != null && last.role == EidosRole.ASSISTANT && readAloud) {
-                            voiceController.speakResponse(
-                                text = last.text,
-                                thenListen = readAloudMicPassback,
-                                onListenResult = { text -> chatViewModel.setInput(text) },
-                            )
+                            voiceController.stopSession()
+                            readAloudSession.startFromChat(last.text) {
+                                if (readAloudMicPassback) {
+                                    voiceController.startListening(existingText = "") { text ->
+                                        chatViewModel.setInput(text)
+                                    }
+                                }
+                            }
                         }
                         lastSeenMessageCount = messages.size
                     } else {
@@ -303,11 +333,17 @@ class WidgetChatActivity : ComponentActivity() {
                 var scrollAnchorFirstMessageId by remember { mutableStateOf<Long?>(null) }
                 var scrollAnchorMessageCount by remember { mutableIntStateOf(-1) }
                 val lastMessageTextLength = messages.lastOrNull()?.text?.length ?: 0
+                val streamPreviewLength = streamPreview?.contentText?.length ?: 0
+                val streamReasoningLength = streamPreview?.reasoningText?.length ?: 0
                 LaunchedEffect(
                     messages.size,
                     messages.firstOrNull()?.id,
                     lastMessageTextLength,
                     listState.layoutInfo.totalItemsCount,
+                    showKimiThinking,
+                    isSending,
+                    streamPreviewLength,
+                    streamReasoningLength,
                 ) {
                     if (messages.isEmpty()) return@LaunchedEffect
                     val firstId = messages.firstOrNull()?.id ?: return@LaunchedEffect
@@ -315,13 +351,18 @@ class WidgetChatActivity : ComponentActivity() {
                         scrollAnchorFirstMessageId != null && scrollAnchorFirstMessageId != firstId
                     val pendingInitialScroll = scrollAnchorFirstMessageId == null
                     val newMessagesAppended = messages.size > scrollAnchorMessageCount
+                    val streamGrowing = showKimiThinking && isSending &&
+                        (streamPreviewLength > 0 || streamReasoningLength > 0)
                     val shouldScroll = conversationChanged ||
                         pendingInitialScroll ||
                         (newMessagesAppended && isNearBottom) ||
-                        (lastMessageTextLength > 0 && isNearBottom)
+                        (lastMessageTextLength > 0 && isNearBottom) ||
+                        (showKimiThinking && isSending && isNearBottom) ||
+                        (streamGrowing && isNearBottom)
                     if (!shouldScroll) return@LaunchedEffect
-                    if (listState.layoutInfo.totalItemsCount < messages.size) return@LaunchedEffect
-                    listState.scrollToItem(messages.lastIndex)
+                    val lastIndex = messages.lastIndex + if (showKimiThinking && isSending) 1 else 0
+                    if (listState.layoutInfo.totalItemsCount <= lastIndex) return@LaunchedEffect
+                    listState.scrollToItem(lastIndex)
                     scrollAnchorFirstMessageId = firstId
                     scrollAnchorMessageCount = messages.size
                 }
@@ -341,8 +382,6 @@ class WidgetChatActivity : ComponentActivity() {
                         },
                         scopeLabel = chatScopeLabel,
                         workshopPhaseLabel = null,
-                        memoryDepthLabel = conversationMemoryLabel,
-                        onMemoryDepthClick = { chatViewModel.cycleConversationMemoryDepth() },
                         hasActiveConversation = hasActiveConversation,
                         isSending = isSending,
                         onHistoryClick = {
@@ -352,6 +391,8 @@ class WidgetChatActivity : ComponentActivity() {
                         onNewChatClick = { chatViewModel.newChat() },
                         onMoveClick = { showMoveHereConfirm = true },
                         onStopClick = { chatViewModel.cancelActiveSend() },
+                        localGemmaToolsEnabled = localGemmaToolsEnabled,
+                        onLocalGemmaToolsEnabledChange = chatViewModel::setLocalGemmaToolsEnabled,
                         readAloud = readAloud,
                         readAloudMicPassback = readAloudMicPassback,
                         onReadAloudChange = chatViewModel::setReadAloud,
@@ -361,6 +402,10 @@ class WidgetChatActivity : ComponentActivity() {
                         micUseWhisperApi = micUseWhisperApi,
                         hasOpenAiApiKey = hasOpenAiApiKey,
                         onMicUseWhisperApiChange = chatViewModel::setMicUseWhisperApi,
+                        activeProvider = activeProvider,
+                        onActiveProviderChange = chatViewModel::setActiveProvider,
+                        thinkingLevel = eidosThinkingLevel,
+                        onThinkingLevelChange = chatViewModel::setEidosThinkingLevel,
                         onOpenChatSettings = chatViewModel::refreshOpenAiKeyPresence,
                     )
 
@@ -457,6 +502,9 @@ class WidgetChatActivity : ComponentActivity() {
                                             )
                                         }
                                     }
+                                    message.imageAttachment?.let { attachment ->
+                                        ChatVisionMessageImage(attachment = attachment)
+                                    }
                                     MarkdownRichText(
                                         text = message.text,
                                         style = TextStyle(
@@ -466,31 +514,63 @@ class WidgetChatActivity : ComponentActivity() {
                                             lineHeight = 19.sp,
                                         ),
                                         selectable = true,
+                                        onLinkClick = { href ->
+                                            if (!href.startsWith("optimalx://")) return@MarkdownRichText false
+                                            val intent = MainActivity.intentForOptimalxUri(
+                                                this@WidgetChatActivity,
+                                                href,
+                                            )
+                                            if (intent != null) {
+                                                startActivity(intent)
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        },
                                     )
+                                    if (!isUser && message.navigationTargets.isNotEmpty()) {
+                                        EidosNavigationChips(
+                                            targets = message.navigationTargets,
+                                            onNavigate = { target ->
+                                                val intent = MainActivity.intentForNavigationTarget(
+                                                    this@WidgetChatActivity,
+                                                    target,
+                                                )
+                                                if (intent != null) {
+                                                    startActivity(intent)
+                                                } else {
+                                                    Toast.makeText(
+                                                        this@WidgetChatActivity,
+                                                        "Could not open ${target.label}",
+                                                        Toast.LENGTH_SHORT,
+                                                    ).show()
+                                                }
+                                            },
+                                        )
+                                    }
                                     ChatMessageBubbleFooter(timeLabel = message.timeLabel) {
                                         if (!isUser) {
-                                            val isPlaying = message.id == rereadMessageId
+                                            val isRereadActive =
+                                                message.id == rereadMessageId && readAloudBarVisible
                                             IconButton(
                                                 onClick = {
-                                                    if (isPlaying) {
-                                                        voiceController.stopSession()
+                                                    if (isRereadActive) {
+                                                        readAloudSession.stop()
                                                         chatViewModel.setRereadMessageId(null)
                                                     } else {
                                                         voiceController.stopSession()
                                                         chatViewModel.setRereadMessageId(message.id)
-                                                        voiceController.speakResponse(
-                                                            text = message.text,
-                                                            thenListen = false,
-                                                            onDone = { chatViewModel.setRereadMessageId(null) },
-                                                        )
+                                                        readAloudSession.startFromChat(message.text) {
+                                                            chatViewModel.setRereadMessageId(null)
+                                                        }
                                                     }
                                                 },
                                                 modifier = Modifier.size(28.dp),
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                                    contentDescription = if (isPlaying) "Stop" else "Read aloud",
-                                                    tint = if (isPlaying) colors.accent else colors.textDim,
+                                                    contentDescription = if (isRereadActive) "Stop" else "Read aloud",
+                                                    tint = if (isRereadActive) colors.accent else colors.textDim,
                                                     modifier = Modifier.size(18.dp),
                                                 )
                                             }
@@ -509,6 +589,11 @@ class WidgetChatActivity : ComponentActivity() {
                                             )
                                         }
                                         if (isUser) {
+                                            ChatMessageRetryButton(
+                                                onClick = {
+                                                    chatViewModel.retryMessage(message.id, message.text)
+                                                },
+                                            )
                                             IconButton(
                                                 onClick = {
                                                     editingMessage = message
@@ -528,6 +613,11 @@ class WidgetChatActivity : ComponentActivity() {
                                 }
                             }
                         }
+                            if (showKimiThinking && isSending) {
+                                item(key = "kimi_thinking") {
+                                    KimiStreamPreviewBubble(preview = streamPreview)
+                                }
+                            }
                         }
 
                         if (!isNearBottom && messages.isNotEmpty()) {
@@ -551,6 +641,15 @@ class WidgetChatActivity : ComponentActivity() {
                         }
                     }
 
+                    if (readAloudBarVisible) {
+                        NoteReadAloudBar(
+                            isPlaying = readAloudIsPlaying,
+                            onPlayPause = readAloudSession::togglePlayback,
+                            onRewind10 = readAloudSession::rewind10Seconds,
+                            onForward10 = readAloudSession::forward10Seconds,
+                        )
+                    }
+
                     ChatComposerBar(
                         input = input,
                         onInputChange = chatViewModel::setInput,
@@ -560,6 +659,10 @@ class WidgetChatActivity : ComponentActivity() {
                             }
                         },
                         onMicClick = {
+                            if (readAloudBarVisible && readAloudIsPlaying) {
+                                readAloudSession.stop()
+                                return@ChatComposerBar
+                            }
                             when (sessionState) {
                                 VoiceSessionState.LISTENING,
                                 VoiceSessionState.PAUSED,
@@ -600,6 +703,10 @@ class WidgetChatActivity : ComponentActivity() {
                         onTextFieldFocused = {
                             if (isListening) voiceController.finalizeListeningForEdit(input)
                         },
+                        pendingImage = pendingImage,
+                        onAttachImageUri = chatViewModel::attachImageFromUri,
+                        onClearPendingImage = chatViewModel::clearPendingImage,
+                        onAttachError = chatViewModel::postToast,
                     )
                 }
 
@@ -791,6 +898,26 @@ class WidgetChatActivity : ComponentActivity() {
                 }
             }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyLaunchIntent(intent)
+    }
+
+    private fun applyLaunchIntent(intent: Intent?) {
+        if (intent == null) return
+        val conversationId = intent.getLongExtra(WidgetVoiceService.EXTRA_CONVERSATION_ID, -1L)
+            .takeIf { it > 0L }
+            ?: intent.getLongExtra(EidosChatSendWorker.EXTRA_OPEN_CONVERSATION_ID, -1L).takeIf { it > 0L }
+        if (conversationId != null) {
+            openConversationId = conversationId
+            WidgetPrefs.setActiveConversationId(this, conversationId)
+        }
+        if (intent.hasExtra(EXTRA_AUTO_START_MIC)) {
+            autoStartMic = intent.getBooleanExtra(EXTRA_AUTO_START_MIC, false)
         }
     }
 }

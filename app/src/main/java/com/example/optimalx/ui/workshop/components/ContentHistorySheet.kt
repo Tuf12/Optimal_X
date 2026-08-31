@@ -59,10 +59,10 @@ private val timestampFormatter =
  * workshop file, note, or future surfaces backed by `content_checkpoints`.
  *
  * Each row shows an author badge (BASE / YOU / EIDOS / BUILD), label, timestamp,
- * sequence, and a per-row line-delta vs the working copy. Tap a row to expand
- * its diff inline; tap **Restore** to invoke [onRestore] (the caller is
- * responsible for writing the checkpoint blob back and appending a new
- * `"Restored to seq N"` checkpoint via [com.example.optimalx.data.revision.CheckpointRepository]).
+ * sequence, and whether this version matches the working copy. Tap a row to expand
+ * a **restore preview** (the note body at this checkpoint). Tap **Restore** to
+ * invoke [onRestore] (the caller writes the checkpoint blob back and appends a
+ * `"Restored to seq N"` checkpoint).
  *
  * @param sourceLabel a short identifier for the source — file name for workshop
  *   files, subfolder name (or similar) for notes — shown under the sheet title.
@@ -204,11 +204,7 @@ private fun CheckpointRow(
         }
 
         if (expanded) {
-            val diff = remember(checkpoint.id, workingCopy) {
-                // checkpoint -> working copy, i.e. "what changed since this checkpoint".
-                ContentDiff.unifiedDiff(checkpoint.contentBlob, workingCopy)
-            }
-            DiffBlock(diff = diff)
+            RestorePreview(content = checkpoint.contentBlob)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -232,6 +228,52 @@ private fun CheckpointRow(
                         modifier = Modifier.padding(start = 4.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RestorePreview(content: String) {
+    val colors = LocalOptimalXColors.current
+    val preview = remember(content) {
+        val trimmed = content.trim()
+        if (trimmed.length <= 2_000) trimmed else trimmed.take(2_000) + "\n…"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text = "Restore will set the note to this version:",
+            color = colors.textMid,
+            fontFamily = DmSansFamily,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.surface2)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            if (preview.isBlank()) {
+                Text(
+                    text = "(empty note)",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                )
+            } else {
+                Text(
+                    text = preview,
+                    color = colors.textPrimary,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                )
             }
         }
     }

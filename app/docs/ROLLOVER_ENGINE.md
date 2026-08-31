@@ -2,6 +2,6 @@
 
 This file is a **stub** so older links stay valid.
 
-Rollover converts daily activity into structured memory (Daily Memory → Journal / Long-Term Memory) using the AgentByte loop with Kotlin-owned phase allowlists and verification gates.
+**Canonical spec:** [systems/ROLLOVER.md](systems/ROLLOVER.md)
 
-**Canonical spec:** [agent_loops/ROLLOVER_ENGINE.md](agent_loops/ROLLOVER_ENGINE.md)
+Historical AgentByte / ABR1 documentation lives under [archive/agent_loops/](archive/agent_loops/) (removed from the shipping app).

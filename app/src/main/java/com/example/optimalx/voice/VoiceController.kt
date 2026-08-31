@@ -52,7 +52,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
     private var pendingStopIntent: StopIntent = StopIntent.NONE
     private var baseText = ""
     private var transcriptDraft: String = ""
-    private var usingWhisperEngine = false
+    private var sttBackend: ChatSttBackend = ChatSttBackend.GOOGLE
 
     init {
         wireSttCallbacks()
@@ -113,7 +113,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
             _isRestarting.value = false
             pendingStopIntent = StopIntent.NONE
             _sessionState.value = VoiceSessionState.LISTENING
-            syncWhisperCaptureFlag()
+            syncBufferedCaptureFlag()
             refreshBufferedCapture()
             stt.startListening(baseText)
         }
@@ -127,7 +127,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
         val merge = mergeBaseText.trim().ifBlank { baseText }
         when (_sessionState.value) {
             VoiceSessionState.LISTENING -> {
-                if (usingWhisperEngine) {
+                if (sttBackend != ChatSttBackend.GOOGLE) {
                     if (merge.isNotBlank()) {
                         baseText = merge
                         stt.updateCommitBase(merge)
@@ -206,7 +206,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
     fun finalizeListeningForEdit(mergeInput: String = "") {
         when (_sessionState.value) {
             VoiceSessionState.LISTENING -> {
-                if (usingWhisperEngine) {
+                if (sttBackend != ChatSttBackend.GOOGLE) {
                     pauseListening()
                 } else {
                     finalizeGoogleListening(mergeInput)
@@ -221,7 +221,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
         when (_sessionState.value) {
             VoiceSessionState.LISTENING -> finalizeListeningForEdit(currentInput)
             VoiceSessionState.PAUSED -> {
-                if (usingWhisperEngine) resumeListening(currentInput)
+                if (sttBackend != ChatSttBackend.GOOGLE) resumeListening(currentInput)
             }
             else -> Unit
         }
@@ -229,7 +229,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
 
     /** Pause capture without transcribing or updating the text field (Whisper). */
     fun pauseListening() {
-        if (_sessionState.value != VoiceSessionState.LISTENING || !usingWhisperEngine) return
+        if (_sessionState.value != VoiceSessionState.LISTENING || sttBackend == ChatSttBackend.GOOGLE) return
         _isRestarting.value = false
         pendingStopIntent = StopIntent.NONE
         stt.pauseCapture()
@@ -239,7 +239,7 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
     }
 
     private fun finalizeGoogleListening(mergeInput: String = "") {
-        if (usingWhisperEngine || _sessionState.value != VoiceSessionState.LISTENING) return
+        if (sttBackend != ChatSttBackend.GOOGLE || _sessionState.value != VoiceSessionState.LISTENING) return
         val text = transcriptDraft.trim().ifBlank { mergeInput.trim() }
         pendingStopIntent = StopIntent.NONE
         pendingAfterVoiceCommit = null
@@ -297,8 +297,8 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
         stt.discardCapture()
         stt.destroy()
         stt = VoiceRuntime.createGoogleOnlySttEngine(getApplication())
-        usingWhisperEngine = false
-        syncWhisperCaptureFlag()
+        sttBackend = ChatSttBackend.GOOGLE
+        syncBufferedCaptureFlag()
         wireSttCallbacks()
         activeOnResult = null
         baseText = ""
@@ -325,22 +325,28 @@ class VoiceController(app: Application) : AndroidViewModel(app) {
 
     private suspend fun recreateSttEngineIfNeeded() {
         val prefs = getApplication<Application>().settingsDataStore.data.first()
+        val useLocalGemma = prefs[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE]
+            ?: SettingsDefaults.MIC_USE_LOCAL_GEMMA_SCRIBE
         val useWhisper = prefs[SettingsKeys.MIC_USE_WHISPER_API] ?: SettingsDefaults.MIC_USE_WHISPER_API
         val hasOpenAiKey = !getEncryptedPrefs(getApplication())
             .getString(ApiKeyNames.OPENAI, null)
             .isNullOrBlank()
-        val wantWhisper = useWhisper && hasOpenAiKey
-        if (wantWhisper == usingWhisperEngine) return
+        val wantBackend = when {
+            useLocalGemma -> ChatSttBackend.LOCAL_GEMMA
+            useWhisper && hasOpenAiKey -> ChatSttBackend.WHISPER
+            else -> ChatSttBackend.GOOGLE
+        }
+        if (wantBackend == sttBackend) return
         stt.discardCapture()
         stt.destroy()
-        stt = VoiceRuntime.createChatSttEngine(getApplication(), useWhisper = wantWhisper)
-        usingWhisperEngine = wantWhisper
-        syncWhisperCaptureFlag()
+        stt = VoiceRuntime.createChatSttEngine(getApplication(), wantBackend)
+        sttBackend = wantBackend
+        syncBufferedCaptureFlag()
         wireSttCallbacks()
     }
 
-    private fun syncWhisperCaptureFlag() {
-        _usesWhisperCapture.value = usingWhisperEngine
+    private fun syncBufferedCaptureFlag() {
+        _usesWhisperCapture.value = sttBackend != ChatSttBackend.GOOGLE
     }
 
     private fun deliverAndReset(captured: String) {

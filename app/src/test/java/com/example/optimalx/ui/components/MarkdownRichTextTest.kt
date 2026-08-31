@@ -79,4 +79,24 @@ class MarkdownRichTextTest {
         assertTrue(escapeHtmlText("a && b < c").contains("&amp;"))
         assertTrue(escapeHtmlText("a && b < c").contains("&lt;"))
     }
+
+    @Test
+    fun plainTextToFallbackHtml_escapesAndPreservesLines() {
+        val html = plainTextToFallbackHtml("line one\n\nline two <tag>")
+        assertTrue(html.contains("line one"))
+        assertTrue(html.contains("line two &lt;tag&gt;"))
+        assertTrue(html.contains("<br>"))
+    }
+
+    @Test
+    fun chatMarkdownToDisplayHtml_neverThrowsOnLongMalformedInput() {
+        val markdown = buildString {
+            append("# Notes\n\n")
+            append("- bullet\n\n")
+            append("x".repeat(1450))
+            append("\n**unclosed")
+        }
+        val html = chatMarkdownToDisplayHtml(markdown)
+        assertTrue(html.isNotBlank())
+    }
 }

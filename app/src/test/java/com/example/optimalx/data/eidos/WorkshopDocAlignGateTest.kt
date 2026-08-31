@@ -27,4 +27,21 @@ class WorkshopDocAlignGateTest {
         assertTrue(files.contains("README.md"))
         assertTrue(files.contains("DESIGN.md"))
     }
+
+    @Test
+    fun runtimeInputsForSpec_conservativelyDependsOnAllScopeRuntimeFiles() {
+        // Any spec depends on every runtime file in scope, so any code change re-reviews all specs.
+        for (spec in listOf("DESIGN.md", "FLOW.md", "FEATURES.md", "STRUCTURE.md", "README.md")) {
+            assertEquals(
+                WorkshopDocAlignGate.runtimeFileNames(WorkshopDocAlignScope.FINISH),
+                WorkshopDocAlignGate.runtimeInputsForSpec(spec, WorkshopDocAlignScope.FINISH),
+            )
+        }
+    }
+
+    @Test
+    fun runtimeInputsForSpec_designScopeExcludesBridge() {
+        val inputs = WorkshopDocAlignGate.runtimeInputsForSpec("FEATURES.md", WorkshopDocAlignScope.DESIGN)
+        assertEquals(listOf("index.html", "style.css", "script.js"), inputs)
+    }
 }

@@ -77,10 +77,12 @@ Compact index lines used for **routing and retrieval** across the app—not the 
 
 ---
 
-## Phase 4 — AgentByte (hybrid, grows with memory)
+## Phase 4 — AgentByte (removed)
 
-- [ ] Introduce thin **`AgentByteContext`** or loop: situation label, chess piece, **tool allowlist** / King acknowledgment text in system prompt—reuse existing **`requiresConfirmation`** for destructive tools.
-- [ ] Full loop features from `agent_loops/` specs (e.g. [`agentbyte-chat-loop-v1.md`](agent_loops/agentbyte-chat-loop-v1.md): token milestones, reasoning note persistence, etc.) **after** Phase 2–3 stable.
+> **Archived (2026-06):** AgentByte loop specs moved to [archive/agent_loops/](../archive/agent_loops/). Shipping rollover uses [ROLLOVER.md](../systems/ROLLOVER.md).
+
+- [x] ~~Introduce AgentByte loop~~ — removed; replaced by `RolloverOrchestrator`
+- [ ] ~~Full loop features from agent_loops specs~~ — not planned for shipping app
 
 ---
 
@@ -94,7 +96,7 @@ Compact index lines used for **routing and retrieval** across the app—not the 
 ## Phase 6 — Docs & cleanup
 
 - [ ] Merge `MEMORY_SYSTEM.md` truth into `reference/` + `systems/` when stable; archive redundant overlays under `memory/` or `Not_implemented/` if any remain.
-- [ ] Update `agent_loops/` loop docs' tool names (`read_journal_summary_index` → `read_journal_tag_hint_index`, etc.) when those specs become active again.
+- [x] ~~Update agent_loops tool names~~ — index removed; use `search_semantic`
 
 ---
 

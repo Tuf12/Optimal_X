@@ -1,7 +1,9 @@
 package com.example.optimalx.ui.web
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WebSearchKeyTest {
@@ -30,7 +32,15 @@ class WebSearchKeyTest {
 
     @Test
     fun subfolderIdFromWebScopeKey_parsesEditorScope() {
+        assertEquals(42L, subfolderIdFromWebScopeKey("editor:subfolder:42"))
         assertEquals(42L, subfolderIdFromWebScopeKey("editor:7:42"))
-        assertNull(subfolderIdFromWebScopeKey("widget_quick_web"))
+        assertNull(subfolderIdFromWebScopeKey(WebPanelScope.WIDGET))
+    }
+
+    @Test
+    fun isWidgetWebScopeKey_recognizesLegacyAndCanonical() {
+        assertTrue(isWidgetWebScopeKey(WebPanelScope.WIDGET))
+        assertTrue(isWidgetWebScopeKey("widget_quick_web"))
+        assertFalse(isWidgetWebScopeKey(WebPanelScope.editor(1L)))
     }
 }

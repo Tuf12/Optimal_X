@@ -12,10 +12,19 @@ class ContentSummaryChunksCodecTest {
             ContentSummaryChunk(anchor = "Part 1", text = "First section summary."),
             ContentSummaryChunk(anchor = "Part 2", text = "Second section summary."),
         )
-        val json = ContentSummaryChunksCodec.encode(chunks)
-        requireNotNull(json)
+        val encoded = ContentSummaryChunksCodec.encode(chunks)
+        requireNotNull(encoded)
+        assertEquals(chunks, ContentSummaryChunksCodec.decode(encoded))
+    }
+
+    @Test
+    fun decode_legacy_json_array() {
+        val json =
+            """[{"anchor":"Part 1","text":"First section summary."},""" +
+                """{"anchor":"Part 2","text":"Second section summary."}]"""
         val decoded = ContentSummaryChunksCodec.decode(json)
-        assertEquals(chunks, decoded)
+        assertEquals(2, decoded.size)
+        assertEquals("Part 1", decoded[0].anchor)
     }
 
     @Test

@@ -12,8 +12,6 @@ enum class WorkshopEidosMode {
     BUILD_DESIGN,
     /** Internal — primary **Build logic** action; not a user chip. */
     BUILD_LOGIC,
-    /** Internal — **Build plan** kickoff from UPDATE (executes [IMPLEMENTATION_PLAN_MD]). */
-    BUILD_PLAN,
     /** @deprecated Maps to [EDIT] for prompts and prefs migration. */
     DESIGN,
     EDIT,
@@ -28,7 +26,6 @@ enum class WorkshopEidosMode {
             BUILD -> "Build"
             BUILD_DESIGN -> "Build design"
             BUILD_LOGIC -> "Build logic"
-            BUILD_PLAN -> "Build plan"
             DESIGN -> "Design"
             DEBUG -> "Debug"
             EDIT -> "Edit"
@@ -40,11 +37,7 @@ enum class WorkshopEidosMode {
         get() = this in USER_CHIP_MODES
 
     val isBuildFamily: Boolean
-        get() = this == BUILD || this == BUILD_DESIGN || this == BUILD_LOGIC || this == BUILD_PLAN
-
-    /** UPDATE maintenance kickoff — runtime execution from implementation plan. */
-    val isPlanBuildKickoff: Boolean
-        get() = this == BUILD_PLAN
+        get() = this == BUILD || this == BUILD_DESIGN || this == BUILD_LOGIC
 
   companion object {
         /** Chips shown in the workshop Eidos sheet. */
@@ -64,7 +57,7 @@ enum class WorkshopEidosMode {
          */
         fun normalizeToUserChip(mode: WorkshopEidosMode): WorkshopEidosMode = when (mode) {
             CHAT, PLAN, EDIT -> mode
-            BUILD_DESIGN, BUILD_LOGIC, BUILD_PLAN, BUILD, DESIGN, DEBUG -> EDIT
+            BUILD_DESIGN, BUILD_LOGIC, BUILD, DESIGN, DEBUG -> EDIT
         }
 
         /** Mode used for prompt/tool routing (keeps internal build modes during kickoff). */
@@ -83,9 +76,6 @@ enum class WorkshopEidosMode {
                 (mode == BUILD_LOGIC || mode == BUILD)
             ) {
                 return BUILD_LOGIC
-            }
-            if (phase == WorkshopProjectPhase.UPDATE && mode == BUILD_PLAN) {
-                return BUILD_PLAN
             }
             return normalizeToUserChip(mode)
         }

@@ -80,6 +80,7 @@ class ConversationPickerActivity : ComponentActivity() {
                 suspend fun refreshConversations() {
                     allConversations = when (selectedDirectory) {
                         ConversationDirectory.RECENT -> app.database.conversationDao().getRecentMainChat(5)
+                        ConversationDirectory.HERE -> emptyList()
                         ConversationDirectory.GENERAL -> app.database.conversationDao().getRecentGeneral(200)
                         ConversationDirectory.PARENT -> {
                             val id = selectedLocationId
@@ -101,6 +102,7 @@ class ConversationPickerActivity : ComponentActivity() {
                 LaunchedEffect(selectedDirectory) {
                     selectedLocationId = when (selectedDirectory) {
                         ConversationDirectory.RECENT -> null
+                        ConversationDirectory.HERE -> null
                         ConversationDirectory.GENERAL -> null
                         ConversationDirectory.PARENT -> parentTargets.firstOrNull()?.first
                         ConversationDirectory.SUBFOLDER -> subfolderTargets.firstOrNull()?.first

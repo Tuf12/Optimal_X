@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHost
@@ -75,17 +76,18 @@ private val HunkHeaderColor = DiffColors.HunkHeader
  */
 @Composable
 fun DiffReviewScreen(
+    scopeType: String,
     subfolderId: Long,
     onBack: () -> Unit,
     onAllPendingResolved: () -> Unit = onBack,
 ) {
     val viewModel: DiffReviewViewModel = viewModel(
-        key = "diff_review_$subfolderId",
+        key = "diff_review_${scopeType}_$subfolderId",
         factory = viewModelFactory {
             initializer {
                 val app =
                     this[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]!!
-                DiffReviewViewModel(app as Application, subfolderId)
+                DiffReviewViewModel(app as Application, scopeType, subfolderId)
             }
         }
     )
@@ -94,9 +96,11 @@ fun DiffReviewScreen(
     val items by viewModel.items.collectAsState()
     val pendingCount by viewModel.pendingCount.collectAsState()
     val busy by viewModel.busy.collectAsState()
+    val isNoteScope = viewModel.isNoteScope
 
     val snackbarHostState = remember { SnackbarHostState() }
     var hadPending by remember { mutableStateOf(false) }
+    var staleItemId by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(pendingCount, busy) {
         if (pendingCount > 0) hadPending = true
         if (hadPending && pendingCount == 0 && !busy) {
@@ -107,6 +111,50 @@ fun DiffReviewScreen(
         viewModel.feedback.collect { msg ->
             snackbarHostState.showSnackbar(msg)
         }
+    }
+    LaunchedEffect(viewModel) {
+        viewModel.staleAcceptPrompt.collect { itemId ->
+            staleItemId = itemId
+        }
+    }
+
+    if (staleItemId != null) {
+        val itemId = staleItemId!!
+        AlertDialog(
+            onDismissRequest = { staleItemId = null },
+            title = {
+                Text(
+                    text = "Stale Diff Review",
+                    fontFamily = DmSansFamily,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            },
+            text = {
+                Text(
+                    text = "This proposal is out of date — the note or file has changed since it was queued.\n\n" +
+                        "Dismiss clears the review and leaves the current content as-is.\n" +
+                        "Leave it to go back; Reject can still undo if that is what you want.",
+                    fontFamily = DmSansFamily,
+                    fontSize = 14.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        staleItemId = null
+                        viewModel.dismissItem(itemId)
+                    },
+                    enabled = !busy,
+                ) {
+                    Text(text = "Dismiss", fontFamily = DmSansFamily)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { staleItemId = null }) {
+                    Text(text = "Leave it", fontFamily = DmSansFamily)
+                }
+            },
+        )
     }
 
     Column(
@@ -173,7 +221,7 @@ fun DiffReviewScreen(
 
         Box(modifier = Modifier.weight(1f)) {
             if (items.isEmpty()) {
-                EmptyState(colors = colors)
+                EmptyState(colors = colors, isNoteScope = isNoteScope)
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -186,6 +234,7 @@ fun DiffReviewScreen(
                         ChangeItemCard(
                             item = item,
                             busy = busy,
+                            itemLabel = if (isNoteScope) "Note" else (item.fileName ?: "(unnamed)"),
                             onAccept = { viewModel.acceptItem(item.id) },
                             onReject = { viewModel.rejectItem(item.id) },
                         )
@@ -201,7 +250,10 @@ fun DiffReviewScreen(
 }
 
 @Composable
-private fun EmptyState(colors: com.example.optimalx.ui.theme.OptimalXColors) {
+private fun EmptyState(
+    colors: com.example.optimalx.ui.theme.OptimalXColors,
+    isNoteScope: Boolean,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -217,7 +269,11 @@ private fun EmptyState(colors: com.example.optimalx.ui.theme.OptimalXColors) {
             fontSize = 16.sp,
         )
         Text(
-            text = "Eidos will queue proposals here while reviewing or updating a project.",
+            text = if (isNoteScope) {
+                "Eidos will queue note edits here for review before they apply."
+            } else {
+                "Eidos will queue proposals here while reviewing or updating a project."
+            },
             color = colors.textMid,
             fontFamily = DmSansFamily,
             fontSize = 13.sp,
@@ -230,6 +286,7 @@ private fun EmptyState(colors: com.example.optimalx.ui.theme.OptimalXColors) {
 private fun ChangeItemCard(
     item: PendingChangeItem,
     busy: Boolean,
+    itemLabel: String,
     onAccept: () -> Unit,
     onReject: () -> Unit,
 ) {
@@ -259,7 +316,7 @@ private fun ChangeItemCard(
         ) {
             StatusBadge(item = item)
             Text(
-                text = item.fileName ?: "(unnamed)",
+                text = itemLabel,
                 color = colors.textPrimary,
                 fontFamily = DmMonoFamily,
                 fontSize = 13.sp,

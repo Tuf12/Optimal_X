@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 @Entity(
     tableName = "custom_panel_assignments",
@@ -24,6 +25,7 @@ import androidx.room.PrimaryKey
     indices = [
         Index("workshopSubfolderId"),
         Index("targetSubfolderId"),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class CustomPanelAssignment(
@@ -33,4 +35,6 @@ data class CustomPanelAssignment(
     val targetSubfolderId: Long,
     val panelTitle: String,
     val createdAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

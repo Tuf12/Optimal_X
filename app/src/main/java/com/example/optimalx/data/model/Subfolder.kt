@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 @Entity(
     tableName = "subfolders",
@@ -15,7 +16,10 @@ import androidx.room.PrimaryKey
             onDelete = ForeignKey.CASCADE,
         )
     ],
-    indices = [Index("parentFolderId")],
+    indices = [
+        Index("parentFolderId"),
+        Index(value = ["globalId"], unique = true),
+    ],
 )
 data class Subfolder(
     @PrimaryKey(autoGenerate = true)
@@ -30,4 +34,8 @@ data class Subfolder(
     /** User-generated workshop project summary for Eidos (stable until regenerated). */
     val projectSummary: String? = null,
     val projectSummaryUpdatedAt: Long? = null,
+    /** `mobile` | `desktop` — meaningful for Panel Workshop projects. */
+    val targetPlatform: String = "mobile",
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

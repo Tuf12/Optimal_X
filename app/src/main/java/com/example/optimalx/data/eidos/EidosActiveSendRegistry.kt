@@ -44,4 +44,15 @@ object EidosActiveSendRegistry {
     fun cancel(conversationId: Long) {
         activeJobs[conversationId]?.cancel()
     }
+
+    /**
+     * Removes [job] from the registry when it still owns the slot.
+     * Call from a send coroutine's `finally` so UI state clears before [Job.invokeOnCompletion]
+     * runs (that ordering race otherwise left `_isSending` stuck true).
+     */
+    fun unregisterIfOwned(conversationId: Long, job: Job) {
+        if (activeJobs[conversationId] !== job) return
+        activeJobs.remove(conversationId)
+        _activeConversationIds.value = activeJobs.keys.toSet()
+    }
 }

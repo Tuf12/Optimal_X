@@ -5,8 +5,7 @@ import com.example.optimalx.data.eidos.model.ToolExecutionResult
 /**
  * Workshop file read/write rules for Eidos tools (Plan vs Edit vs build kickoff).
  * Spec `.md` **writes** in Edit are frozen during design review and update until Accept
- * (doc align). **Reads** are always allowed in Edit — use workshop_read_file for specs and
- * [PanelPlatformSpec.IMPLEMENTATION_PLAN_MD].
+ * (doc align). **Reads** are always allowed in Edit — use workshop_read_file for specs.
  */
 object WorkshopFileAccessPolicy {
 
@@ -16,26 +15,15 @@ object WorkshopFileAccessPolicy {
         val phase = WorkshopEidosSession.currentPhase() ?: return null
         val updateSection = WorkshopEidosSession.currentUpdateSection()
 
-        if (WorkshopEidosSession.currentDocAlignScope() != null &&
-            PanelPlatformSpec.isMarkdownWorkshopFile(fileName)
-        ) {
-            return null
-        }
         if (mode == WorkshopEidosMode.PLAN && PanelPlatformSpec.isPlanMarkdownFile(fileName)) {
             return null
         }
         if (WorkshopEidosSession.currentDocAlignScope() != null && mode == WorkshopEidosMode.PLAN) {
             return null
         }
-        if ((mode == WorkshopEidosMode.BUILD_PLAN || mode.isPlanBuildKickoff) &&
-            fileName.equals(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD, ignoreCase = true)
-        ) {
-            return null
-        }
-        if (mode.isBuildFamily || mode.isPlanBuildKickoff) {
+        if (mode.isBuildFamily) {
             return ToolExecutionResult.Failure(
-                "Build plan writes runtime files only — other .md specs use Plan mode. " +
-                    "You may update ${PanelPlatformSpec.IMPLEMENTATION_PLAN_MD} to mark phase progress.",
+                "Build kickoff writes runtime files only — no .md changes. Specs align on Accept.",
             )
         }
         val chip = WorkshopEidosMode.normalizeToUserChip(mode)
@@ -65,19 +53,14 @@ object WorkshopFileAccessPolicy {
         val mode = WorkshopEidosSession.currentMode() ?: return null
         if (mode == WorkshopEidosMode.PLAN || mode == WorkshopEidosMode.CHAT) return null
         if (WorkshopEidosSession.currentDocAlignScope() != null) return null
-        if (mode.isBuildFamily || mode.isPlanBuildKickoff) return null
+        if (mode.isBuildFamily) return null
         return null
     }
 
     fun runtimeWriteFailure(fileName: String): ToolExecutionResult.Failure? {
         if (PanelPlatformSpec.isMarkdownWorkshopFile(fileName)) return null
         val mode = WorkshopEidosSession.currentMode() ?: return null
-        if (WorkshopEidosSession.currentDocAlignScope() != null) {
-            return ToolExecutionResult.Failure(
-                "Doc align pass updates spec .md only — do not change $fileName.",
-            )
-        }
-        if (mode.isBuildFamily || mode.isPlanBuildKickoff) return null
+        if (mode.isBuildFamily) return null
         return when (WorkshopEidosMode.normalizeToUserChip(mode)) {
             WorkshopEidosMode.CHAT -> ToolExecutionResult.Failure(
                 "CHAT mode does not allow file writes. Switch to Plan or Edit.",

@@ -1,17 +1,28 @@
 package com.example.optimalx.ui.settings
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.optimalx.data.backup.OptimalXBackupManager
 import com.example.optimalx.data.preferences.ApiKeyNames
 import com.example.optimalx.data.preferences.EncryptedSettingKeys
 import com.example.optimalx.data.eidos.EidosApiTraceFeature
-import com.example.optimalx.data.eidos.EidosContextLimits
 import com.example.optimalx.data.eidos.provider.XAI_MODEL_CHOICES
+import com.example.optimalx.data.litert.LitertLmBackend
+import com.example.optimalx.data.litert.LitertLmDefaults
+import com.example.optimalx.data.litert.LitertLmDiscoveredModel
+import com.example.optimalx.data.litert.LitertLmModelAvailability
+import com.example.optimalx.data.litert.LitertLmModelDownloadScheduler
+import com.example.optimalx.data.litert.LitertLmModelDownloadState
+import com.example.optimalx.data.litert.LitertLmModelDownloadTracker
+import com.example.optimalx.data.litert.LitertLmModelLocator
+import com.example.optimalx.data.litert.LitertLmWarmState
+import com.example.optimalx.data.litert.litertModelAvailability
+import com.example.optimalx.data.litert.applyLitertEngineWarmState
 import com.example.optimalx.data.preferences.SettingsDefaults
 import com.example.optimalx.data.preferences.SettingsKeys
+import com.example.optimalx.data.imagestudio.ImageAspectRatio
+import com.example.optimalx.data.imagestudio.ImageStudioPreferences
+import com.example.optimalx.data.imagestudio.ImageTier
 import com.example.optimalx.data.preferences.getEncryptedPrefs
 import com.example.optimalx.data.preferences.settingsDataStore
 import com.example.optimalx.ui.theme.getThemePreference
@@ -23,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.datastore.preferences.core.edit
 
@@ -36,18 +48,10 @@ data class SemanticIndexUiState(
     val message: String? = null,
 )
 
-data class DataBackupUiState(
-    val isWorking: Boolean = false,
-    val message: String? = null,
-)
-
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val ctx = app.applicationContext
     private val appRef = app as com.example.optimalx.OptimalXApplication
-    private val appVersionName: String = runCatching {
-        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-    }.getOrNull() ?: "unknown"
 
     // Lazy so the MasterKey is created off the main thread if needed
     private val encPrefs by lazy { getEncryptedPrefs(ctx) }
@@ -57,9 +61,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _semanticIndex = MutableStateFlow(SemanticIndexUiState())
     val semanticIndex: StateFlow<SemanticIndexUiState> = _semanticIndex.asStateFlow()
-
-    private val _dataBackup = MutableStateFlow(DataBackupUiState())
-    val dataBackup: StateFlow<DataBackupUiState> = _dataBackup.asStateFlow()
 
     // ── Theme ─────────────────────────────────────────────────────────────────
 
@@ -84,9 +85,148 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         _activeProvider.value = value
         encPrefs.edit().putString(EncryptedSettingKeys.ACTIVE_PROVIDER, value).apply()
         viewModelScope.launch {
-            // Keep DataStore mirror for backward compatibility with existing app state.
             ctx.settingsDataStore.edit { it[SettingsKeys.ACTIVE_PROVIDER] = value }
+            applyLitertEngineWarmState(ctx)
         }
+    }
+
+    val litertModelPath: StateFlow<String> = ctx.settingsDataStore.data
+        .map { prefs ->
+            val stored = prefs[SettingsKeys.LITERT_MODEL_PATH]?.trim().orEmpty()
+            if (stored.isNotEmpty()) stored
+            else LitertLmModelLocator.canonicalInstallFile(ctx).absolutePath
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            LitertLmModelLocator.canonicalInstallFile(ctx).absolutePath,
+        )
+
+    val litertBackend: StateFlow<LitertLmBackend> = ctx.settingsDataStore.data
+        .map { LitertLmBackend.fromWire(it[SettingsKeys.LITERT_BACKEND]) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LitertLmBackend.GPU)
+
+    val litertModelAvailability: StateFlow<LitertLmModelAvailability> = ctx.settingsDataStore.data
+        .map { prefs ->
+            litertModelAvailability(ctx, prefs[SettingsKeys.LITERT_MODEL_PATH].orEmpty())
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            litertModelAvailability(ctx, ""),
+        )
+
+    val litertWarmState: StateFlow<LitertLmWarmState> = appRef.litertLmEngineHolder.warmState
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LitertLmWarmState.Idle)
+
+    val litertEngineError: StateFlow<String?> = appRef.litertLmEngineHolder.lastError
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val litertModelDownloadState: StateFlow<LitertLmModelDownloadState> =
+        LitertLmModelDownloadTracker.state
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LitertLmModelDownloadState.Idle)
+
+    private val _litertDiscoveredModels = MutableStateFlow<List<LitertLmDiscoveredModel>>(emptyList())
+    val litertDiscoveredModels: StateFlow<List<LitertLmDiscoveredModel>> =
+        _litertDiscoveredModels.asStateFlow()
+
+    fun setLitertModelPath(path: String) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit { it[SettingsKeys.LITERT_MODEL_PATH] = path.trim() }
+            if (_activeProvider.value == LitertLmDefaults.PROVIDER_ID ||
+                ctx.settingsDataStore.data.first()[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE] == true
+            ) {
+                applyLitertEngineWarmState(ctx)
+            }
+        }
+    }
+
+    fun setLitertBackend(backend: LitertLmBackend) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit { it[SettingsKeys.LITERT_BACKEND] = backend.wire }
+            if (_activeProvider.value == LitertLmDefaults.PROVIDER_ID ||
+                ctx.settingsDataStore.data.first()[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE] == true
+            ) {
+                applyLitertEngineWarmState(ctx)
+            }
+        }
+    }
+
+    fun scanLitertModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _litertDiscoveredModels.value = LitertLmModelLocator.discoverKnownModels(ctx)
+        }
+    }
+
+    fun startLitertModelDownload() {
+        if (LitertLmModelDownloadScheduler.isDownloadRunning(ctx)) return
+        LitertLmModelDownloadTracker.markDownloading(0L, LitertLmDefaults.MODEL_SIZE_BYTES_APPROX)
+        LitertLmModelDownloadScheduler.enqueueDownload(ctx)
+    }
+
+    fun useLitertModelPath(path: String) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit { it[SettingsKeys.LITERT_MODEL_PATH] = path.trim() }
+            applyLitertEngineWarmState(ctx)
+        }
+    }
+
+    fun installLitertModelToAppStorage(sourcePath: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LitertLmModelDownloadTracker.markDownloading(0L, null)
+            val result = LitertLmModelLocator.copyToCanonical(
+                context = ctx,
+                sourcePath = sourcePath,
+                onProgress = { read, total ->
+                    LitertLmModelDownloadTracker.markDownloading(read, total)
+                },
+            )
+            result.fold(
+                onSuccess = { file ->
+                    ctx.settingsDataStore.edit {
+                        it[SettingsKeys.LITERT_MODEL_PATH] = file.absolutePath
+                    }
+                    LitertLmModelDownloadTracker.markComplete(file.absolutePath)
+                    applyLitertEngineWarmState(ctx)
+                },
+                onFailure = { error ->
+                    LitertLmModelDownloadTracker.markFailed(
+                        error.message ?: "Could not copy model file",
+                    )
+                },
+            )
+        }
+    }
+
+    fun importLitertModelFromUri(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LitertLmModelDownloadTracker.markDownloading(0L, null)
+            val result = LitertLmModelLocator.importFromUri(
+                context = ctx,
+                uri = uri,
+                onProgress = { read, total ->
+                    LitertLmModelDownloadTracker.markDownloading(read, total)
+                },
+            )
+            result.fold(
+                onSuccess = { file ->
+                    ctx.settingsDataStore.edit {
+                        it[SettingsKeys.LITERT_MODEL_PATH] = file.absolutePath
+                    }
+                    LitertLmModelDownloadTracker.markComplete(file.absolutePath)
+                    applyLitertEngineWarmState(ctx)
+                },
+                onFailure = { error ->
+                    LitertLmModelDownloadTracker.markFailed(
+                        error.message ?: "Could not import model file",
+                    )
+                },
+            )
+        }
+    }
+
+    fun clearLitertModelDownloadState() {
+        LitertLmModelDownloadTracker.markIdle()
     }
 
     // ── API keys (EncryptedSharedPreferences) ─────────────────────────────────
@@ -147,25 +287,31 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    val conversationMemoryDepth: StateFlow<String> = ctx.settingsDataStore.data
+    val imageStudioDefaultTier: StateFlow<ImageTier> = ctx.settingsDataStore.data
         .map { prefs ->
-            val stored = prefs[SettingsKeys.CONVERSATION_MEMORY_DEPTH]
-            if (stored.isNullOrBlank() || stored !in EidosContextLimits.MEMORY_OPTIONS) {
-                SettingsDefaults.CONVERSATION_MEMORY_DEPTH
-            } else {
-                stored
-            }
+            val wire = prefs[SettingsKeys.IMAGE_STUDIO_DEFAULT_TIER]
+                ?: SettingsDefaults.IMAGE_STUDIO_DEFAULT_TIER
+            ImageTier.fromWire(wire) ?: ImageTier.DRAFT
         }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
-            SettingsDefaults.CONVERSATION_MEMORY_DEPTH,
-        )
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ImageTier.DRAFT)
 
-    fun setConversationMemoryDepth(value: String) {
-        if (value !in EidosContextLimits.MEMORY_OPTIONS) return
+    val imageStudioDefaultAspect: StateFlow<ImageAspectRatio> = ctx.settingsDataStore.data
+        .map { prefs ->
+            val wire = prefs[SettingsKeys.IMAGE_STUDIO_DEFAULT_ASPECT]
+                ?: SettingsDefaults.IMAGE_STUDIO_DEFAULT_ASPECT
+            ImageAspectRatio.fromWire(wire) ?: ImageAspectRatio.DEFAULT
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ImageAspectRatio.DEFAULT)
+
+    fun setImageStudioDefaultTier(tier: ImageTier) {
         viewModelScope.launch {
-            ctx.settingsDataStore.edit { it[SettingsKeys.CONVERSATION_MEMORY_DEPTH] = value }
+            ImageStudioPreferences.saveDefaultTier(ctx, tier)
+        }
+    }
+
+    fun setImageStudioDefaultAspect(aspectRatio: ImageAspectRatio) {
+        viewModelScope.launch {
+            ImageStudioPreferences.saveDefaultAspectRatio(ctx, aspectRatio)
         }
     }
 
@@ -190,6 +336,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val micUseWhisperApi: StateFlow<Boolean> = ctx.settingsDataStore.data
         .map { it[SettingsKeys.MIC_USE_WHISPER_API] ?: SettingsDefaults.MIC_USE_WHISPER_API }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsDefaults.MIC_USE_WHISPER_API)
+
+    val micUseLocalGemmaScribe: StateFlow<Boolean> = ctx.settingsDataStore.data
+        .map { it[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE] ?: SettingsDefaults.MIC_USE_LOCAL_GEMMA_SCRIBE }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsDefaults.MIC_USE_LOCAL_GEMMA_SCRIBE)
 
     fun setWakeWord(word: String) {
         viewModelScope.launch {
@@ -217,7 +367,21 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setMicUseWhisperApi(enabled: Boolean) {
         viewModelScope.launch {
-            ctx.settingsDataStore.edit { it[SettingsKeys.MIC_USE_WHISPER_API] = enabled }
+            ctx.settingsDataStore.edit {
+                it[SettingsKeys.MIC_USE_WHISPER_API] = enabled
+                if (enabled) it[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE] = false
+            }
+            applyLitertEngineWarmState(ctx)
+        }
+    }
+
+    fun setMicUseLocalGemmaScribe(enabled: Boolean) {
+        viewModelScope.launch {
+            ctx.settingsDataStore.edit {
+                it[SettingsKeys.MIC_USE_LOCAL_GEMMA_SCRIBE] = enabled
+                if (enabled) it[SettingsKeys.MIC_USE_WHISPER_API] = false
+            }
+            applyLitertEngineWarmState(ctx)
         }
     }
 
@@ -236,34 +400,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setEidosApiTraceEnabled(enabled: Boolean) {
         viewModelScope.launch {
             ctx.settingsDataStore.edit { it[SettingsKeys.EIDOS_API_TRACE_ENABLED] = enabled }
-        }
-    }
-
-    val workshopAutoContinueEnabled: StateFlow<Boolean> = ctx.settingsDataStore.data
-        .map { it[SettingsKeys.WORKSHOP_AUTO_CONTINUE_ENABLED] ?: SettingsDefaults.WORKSHOP_AUTO_CONTINUE_ENABLED }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
-            SettingsDefaults.WORKSHOP_AUTO_CONTINUE_ENABLED,
-        )
-
-    val workshopPauseBetweenChunks: StateFlow<Boolean> = ctx.settingsDataStore.data
-        .map { it[SettingsKeys.WORKSHOP_PAUSE_BETWEEN_CHUNKS] ?: SettingsDefaults.WORKSHOP_PAUSE_BETWEEN_CHUNKS }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
-            SettingsDefaults.WORKSHOP_PAUSE_BETWEEN_CHUNKS,
-        )
-
-    fun setWorkshopAutoContinueEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            ctx.settingsDataStore.edit { it[SettingsKeys.WORKSHOP_AUTO_CONTINUE_ENABLED] = enabled }
-        }
-    }
-
-    fun setWorkshopPauseBetweenChunks(enabled: Boolean) {
-        viewModelScope.launch {
-            ctx.settingsDataStore.edit { it[SettingsKeys.WORKSHOP_PAUSE_BETWEEN_CHUNKS] = enabled }
         }
     }
 
@@ -294,37 +430,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             _semanticIndex.value = SemanticIndexUiState(
                 isRunning = false,
                 message = "Rebuilt: $chunkCount chunks from ${result.upsertedCount} objects.",
-            )
-        }
-    }
-
-    fun exportBackup(destination: Uri) {
-        if (_dataBackup.value.isWorking) return
-        viewModelScope.launch(Dispatchers.IO) {
-            _dataBackup.value = DataBackupUiState(isWorking = true, message = "Exporting backup...")
-            val result = OptimalXBackupManager.export(
-                context = ctx,
-                destination = destination,
-                appVersionName = appVersionName,
-            )
-            _dataBackup.value = DataBackupUiState(
-                isWorking = false,
-                message = result.message,
-            )
-        }
-    }
-
-    fun importBackup(source: Uri) {
-        if (_dataBackup.value.isWorking) return
-        viewModelScope.launch(Dispatchers.IO) {
-            _dataBackup.value = DataBackupUiState(isWorking = true, message = "Importing backup...")
-            val result = OptimalXBackupManager.import(context = ctx, source = source)
-            if (result.success) {
-                appRef.semanticSyncService.requestSync("backup_import")
-            }
-            _dataBackup.value = DataBackupUiState(
-                isWorking = false,
-                message = result.message,
             )
         }
     }

@@ -49,4 +49,18 @@ interface NoteDao {
 
     @Query("SELECT * FROM notes WHERE deletedAt IS NULL")
     suspend fun getAllActiveOnce(): List<Note>
+
+    @Query("SELECT * FROM notes WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): Note?
+
+    @Query("SELECT * FROM notes")
+    suspend fun getAllForSyncLookup(): List<Note>
+
+    @Query(
+        """
+        SELECT * FROM notes
+        WHERE updatedAt > :since OR (deletedAt IS NOT NULL AND deletedAt > :since)
+        """,
+    )
+    suspend fun getChangedSince(since: Long): List<Note>
 }

@@ -162,11 +162,13 @@ class SemanticMaterializer(
 
     private suspend fun indexFileRef(ref: FileReference) {
         val file = File(ref.filePath)
+        if (!fileTextExtractor.isExtractable(file)) {
+            semanticIndexer.deleteObject(SemanticObjectType.FILE, ref.id)
+            return
+        }
         val extracted = fileTextExtractor.extractText(file)
         if (extracted.isNullOrBlank()) {
-            if (file.exists()) {
-                Log.w(TAG, "Skipped file chunks (unsupported or empty): ${ref.fileName}")
-            }
+            Log.d(TAG, "No extractable text for file: ${ref.fileName}")
             semanticIndexer.deleteObject(SemanticObjectType.FILE, ref.id)
             return
         }

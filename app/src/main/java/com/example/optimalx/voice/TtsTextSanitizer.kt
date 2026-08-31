@@ -9,8 +9,10 @@ package com.example.optimalx.voice
 internal fun stripMarkdownForTts(text: String): String {
     var s = text
 
-    s = s.replace(Regex("```[\\s\\S]*?```"), " code block. ")
-    s = s.replace(Regex("`[^`]+`"), " code. ")
+    s = s.replace(Regex("```(?:\\w+)?\\s*([\\s\\S]*?)```")) { match ->
+        match.groupValues[1].trim().replace(Regex("\\s+"), " ")
+    }
+    s = s.replace(Regex("`([^`]+)`"), "$1")
 
     s = s.replace(Regex("(?is)\\n+\\s*(sources?|references?|citations?)\\s*:\\s*[\\s\\S]*$"), "")
 

@@ -1,14 +1,12 @@
 package com.example.optimalx.ui.folders
 
 import android.app.Application
-import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.model.ParentFolder
-import com.example.optimalx.data.preferences.SettingsDefaults
-import com.example.optimalx.data.preferences.SettingsKeys
-import com.example.optimalx.data.preferences.settingsDataStore
+import com.example.optimalx.data.preferences.FolderListDisplayPreferences
+import com.example.optimalx.data.preferences.FolderListScope
 import com.example.optimalx.data.repository.FolderRepository
 import com.example.optimalx.data.repository.HomePinRepository
 import com.example.optimalx.data.repository.SearchResult
@@ -21,14 +19,18 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class SortOrder(val label: String) {
-    NAME_ASC("Name A–Z"),
-    NAME_DESC("Name Z–A"),
-    CREATED_DESC("Newest first"),
-    UPDATED_DESC("Recently updated"),
+enum class SortOrder(val label: String, val key: String) {
+    NAME_ASC("Name A–Z", "name_asc"),
+    NAME_DESC("Name Z–A", "name_desc"),
+    CREATED_DESC("Newest first", "created_desc"),
+    UPDATED_DESC("Recently updated", "updated_desc");
+
+    companion object {
+        fun fromKey(value: String?): SortOrder? =
+            entries.firstOrNull { it.key == value }
+    }
 }
 
 data class FolderDisplayItem(
@@ -72,11 +74,14 @@ class ParentFolderViewModel(app: Application) : AndroidViewModel(app) {
     private val homePinRepo: HomePinRepository = appRef.homePinRepository
     private val ctx = app.applicationContext
 
-    private val _sortOrder = MutableStateFlow(SortOrder.NAME_ASC)
-    val sortOrder: StateFlow<SortOrder> = _sortOrder.asStateFlow()
+    private val listScope = FolderListScope.ParentHome
 
-    val layoutMode: StateFlow<FolderLayoutMode> = ctx.settingsDataStore.data
-        .map { prefs -> FolderLayoutMode.fromKey(prefs[SettingsKeys.FOLDER_LAYOUT] ?: SettingsDefaults.FOLDER_LAYOUT) }
+    val sortOrder: StateFlow<SortOrder> = FolderListDisplayPreferences
+        .sortOrderFlow(ctx, listScope)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SortOrder.NAME_ASC)
+
+    val layoutMode: StateFlow<FolderLayoutMode> = FolderListDisplayPreferences
+        .layoutModeFlow(ctx, listScope)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), FolderLayoutMode.GRID_2)
 
     private val _searchQuery = MutableStateFlow("")
@@ -87,7 +92,7 @@ class ParentFolderViewModel(app: Application) : AndroidViewModel(app) {
 
     val folders: StateFlow<List<FolderDisplayItem>> = combine(
         repo.getActiveParentFolders(),
-        _sortOrder,
+        sortOrder,
     ) { list, sort ->
         list.map { it.toDisplay() }.sortedWith(sort.comparator())
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -125,13 +130,14 @@ class ParentFolderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSortOrder(order: SortOrder) {
-        _sortOrder.value = order
+        viewModelScope.launch {
+            FolderListDisplayPreferences.setSortOrder(ctx, listScope, order)
+        }
     }
 
     fun toggleGrid() {
         viewModelScope.launch {
-            val next = layoutMode.value.next()
-            ctx.settingsDataStore.edit { it[SettingsKeys.FOLDER_LAYOUT] = next.key }
+            FolderListDisplayPreferences.setLayoutMode(ctx, listScope, layoutMode.value.next())
         }
     }
 

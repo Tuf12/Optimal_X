@@ -36,6 +36,10 @@ class TextToSpeechEngine(context: Context) {
 
     private val pendingDoneCallbacks = mutableMapOf<String, () -> Unit>()
 
+    /** Bumped on [stop] or a new [speak] so stale utterance callbacks are ignored. */
+    @Volatile
+    private var speakGeneration = 0
+
     init {
         tts = TextToSpeech(appContext, ::onInit)
     }
@@ -96,7 +100,7 @@ class TextToSpeechEngine(context: Context) {
         return if (list.size() > 0) list[0] else Locale.getDefault()
     }
 
-    /** Speak [text]. Calls [onDone] when the utterance finishes (or immediately if TTS unavailable). */
+    /** Speak [text] in full (chunked when over the engine limit). [onDone] runs after the last chunk. */
     fun speak(text: String, onDone: (() -> Unit)? = null) {
         val speechText = stripMarkdownForTts(text)
         if (speechText.isBlank()) {
@@ -120,24 +124,35 @@ class TextToSpeechEngine(context: Context) {
     }
 
     private fun speakNow(engine: TextToSpeech, speechText: String, onDone: (() -> Unit)?) {
-        val max = TextToSpeech.getMaxSpeechInputLength()
-        val chunk = if (speechText.length <= max) {
-            speechText
-        } else {
-            speechText.substring(0, (max - 1).coerceAtLeast(0)) + "…"
-        }
-        val id = UUID.randomUUID().toString()
-        if (onDone != null) {
-            pendingDoneCallbacks[id] = onDone
-        }
-        val code = engine.speak(chunk, TextToSpeech.QUEUE_FLUSH, null, id)
-        if (code == TextToSpeech.ERROR) {
-            pendingDoneCallbacks.remove(id)
+        val chunks = chunkNoteForReadAloud(speechText)
+        if (chunks.isEmpty()) {
             onDone?.invoke()
+            return
+        }
+        val generation = ++speakGeneration
+        chunks.forEachIndexed { index, chunk ->
+            val isLast = index == chunks.size - 1
+            val id = UUID.randomUUID().toString()
+            if (isLast && onDone != null) {
+                pendingDoneCallbacks[id] = {
+                    if (generation == speakGeneration) onDone()
+                }
+            }
+            val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val code = engine.speak(chunk, queueMode, null, id)
+            if (code == TextToSpeech.ERROR) {
+                pendingDoneCallbacks.remove(id)
+                if (generation == speakGeneration) {
+                    speakGeneration++
+                    onDone?.invoke()
+                }
+                return
+            }
         }
     }
 
     fun stop() {
+        speakGeneration++
         synchronized(lock) {
             pendingText = null
             pendingOnDone = null
@@ -147,6 +162,7 @@ class TextToSpeechEngine(context: Context) {
     }
 
     fun destroy() {
+        speakGeneration++
         val stuckPending = synchronized(lock) {
             pendingText = null
             val cb = pendingOnDone

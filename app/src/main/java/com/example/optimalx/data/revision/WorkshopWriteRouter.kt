@@ -13,7 +13,7 @@ import java.io.File
  * - **Build phases / build-family modes** → [DirectWriteApplier] (auto-accept, disk written).
  * - **Review / edit / debug / update phases** → [PendingChangeService] (queued for review).
  *
- * Tools (`workshop_write_file`, `workshop_create_file`, `workshop_replace_string`)
+ * Tools (`workshop_write_file`, `workshop_create_file`, `workshop_edit_file`, `workshop_append_file`)
  * all funnel through here so the policy + checkpoint behavior is identical regardless
  * of which authoring style the LLM chose.
  */

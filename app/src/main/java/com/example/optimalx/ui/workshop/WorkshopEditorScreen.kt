@@ -88,6 +88,8 @@ import com.example.optimalx.data.eidos.WorkshopProjectPhase
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.ui.components.MarkdownRichText
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.navigation.RegisterNavigationLeaveGuard
+import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.SyneFamily
@@ -126,22 +128,109 @@ fun WorkshopEditorScreen(
     val canAcceptSpecs by viewModel.canAcceptSpecs.collectAsState()
     val canAcceptDesign by viewModel.canAcceptDesign.collectAsState()
     val canAcceptLogic by viewModel.canAcceptLogic.collectAsState()
-    val canAcceptImplementationPlan by viewModel.canAcceptImplementationPlan.collectAsState()
-    val canBuildFromImplementationPlan by viewModel.canBuildFromImplementationPlan.collectAsState()
     val hasProjectSummary by viewModel.hasProjectSummary.collectAsState()
     val summaryGenerating by viewModel.summaryGenerating.collectAsState()
     val diskRevision by viewModel.diskRevision.collectAsState()
     val eidosSending by eidosViewModel.isSending.collectAsState()
     val pendingChangeCount by viewModel.pendingChangeCount.collectAsState()
-    val previewHtml by viewModel.previewHtml.collectAsState()
-    val isPreviewingProposedChanges by viewModel.isPreviewingProposedChanges.collectAsState()
+    val workshopBackupBusy by viewModel.workshopBackupBusy.collectAsState()
+    val workshopRestoreInProgress by viewModel.workshopRestoreInProgress.collectAsState()
+    val workshopBackupProgress by viewModel.workshopBackupProgress.collectAsState()
+    val workshopBackupMessage by viewModel.workshopBackupMessage.collectAsState()
+    val workshopRestoreMessage by viewModel.workshopRestoreMessage.collectAsState()
+    val needsDesktopFileRestore by viewModel.needsDesktopFileRestore.collectAsState()
     val acceptUpdateFinishPending by viewModel.acceptUpdateFinishPending.collectAsState()
     val checkpointsForCurrentFile by viewModel.checkpointsForCurrentFile.collectAsState()
     val persistenceFinishGate by viewModel.persistenceFinishGate.collectAsState()
+    val isWorkshopDirty by viewModel.isDirty.collectAsState()
+    RegisterNavigationLeaveGuard(hasUnsavedChanges = isWorkshopDirty)
 
     var summaryDialogMessage by remember { mutableStateOf<String?>(null) }
     var showHistorySheet by remember { mutableStateOf(false) }
     var restoreFeedbackMessage by remember { mutableStateOf<String?>(null) }
+    var showRestoreFromPcConfirm by remember { mutableStateOf(false) }
+
+    workshopBackupMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearWorkshopBackupMessage,
+            title = {
+                Text(
+                    text = "Workshop file sync",
+                    color = colors.textPrimary,
+                    fontFamily = SyneFamily,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(message, color = colors.textDim, fontFamily = DmMonoFamily, fontSize = 12.sp)
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearWorkshopBackupMessage) {
+                    Text("OK", color = colors.accent, fontFamily = DmSansFamily)
+                }
+            },
+        )
+    }
+
+    workshopRestoreMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearWorkshopRestoreMessage,
+            title = {
+                Text(
+                    text = "Sync from PC",
+                    color = colors.textPrimary,
+                    fontFamily = SyneFamily,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(message, color = colors.textDim, fontFamily = DmMonoFamily, fontSize = 12.sp)
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearWorkshopRestoreMessage) {
+                    Text("OK", color = colors.accent, fontFamily = DmSansFamily)
+                }
+            },
+        )
+    }
+
+    if (showRestoreFromPcConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRestoreFromPcConfirm = false },
+            title = {
+                Text(
+                    text = "Sync workshop files from PC?",
+                    color = colors.textPrimary,
+                    fontFamily = SyneFamily,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(
+                    text = "This overwrites workshop files on this device with the copy on the desktop PC " +
+                        "(backups/mobile-workshop/). Unsaved local edits will be lost.",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRestoreFromPcConfirm = false
+                        viewModel.restoreWorkshopFromPc()
+                    },
+                ) {
+                    Text("Sync", color = colors.accent, fontFamily = DmSansFamily)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreFromPcConfirm = false }) {
+                    Text("Cancel", color = colors.textDim, fontFamily = DmSansFamily)
+                }
+            },
+        )
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.summaryFeedback.collect { summaryDialogMessage = it }
@@ -153,6 +242,13 @@ fun WorkshopEditorScreen(
 
     LaunchedEffect(subfolderId, eidosViewModel) {
         eidosViewModel.setWorkshopScope(subfolderId)
+    }
+
+    LaunchedEffect(subfolderId, viewModel) {
+        com.example.optimalx.ui.navigation.WorkshopNavigationState.pendingSelectPath?.let { path ->
+            viewModel.openFileByRelativePath(path)
+            com.example.optimalx.ui.navigation.WorkshopNavigationState.pendingSelectPath = null
+        }
     }
 
     DisposableEffect(viewModel, eidosViewModel) {
@@ -177,13 +273,6 @@ fun WorkshopEditorScreen(
         eidosViewModel.refreshWorkshopProjectPhase()
     }
 
-    LaunchedEffect(files, diskRevision, projectPhase, viewModel, eidosViewModel) {
-        if (projectPhase == WorkshopProjectPhase.UPDATE) {
-            viewModel.refreshImplementationPlanState()
-            eidosViewModel.refreshImplementationPlanGate()
-        }
-    }
-
     LaunchedEffect(viewModel) {
         viewModel.refreshProjectPhase()
     }
@@ -194,8 +283,6 @@ fun WorkshopEditorScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshProjectPhase()
                 eidosViewModel.refreshWorkshopProjectPhase()
-                viewModel.refreshImplementationPlanState()
-                eidosViewModel.refreshImplementationPlanGate()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -275,6 +362,9 @@ fun WorkshopEditorScreen(
                 currentFileId = currentFileId,
                 hasProjectSummary = hasProjectSummary,
                 summaryGenerating = summaryGenerating,
+                workshopBackupBusy = workshopBackupBusy,
+                workshopRestoreInProgress = workshopRestoreInProgress,
+                workshopBackupProgress = workshopBackupProgress,
                 onFileClick = { fileId ->
                     viewModel.saveCurrentFile()
                     viewModel.openFile(fileId)
@@ -283,6 +373,8 @@ fun WorkshopEditorScreen(
                 onNewFileClick = { showNewFileDialog = true },
                 onDeleteFile = { fileId -> viewModel.deleteFile(fileId) },
                 onGenerateSummary = { viewModel.generateOrRegenerateProjectSummary() },
+                onBackupWorkshopToPc = { viewModel.backupWorkshopToPc() },
+                onRestoreWorkshopFromPc = { showRestoreFromPcConfirm = true },
             )
         },
     ) {
@@ -298,8 +390,6 @@ fun WorkshopEditorScreen(
                 canAcceptSpecs = canAcceptSpecs,
                 canAcceptDesign = canAcceptDesign,
                 canAcceptLogic = canAcceptLogic,
-                canAcceptImplementationPlan = canAcceptImplementationPlan,
-                canBuildFromImplementationPlan = canBuildFromImplementationPlan,
                 onMenuClick = { scope.launch { drawerState.open() } },
                 onBackClick = onBack,
                 onPrimaryAgentClick = {
@@ -309,12 +399,6 @@ fun WorkshopEditorScreen(
                             viewModel.applyPrimaryBuildAction(onOpenEidosSheet, eidosViewModel)
                         }
                     }
-                },
-                onAcceptImplementationPlan = {
-                    scope.launch { viewModel.applyAcceptImplementationPlanAction(eidosViewModel) }
-                },
-                onBuildFromPlan = {
-                    scope.launch { viewModel.applyBuildFromPlanAction(onOpenEidosSheet, eidosViewModel) }
                 },
                 onEidosClick = onEidosClick,
                 isPreviewMode = isPreviewMode,
@@ -332,6 +416,13 @@ fun WorkshopEditorScreen(
                 currentFileName = currentRef?.fileName,
             )
 
+            if (needsDesktopFileRestore) {
+                RestoreFromDesktopBanner(
+                    onRestore = { viewModel.restoreWorkshopFromPc() },
+                    busy = workshopBackupBusy,
+                )
+            }
+
             if (projectPhase == WorkshopProjectPhase.UPDATE && acceptUpdateFinishPending) {
                 AcceptUpdateFinishBanner(
                     onCancel = { viewModel.cancelPendingAcceptUpdate() },
@@ -347,28 +438,14 @@ fun WorkshopEditorScreen(
             ) {
                 when {
                     isPreviewMode -> {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            if (isPreviewingProposedChanges) {
-                                Text(
-                                    text = "Previewing proposed changes (not on disk until Diff Review accept)",
-                                    color = colors.accent,
-                                    fontFamily = DmSansFamily,
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 12.sp,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(colors.accentDim)
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                                )
-                            }
+                        key(diskRevision) {
                             WorkshopPreviewPanel(
-                                html = previewHtml,
+                                html = viewModel.getCompositeHtml(),
                                 htmlFilePath = null,
                                 workshopSubfolderId = subfolderId,
                                 panelContextType = "workshop_preview",
                                 isVisibleAndFocused = true,
                                 onConsoleError = { viewModel.addConsoleError(it) },
-                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
@@ -482,6 +559,39 @@ fun WorkshopEditorScreen(
 }
 
 @Composable
+private fun RestoreFromDesktopBanner(
+    onRestore: () -> Unit,
+    busy: Boolean,
+) {
+    val colors = LocalOptimalXColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.accentDim)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "Workshop file contents live on the desktop until you sync them. Pull only updates metadata — " +
+                "use Sync from PC to load script.js, README, and other bytes.",
+            color = colors.textPrimary,
+            fontFamily = DmSansFamily,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onRestore, enabled = !busy) {
+            Text(
+                text = if (busy) "Syncing…" else "Sync from PC",
+                color = colors.accent,
+                fontFamily = DmSansFamily,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+@Composable
 private fun AcceptUpdateFinishBanner(
     onCancel: () -> Unit,
     onSkipDocSync: () -> Unit,
@@ -534,13 +644,9 @@ private fun WorkshopTopBar(
     canAcceptSpecs: Boolean,
     canAcceptDesign: Boolean,
     canAcceptLogic: Boolean,
-    canAcceptImplementationPlan: Boolean = false,
-    canBuildFromImplementationPlan: Boolean = false,
     onMenuClick: () -> Unit,
     onBackClick: () -> Unit,
     onPrimaryAgentClick: () -> Unit,
-    onAcceptImplementationPlan: () -> Unit = {},
-    onBuildFromPlan: () -> Unit = {},
     onEidosClick: () -> Unit,
     isPreviewMode: Boolean,
     isMarkdownFile: Boolean,
@@ -642,50 +748,6 @@ private fun WorkshopTopBar(
                     fontWeight = FontWeight.Medium,
                     fontSize = 15.sp,
                 )
-            }
-        }
-
-        if (
-            !isPreviewMode &&
-            projectPhase == WorkshopProjectPhase.UPDATE &&
-            (canAcceptImplementationPlan || canBuildFromImplementationPlan)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = projectPhase.phaseLabel(),
-                    color = colors.textDim,
-                    fontFamily = DmSansFamily,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                if (canAcceptImplementationPlan) {
-                    TextButton(onClick = onAcceptImplementationPlan) {
-                        Text(
-                            text = "Accept plan",
-                            color = colors.accent,
-                            fontFamily = DmSansFamily,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                        )
-                    }
-                }
-                if (canBuildFromImplementationPlan) {
-                    TextButton(onClick = onBuildFromPlan) {
-                        Text(
-                            text = "Build plan",
-                            color = colors.accent,
-                            fontFamily = DmSansFamily,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                        )
-                    }
-                }
             }
         }
 
@@ -794,10 +856,15 @@ private fun WorkshopDrawerContent(
     currentFileId: Long?,
     hasProjectSummary: Boolean,
     summaryGenerating: Boolean,
+    workshopBackupBusy: Boolean,
+    workshopRestoreInProgress: Boolean,
+    workshopBackupProgress: com.example.optimalx.data.sync.WorkshopBackupProgress?,
     onFileClick: (Long) -> Unit,
     onNewFileClick: () -> Unit,
     onDeleteFile: (Long) -> Unit,
     onGenerateSummary: () -> Unit,
+    onBackupWorkshopToPc: () -> Unit,
+    onRestoreWorkshopFromPc: () -> Unit,
 ) {
     val colors = LocalOptimalXColors.current
 
@@ -869,15 +936,65 @@ private fun WorkshopDrawerContent(
             HorizontalDivider(color = colors.border)
 
             TextButton(
+                onClick = onBackupWorkshopToPc,
+                enabled = !workshopBackupBusy,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
+                Text(
+                    text = when {
+                        workshopBackupBusy && !workshopRestoreInProgress && workshopBackupProgress != null -> {
+                            val progress = workshopBackupProgress
+                            if (progress.totalFiles == 0) {
+                                "Backing up workshop…"
+                            } else {
+                                "Backing up ${progress.uploadedFiles}/${progress.totalFiles}" +
+                                    (progress.currentPath?.let { " · $it" } ?: "")
+                            }
+                        }
+                        workshopBackupBusy && !workshopRestoreInProgress -> "Syncing workshop to PC…"
+                        else -> "Sync workshop files to PC"
+                    },
+                    color = if (workshopBackupBusy) colors.textDim else colors.accent,
+                    fontFamily = DmSansFamily,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+
+            TextButton(
+                onClick = onRestoreWorkshopFromPc,
+                enabled = !workshopBackupBusy,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
+                Text(
+                    text = when {
+                        workshopBackupBusy && workshopRestoreInProgress && workshopBackupProgress != null -> {
+                            val progress = workshopBackupProgress
+                            if (progress.totalFiles == 0) {
+                                "Restoring from PC…"
+                            } else {
+                                "Restoring ${progress.uploadedFiles}/${progress.totalFiles}" +
+                                    (progress.currentPath?.let { " · $it" } ?: "")
+                            }
+                        }
+                        workshopBackupBusy && workshopRestoreInProgress -> "Syncing from PC…"
+                        else -> "Sync workshop files from PC"
+                    },
+                    color = if (workshopBackupBusy) colors.textDim else colors.accent,
+                    fontFamily = DmSansFamily,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+
+            TextButton(
                 onClick = onGenerateSummary,
-                enabled = !summaryGenerating,
+                enabled = !summaryGenerating && !workshopBackupBusy,
                 modifier = Modifier.padding(horizontal = 8.dp),
             ) {
                 Text(
                     text = when {
                         summaryGenerating -> "Generating summary…"
                         hasProjectSummary -> "Regenerate Eidos summary"
-                        else -> "Generate Eidos summary"
+                        else -> "Generate summary now"
                     },
                     color = if (summaryGenerating) colors.textDim else colors.accent,
                     fontFamily = DmSansFamily,
@@ -887,6 +1004,7 @@ private fun WorkshopDrawerContent(
 
             TextButton(
                 onClick = onNewFileClick,
+                enabled = !workshopBackupBusy,
                 modifier = Modifier.padding(horizontal = 8.dp),
             ) {
                 Icon(Icons.Default.Add, contentDescription = null, tint = colors.accent)
@@ -1132,8 +1250,8 @@ private fun DesignReviewPlaceholder(onOpenPreview: () -> Unit) {
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            text = "Open Preview to check the layout shell. Chat with Eidos in Design mode to tweak HTML/CSS, " +
-                "then tap Accept design when it looks right.",
+            text = "Open Preview to check the design build. Chat with Eidos in Design mode to tweak HTML/CSS, " +
+                "then tap Accept design when every FLOW screen looks right.",
             color = colors.textMid,
             fontFamily = DmSansFamily,
             fontSize = 15.sp,

@@ -1,5 +1,7 @@
 package com.example.optimalx.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,9 +15,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AddComment
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -25,6 +29,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MenuDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,28 +45,47 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.optimalx.data.eidos.EidosThinkingLevel
+import com.example.optimalx.data.eidos.EidosThinkingResolver
+import com.example.optimalx.data.litert.LitertLmDefaults
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 
+private data class EidosProviderChoice(val id: String, val label: String)
+
+private val EIDOS_PROVIDER_CHOICES = listOf(
+    EidosProviderChoice("xai", "xAI (Grok)"),
+    EidosProviderChoice("openai", "OpenAI"),
+    EidosProviderChoice("anthropic", "Anthropic"),
+    EidosProviderChoice("kimi", "Kimi (Moonshot K2.6)"),
+    EidosProviderChoice(LitertLmDefaults.PROVIDER_ID, "Local Gemma 4"),
+)
+
+private fun eidosProviderLabel(id: String): String =
+    EIDOS_PROVIDER_CHOICES.firstOrNull { it.id == id }?.label ?: id
+
 /**
  * Shared top bar for all Eidos chat surfaces (EidosChatScreen, WidgetChatActivity, WebPanel sheet).
  *
- * Layout: Back | Title column | History | New Chat | Read Aloud icon | Overflow (⋮)
+ * Layout: Back | Title column | History | New Chat | [Local tools] | Read Aloud icon | Overflow (⋮)
+ *
+ * Local tools icon appears only when [activeProvider] is Local Gemma.
  */
 @Composable
 fun ChatTopBar(
     onBack: () -> Unit,
     scopeLabel: String,
     workshopPhaseLabel: String?,
-    memoryDepthLabel: String,
-    onMemoryDepthClick: () -> Unit,
     hasActiveConversation: Boolean,
     isSending: Boolean,
     onHistoryClick: () -> Unit,
     onNewChatClick: () -> Unit,
     onMoveClick: () -> Unit,
     onStopClick: () -> Unit,
+    /** Local Gemma only — when true, tools are registered on the next send. */
+    localGemmaToolsEnabled: Boolean = true,
+    onLocalGemmaToolsEnabledChange: (Boolean) -> Unit = {},
     readAloud: Boolean,
     readAloudMicPassback: Boolean,
     onReadAloudChange: (Boolean) -> Unit,
@@ -71,6 +95,10 @@ fun ChatTopBar(
     micUseWhisperApi: Boolean,
     hasOpenAiApiKey: Boolean,
     onMicUseWhisperApiChange: (Boolean) -> Unit,
+    activeProvider: String,
+    onActiveProviderChange: (String) -> Unit,
+    thinkingLevel: EidosThinkingLevel,
+    onThinkingLevelChange: (EidosThinkingLevel) -> Unit,
     onOpenChatSettings: () -> Unit = {},
     restrictToolbar: Boolean = false,
     modifier: Modifier = Modifier,
@@ -78,6 +106,7 @@ fun ChatTopBar(
     val colors = LocalOptimalXColors.current
     var showOverflow by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
+    var showProviderDialog by remember { mutableStateOf(false) }
 
     Row(
         modifier = modifier
@@ -160,6 +189,24 @@ fun ChatTopBar(
             }
         }
 
+        if (activeProvider == LitertLmDefaults.PROVIDER_ID) {
+            IconButton(
+                onClick = { onLocalGemmaToolsEnabledChange(!localGemmaToolsEnabled) },
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = if (localGemmaToolsEnabled) Icons.Default.Build else Icons.Outlined.Build,
+                    contentDescription = if (localGemmaToolsEnabled) {
+                        "Tools on — tap for chat only"
+                    } else {
+                        "Tools off — tap to enable tools"
+                    },
+                    tint = if (localGemmaToolsEnabled) colors.accent else colors.textMid,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
         IconButton(
             onClick = {
                 if (!readAloud && !readAloudInfoDismissed) {
@@ -204,16 +251,33 @@ fun ChatTopBar(
                 isSending = isSending,
                 onMoveClick = { showOverflow = false; onMoveClick() },
                 onStopClick = { showOverflow = false; onStopClick() },
-                memoryDepthLabel = memoryDepthLabel,
-                onMemoryDepthClick = { onMemoryDepthClick() },
                 readAloud = readAloud,
                 readAloudMicPassback = readAloudMicPassback,
                 onMicPassbackChange = onMicPassbackChange,
                 micUseWhisperApi = micUseWhisperApi,
                 hasOpenAiApiKey = hasOpenAiApiKey,
                 onMicUseWhisperApiChange = onMicUseWhisperApiChange,
+                activeProviderLabel = eidosProviderLabel(activeProvider),
+                onProviderClick = {
+                    showOverflow = false
+                    showProviderDialog = true
+                },
+                thinkingLevel = thinkingLevel,
+                thinkingSupported = EidosThinkingResolver.providerSupportsUserThinkingLevel(activeProvider),
+                onThinkingLevelChange = onThinkingLevelChange,
             )
         }
+    }
+
+    if (showProviderDialog) {
+        ProviderSelectionDialog(
+            activeProvider = activeProvider,
+            onSelect = { provider ->
+                onActiveProviderChange(provider)
+                showProviderDialog = false
+            },
+            onDismiss = { showProviderDialog = false },
+        )
     }
 
     if (showInfoDialog) {
@@ -236,14 +300,17 @@ private fun ChatOverflowMenu(
     isSending: Boolean,
     onMoveClick: () -> Unit,
     onStopClick: () -> Unit,
-    memoryDepthLabel: String,
-    onMemoryDepthClick: () -> Unit,
     readAloud: Boolean,
     readAloudMicPassback: Boolean,
     onMicPassbackChange: (Boolean) -> Unit,
     micUseWhisperApi: Boolean,
     hasOpenAiApiKey: Boolean,
     onMicUseWhisperApiChange: (Boolean) -> Unit,
+    activeProviderLabel: String,
+    onProviderClick: () -> Unit,
+    thinkingLevel: EidosThinkingLevel,
+    thinkingSupported: Boolean,
+    onThinkingLevelChange: (EidosThinkingLevel) -> Unit,
 ) {
     val colors = LocalOptimalXColors.current
 
@@ -262,9 +329,19 @@ private fun ChatOverflowMenu(
             ),
         )
         DropdownMenuItem(
-            text = { MenuItem("Memory: $memoryDepthLabel") },
-            onClick = { onMemoryDepthClick() },
+            text = { MenuItem("Provider: $activeProviderLabel") },
+            onClick = onProviderClick,
             colors = MenuDefaults.itemColors(textColor = colors.accent),
+        )
+        HorizontalDivider(
+            color = colors.border,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+        ThinkingOverflowSection(
+            level = thinkingLevel,
+            supported = thinkingSupported,
+            providerLabel = activeProviderLabel,
+            onLevelSelected = onThinkingLevelChange,
         )
         HorizontalDivider(
             color = colors.border,
@@ -333,6 +410,152 @@ private fun ChatOverflowMenu(
             )
         }
     }
+}
+
+@Composable
+private fun ThinkingOverflowSection(
+    level: EidosThinkingLevel,
+    supported: Boolean,
+    providerLabel: String,
+    onLevelSelected: (EidosThinkingLevel) -> Unit,
+) {
+    val colors = LocalOptimalXColors.current
+    val controlsEnabled = supported
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Thinking",
+                color = colors.textPrimary,
+                fontFamily = DmSansFamily,
+                fontSize = 15.sp,
+            )
+            if (!controlsEnabled) {
+                Text(
+                    text = "Off",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        if (controlsEnabled) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                EidosThinkingLevel.entries.forEach { choice ->
+                    val selected = choice == level
+                    val shape = RoundedCornerShape(8.dp)
+                    Text(
+                        text = choice.wire.replaceFirstChar { it.uppercase() },
+                        color = if (selected) colors.accent else colors.textMid,
+                        fontFamily = DmSansFamily,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .clip(shape)
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) colors.accent else colors.border,
+                                shape = shape,
+                            )
+                            .background(
+                                if (selected) colors.accent.copy(alpha = 0.12f) else colors.surface2,
+                            )
+                            .clickable { onLevelSelected(choice) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+            }
+            Text(
+                text = "Applies to $providerLabel on your next message. Higher levels use more time and tokens.",
+                color = colors.textDim,
+                fontFamily = DmMonoFamily,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        } else if (!supported) {
+            Text(
+                text = "$providerLabel does not expose a reasoning depth control.",
+                color = colors.textDim,
+                fontFamily = DmMonoFamily,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProviderSelectionDialog(
+    activeProvider: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalOptimalXColors.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface2,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textMid,
+        title = {
+            Text(
+                text = "LLM provider",
+                fontFamily = DmSansFamily,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Applies to Eidos chat on your next message.",
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    color = colors.textDim,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                EIDOS_PROVIDER_CHOICES.forEach { choice ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onSelect(choice.id) }
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = activeProvider == choice.id,
+                            onClick = { onSelect(choice.id) },
+                        )
+                        Text(
+                            text = choice.label,
+                            color = colors.textPrimary,
+                            fontFamily = DmSansFamily,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(start = 2.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = colors.accent, fontFamily = DmSansFamily)
+            }
+        },
+    )
 }
 
 @Composable

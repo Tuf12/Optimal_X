@@ -43,6 +43,24 @@ No other file types are supported in v2.
 - Files are scoped to a specific subfolder — there is no global file library
 - A subfolder can have zero or more files attached to it
 
+### Image Studio generated images
+
+Image Studio saves generated PNG/WebP files through the **same `file_references` + private storage path** as manual imports.
+
+| Topic | Behavior |
+|-------|----------|
+| Storage path | `optimalx_files/{subfolderId}/{fileName}` via [SyncFilePaths](../src/main/java/com/example/optimalx/data/sync/SyncFilePaths.kt) |
+| Metadata | `metadataJson` on the row — prompt, tier, aspect, backend, optional cost fields ([Image Studio specs](../image_studio/README.md)) |
+| Hub save target | **Image Studio › General** system subfolder (fixed `globalId`) |
+| Subfolder panel | Images save to the **current subfolder** |
+| Gallery | Image Studio panel lists images; hub lists **all** images with folder badges |
+| Regenerate | Always a **new** file row — duplicate names in the same subfolder are rejected |
+| Sync Tier 1 | Row + `metadataJson` push/pull with desktop |
+| Sync Tier 3 | Bytes upload/download via existing attachment Files API (same as PDF/images in Files) |
+| Eidos | `image_studio` scope + `list_images` + draft handoff — see [eidos-integration.md](../image_studio/eidos-integration.md) |
+
+Imported files keep `metadataJson = null`. Generated rows use `source: image_studio` in metadata.
+
 ---
 
 ## Storage Location
@@ -57,11 +75,9 @@ No other file types are supported in v2.
 - No schema changes are required — the pointer system handles this transition cleanly
 - Full detail on cloud transition is defined in DATA_MODEL.md
 
-### Bulk movement in / out (backup, restore, salvage)
+### Bulk movement in / out
 - Single-file picker imports stay as described above (one file, one subfolder)
-- All **bulk** transfer — full snapshots between the phone and a paired desktop app, SAF export / import, orphan recovery — is owned by the OptimalX Link subsystem
-- The OptimalX Link spec ([OPTIMALX_LINK.md](OPTIMALX_LINK.md)) is the single source of truth for archive format, SAF export/import, the phone-side Ktor server (scoped to the Link screen), and the PySide6 desktop app
-- Any new pathway that moves multiple files at once must route through the shared archive core defined there, not invent its own format
+- **Sync with Desktop** (LAN incremental sync + file transfer) uses the OptimalX Desktop Electron app — see [DESKTOP_SYNC_MOBILE_PHASE2.md](../implementation/DESKTOP_SYNC_MOBILE_PHASE2.md) and [cross-repo/README.md](../cross-repo/README.md)
 
 ---
 
@@ -89,12 +105,14 @@ Eidos can interact with attached files to assist the user.
 ### What Eidos can do with files
 - Read and summarize PDF and Word document content
 - Answer questions about file content
-- View and describe images
+- View and describe images in the Files panel via `describe_image(fileReferenceId)`
+- **Chat attach (desktop shipped, mobile Phases 0–2):** paste or pick a picture in the Eidos composer so Eidos sees **that send**. Separate from Files — no `file_references` row. See [CHAT_VISION_ATTACH_PLAN.md](../implementation/CHAT_VISION_ATTACH_PLAN.md) and desktop [design.md](https://github.com/Tuf12/OptimalXDesktop1.0/blob/main/design.md#chat-vision-desktop-shipped)
 - Provide feedback on file content
 - Reference file content when responding to user queries in the same subfolder
 
 ### Important
-- Eidos accesses files through the same FileReference system
+- Eidos accesses Files-panel documents through the same FileReference system
+- Chat composer images are **not** FileReferences (desktop shipped; mobile Phases 0–2)
 - Eidos file capabilities are fully defined in EIDOS_AGENT.md
 - File reading by Eidos is scoped to the current subfolder context
 

@@ -54,6 +54,9 @@ After Whisper removal, remaining **non-compliant** libraries:
 | Library | Source | ELF Align | 16 KB OK? | App feature |
 |---------|--------|-----------|-----------|-------------|
 | `libmediapipe_tasks_text_jni.so` | `com.google.mediapipe:tasks-text:0.10.32` | `0x4000` | YES | Semantic search — runs `universal_sentence_encoder.tflite` |
+| `liblitertlm_jni.so` | `com.google.ai.edge.litertlm:litertlm-android:0.13.1` | `0x4000` | YES | LiteRT-LM on-device LLM (Gemma 4) |
+| `libLiteRt.so` | LiteRT-LM (transitive) | `0x4000` | YES | LiteRT runtime |
+| `libLiteRtClGlAccelerator.so` | LiteRT-LM (transitive) | `0x4000` | YES | LiteRT OpenCL GPU delegate |
 | `libandroidx.graphics.path.so` | AndroidX Compose | `0x4000` | YES | Compose graphics |
 | `libdatastore_shared_counter.so` | AndroidX DataStore | `0x4000` | YES | Preferences |
 

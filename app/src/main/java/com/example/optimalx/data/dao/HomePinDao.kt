@@ -37,6 +37,12 @@ interface HomePinDao {
     @Query("DELETE FROM home_pins WHERE pinType = 'subfolder' AND targetId = :subfolderId")
     suspend fun deleteForSubfolder(subfolderId: Long)
 
+    @Query("SELECT * FROM home_pins WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): HomePin?
+
+    @Query("SELECT * FROM home_pins WHERE createdAt > :since")
+    suspend fun getChangedSince(since: Long): List<HomePin>
+
     @Query("DELETE FROM home_pins WHERE pinType = 'panel' AND targetId = :workshopSubfolderId")
     suspend fun deleteForPanel(workshopSubfolderId: Long)
 

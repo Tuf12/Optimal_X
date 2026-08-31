@@ -20,10 +20,11 @@ Coding agents should use this file alongside EIDOS_AGENT.md, VOICE_SYSTEM.md, WI
 | Symptom | Status | Plan phase |
 |---------|--------|------------|
 | Read aloud always re-opens mic after TTS | **Shipped (Phase 1)** | `READ_ALOUD_MIC_PASSBACK` |
+| Composer image attach (chat vision) | **Desktop shipped** — mobile Phases 0–2 shipped (composer + inference); Phase 3 polish optional | [CHAT_VISION_ATTACH_PLAN.md](../implementation/CHAT_VISION_ATTACH_PLAN.md) |
 | Moved conversation still listed in old folder | Planned | Phases 3–4 — pointer cleanup + list refresh |
 | Chat wiped when leaving DumpEdit or rotating | Planned | Phases 5–6 — scope lifecycle + rotation guard |
 | Whisper failure with no user feedback / Google retry | Planned | Phase 2 |
-| This file § STT Engine Integration still describes Sherpa/VAD | Planned | Phase 8 — align with `VOICE_SYSTEM.md` |
+| STT doc alignment (`VOICE_SYSTEM.md`, checklist, this file § STT) | **Shipped** | Phase 8 — see `VOICE_SYSTEM.md` |
 
 **Manual QA:** [VOICE_CHAT_STT_QA.md](../implementation/VOICE_CHAT_STT_QA.md)
 
@@ -68,6 +69,8 @@ Every conversation is scoped to the context where Eidos was opened.
 - Full storage detail is defined in DATA_MODEL.md and WIDGET_SYSTEM.md
 
 **Implementation:** [PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md](../implementation/PANEL_EIDOS_CHAT_IMPLEMENTATION_PLAN.md) — gallery/runner Eidos rollout.
+
+**Navigation from chat:** When Eidos creates or edits notes, folders, or workshop files, the user can open the affected place via structured action chips (and optional `optimalx://` markdown links). Spec: [EIDOS_NAVIGATION.md](EIDOS_NAVIGATION.md). Plan: [EIDOS_NAVIGATION_IMPLEMENTATION_PLAN.md](../implementation/EIDOS_NAVIGATION_IMPLEMENTATION_PLAN.md).
 
 **Provider thinking:** Kimi/OpenAI/xAI `reasoning_content` is stored on each assistant `ChatMessage` (`assistantReasoningContent`) and shown in the collapsible **Reasoning** section on chat bubbles — not in a separate Reasoning folder. See [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md).
 
@@ -141,14 +144,15 @@ Implemented in `ChatTopBar.kt`. Fixed icon row — no labeled switches in the ba
 | Read Aloud | Right | Icon: `VolumeUp` (accent) when on, `VolumeOff` (dim) when off. Toggles `READ_ALOUD`. First tap may show explainer dialog (`READ_ALOUD_INFO_DISMISSED`) |
 | Overflow (⋮) | Right | Dropdown menu (see below) |
 
-**`restrictToolbar`:** Web panel sheet and other constrained surfaces hide History + New Chat in the icon row. Move and memory depth remain in the overflow menu.
+**`restrictToolbar`:** Web panel sheet and other constrained surfaces hide History + New Chat in the icon row. Move remains in the overflow menu.
 
 ### Overflow menu (⋮)
 
 | Item | When visible | Action |
 |---|---|---|
 | Move conversation here | Always | Moves active thread to current scope (disabled if no active conversation) |
-| Memory: *label* | Always | Tap cycles conversation memory depth |
+| Provider | Always | Switch active LLM provider |
+| Thinking | Kimi / OpenAI / xAI | Low / Medium / High (global pref; next message) |
 | Whisper mic | Always | Toggle `MIC_USE_WHISPER_API` (disabled without OpenAI API key in Settings) |
 | Pass-back mic | Read aloud on | Toggle `READ_ALOUD_MIC_PASSBACK` |
 | Stop generating | While `isSending` | Cancels in-flight send (secondary to composer Stop) |
@@ -269,54 +273,79 @@ Implemented in `ChatComposerBar.kt`. Sits at the bottom above the keyboard (with
 
 | # | Control | Notes |
 |---|---------|--------|
-| 1 | `OutlinedTextField` | `weight(1f)`, min 48dp / max 140dp tall, 12dp corners, max 5 lines. Shows live transcript while capturing voice |
-| 2 | Mic | 44dp. Idle → start STT; Listening/Transcribing → pause; Paused → resume; Speaking → stop TTS |
-| 3 | Send **or** Stop | Single 38dp slot: **Send** (▶) when idle; **Stop** (■, accent) while `isSending`. Never both visible |
+| 1 | Attach image | **Desktop shipped / mobile Phases 0–2.** Gallery, camera, or paste. Chip shows thumbnail + “Vision this send.” Empty text sends “Describe this image.” The active provider sees the image on **that send only**. Widget omits attach. See [CHAT_VISION_ATTACH_PLAN.md](../implementation/CHAT_VISION_ATTACH_PLAN.md) |
+| 2 | `OutlinedTextField` | `weight(1f)`, min 48dp / max 140dp tall, 12dp corners, max 5 lines. Shows live transcript while capturing voice |
+| 3 | Mic | 44dp. Idle → start STT; Listening/Transcribing → pause; Paused → resume; Speaking → stop TTS |
+| 4 | Send **or** Stop | Single 38dp slot: **Send** (▶) when idle; **Stop** (■, accent) while `isSending`. Never both visible |
 
 ### Behavior
 - Text and voice share one field; voice appends to existing draft text
-- Send enabled when draft non-empty, or voice capturing, or voice paused (commit path)
+- Send enabled when draft non-empty, **or an image is attached**, or voice capturing, or voice paused (commit path)
+- An attached image is **this send only** — the next message is normal text unless the user attaches again
 - Send disabled while `isSending` (use Stop instead)
-- After send: draft clears; mic returns to idle per voice controller
+- After send: draft and pending image clear; mic returns to idle per voice controller
 - Tap message list / chrome (not composer) clears focus and hides keyboard
 
 Voice internals: `VOICE_SYSTEM.md`. Chat UI treats voice as a continuous transcript stream.
 
 ## Mic states
-Idle — mic off
-Listening — STT active
-Paused — STT temporarily stopped because user interacted with text input
-Suggested rules
-Mic button starts STT
-STT appends text into the current draft
-If user taps input while STT is active → STT pauses
-User can edit text normally
-Mic shows paused state visually
-User taps mic again to resume listening
-Send sends the full current draft exactly as shown in the input field
-After sending, clear draft and reset mic to idle
+
+| State | Meaning |
+|-------|---------|
+| **Idle** | Mic off |
+| **Listening** | STT active — live transcript in composer |
+| **Paused** | Whisper API or Gemma scribe: capture paused, audio buffered (no transcribe yet). Google: not used — tap input finalizes Google text into composer instead |
+| **Transcribing** | Whisper/Gemma: upload or on-device scribe finishing after stop/send |
+| **Speaking** | Read-aloud TTS playing (`ReadAloudSession`) |
+
+Suggested rules:
+
+- Mic starts STT; speech appends to the current draft (`TranscriptAssembler` + `liveTranscript`).
+- **Google:** tap input while listening → finalize Google text into composer (not pause-buffer mode).
+- **Whisper / Gemma scribe:** tap input while listening → pause capture; tap mic again to resume.
+- Send sends the full draft as shown; after send, draft clears and mic returns to idle.
 
 ---
 
-## STT Engine Integration (v3)
+## STT engine integration (shipped)
 
-- Primary STT path is local continuous ASR (`AudioRecord` + VAD + on-device transcription via **Sherpa ONNX**, with optional **Whisper** when installed — see `VOICE_SYSTEM.md`).
-- There is **no** in-app Android `SpeechRecognizer` path; if ASR cannot run, the user types (or uses the system keyboard’s voice input).
-- UI consumes partial/final transcript updates from a persistent buffer in controller/viewmodel state.
-- UI must not flicker or reset during internal speech segment transitions.
+Authoritative detail: **`VOICE_SYSTEM.md`**.
 
-Shipped wiring:
+### Chat + notes routing (`VoiceController`)
 
-- `VoiceController` observes `ContinuousSpeechToTextEngine.onDraftChanged` and publishes it to
-  `liveTranscript` — the input bar binds to that flow directly.
-- The mic button calls `startListening(existingText = inputText)` so spoken words append to any
-  typed draft without clobbering it.
-- Tapping the send button or mic-stop calls `stopListeningAndCommit`, which reads the final
-  assembled transcript from the engine and delivers it to the `onResult` callback.
-- Tapping the input field calls `pauseListening`, which commits the current draft into the input
-  field for editing and puts the session in `PAUSED` until `resumeListening(currentInputText)`.
+Priority when a mic session starts:
 
-See `VOICE_SYSTEM.md § Implementation Map (v3 shipped)` for the pipeline class layout.
+1. **Local Gemma scribe** — Settings → Use local Gemma scribe (`GemmaLocalScribeEngine`)
+2. **OpenAI Whisper API** — Settings toggle + saved OpenAI key (`WhisperApiSpeechToTextEngine`)
+3. **Google STT** (default) — `GoogleSpeechToTextEngine` (Android `SpeechRecognizer`, Google Quick Search when available)
+
+There is **no** Sherpa ONNX, Parakeet, or VAD pipeline in shipped Kotlin.
+
+### UI wiring
+
+- Composer binds to `VoiceController.liveTranscript` while mic is active.
+- `startListening(existingText = inputText)` seeds `TranscriptAssembler` so speech appends to typed text.
+- **Send** / mic stop → `stopListeningAndCommit` → final text delivered to send path.
+- **Whisper / Gemma:** `pauseListening` / `resumeListening` for pause without transcribe.
+- **Google:** `finalizeListeningForEdit` commits streaming text when user focuses the input field.
+
+### Read aloud (TTS)
+
+- Assistant replies use **`ReadAloudSession`** (chunked Android `TextToSpeech`), not raw `VoiceController` TTS, on chat surfaces.
+- Optional mic pass-back after TTS via `READ_ALOUD_MIC_PASSBACK`.
+
+### Implementation map
+
+| Class | Role |
+|-------|------|
+| `VoiceController` | Mic session state, STT backend selection, `liveTranscript` |
+| `GoogleSpeechToTextEngine` | Default streaming STT |
+| `WhisperApiSpeechToTextEngine` | Buffered PCM → OpenAI Whisper on stop |
+| `GemmaLocalScribeEngine` | Rolling slices → LiteRT scribe (see `GemmaLocal.md`) |
+| `TranscriptAssembler` | Committed + partial merge |
+| `ReadAloudSession` | Chunked read-aloud for chat and notes |
+
+Widget Chat UI uses the same `VoiceController` routing. Home widget **Ask Eidos / Quick Notes** use Google STT only (`WidgetVoiceService`).
 
 ---
 
@@ -324,7 +353,7 @@ See `VOICE_SYSTEM.md § Implementation Map (v3 shipped)` for the pipeline class 
 
 | State | Input bar | Mic button | Send button |
 |---|---|---|---|
-| Idle | Active | Available to tap | Active if text present |
+| Idle | Active | Available to tap | Active if text **or an attached image** is present |
 | User speaking | Shows accumulated speech text | Active (lit) | Active |
 | Waiting for Eidos response | Inactive | Inactive | Inactive |
 | Eidos TTS playing | Active | Available to tap | Active if text present |

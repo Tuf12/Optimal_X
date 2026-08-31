@@ -9,7 +9,7 @@ class WorkshopBuildKickoffTest {
     @Test
     fun fromStored_parsesKnownValues() {
         assertEquals(WorkshopBuildKickoff.DESIGN, WorkshopBuildKickoff.fromStored("DESIGN"))
-        assertEquals(WorkshopBuildKickoff.PLAN, WorkshopBuildKickoff.fromStored("plan"))
+        assertEquals(WorkshopBuildKickoff.LOGIC, WorkshopBuildKickoff.fromStored("logic"))
     }
 
     @Test

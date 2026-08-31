@@ -40,7 +40,9 @@ That principle still applies to the **system prompt** (no inlined notes, folder 
 - skipping Moonshot-required `reasoning_content` in API `messages`, or
 - hiding reasoning from the user when it hurts troubleshooting.
 
-**Preserved `reasoning_content` is Kimi transport**, not prompt bloat. Moonshot requires it for reliable multi-step tool use. Our lean-prompt policy must not block it.
+**Preserved `reasoning_content` is Kimi transport**, not prompt bloat. Moonshot requires it on assistant rows **with `tool_calls`** during in-flight tool hops. Our lean-prompt policy must not block that.
+
+**Do not conflate with system-prompt resend:** Re-sending the full workshop system block every hop is **not** required for reasoning replay and is **not** made free by prefix cache — see [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md). Code: `EidosHistoryTrimmer.prepareKimiOutboundHistory` handles reasoning; `assembleSystemPrompt` should run once per user turn on the wire.
 
 ---
 
@@ -61,7 +63,7 @@ Sources:
 | `model` | `kimi-k2.6` | ✅ `DEFAULT_KIMI_MODEL` |
 | `thinking.type` | `enabled` (chat) | ✅ always enabled for Eidos chat |
 | `thinking.keep` | `"all"` only on in-flight tool continuations; omitted on normal follow-ups | ✅ |
-| `reasoning_content` | Echo on **every** historical assistant message | 🔴 Phase 1 |
+| `reasoning_content` | Required on assistant rows **with `tool_calls`** in current turn; stripped on old text-only rows (`prepareKimiOutboundHistory`) | 🟡 |
 | `max_tokens` | **≥ 16,000** | ✅ `32_384` |
 | `temperature` | **1.0** (K2.6 fixed) | ✅ implicit server default |
 | `stream` | **`true` recommended** | ✅ Phase 2 |
@@ -72,7 +74,7 @@ Sources:
 
 When thinking is enabled:
 
-1. Include full historical `reasoning_content` in `messages` (with `keep: all`).
+1. Include `reasoning_content` on assistant rows that have `tool_calls` during in-flight hops (`keep: all`). Eidos strips text-only reasoning on older turns via `prepareKimiOutboundHistory` — do not re-send full system prompt each hop for this.
 2. `max_tokens ≥ 16_000`.
 3. `temperature = 1.0`.
 4. Use **streaming** for long thinking + content responses.

@@ -112,7 +112,7 @@ The text content tied to a subfolder. One note per subfolder, always.
 | updatedAt | Long | Unix timestamp of last modification |
 | deletedAt | Long? | Unix timestamp of when item was moved to trash. Null means active. |
 | aiLocked | Boolean | If true, Eidos cannot write to this note. Eidos can still read it. Default is false. |
-| aiBlind | Boolean | If true, Eidos cannot read or write this note. The content is fully unavailable to API calls — excluded from `read_note`, `search_semantic`, `list_folder_contents` previews, the active-subfolder system context, daily/long-term memory and journal context loaders, and the materialized Tag & Hint Index. The user's own UI (editor, search) is unaffected. Default is false. |
+| aiBlind | Boolean | If true, Eidos cannot read or write this note. The content is fully unavailable to API calls — excluded from `search_semantic`, `list_folder_contents` previews, the active-subfolder system context, daily/long-term memory and journal context loaders, and semantic chunk indexing. The user's own UI (editor, search) is unaffected. Default is false. |
 
 Rules:
 - A note belongs to exactly one subfolder (via subfolderId)
@@ -134,6 +134,9 @@ A pointer to a file stored in device storage (or cloud storage in the future).
 | fileType | String | Type of file: pdf / docx / image |
 | filePath | String | Path to the file in device storage (or cloud URL in future) |
 | createdAt | Long | Unix timestamp when file was attached |
+| globalId | String | Stable sync identity (UUID) |
+| originDeviceId | String? | Device that created the row (sync) |
+| metadataJson | String? | Optional JSON for Image Studio generation metadata (`source: image_studio`) |
 
 Rules:
 - A file reference belongs to exactly one subfolder (via subfolderId)
@@ -164,6 +167,7 @@ Rules:
 - Pins are removed when the target is trashed/deleted, or when a parent folder delete cascades to its subfolder pins
 - Panel pins reference a **Panel Workshop** project subfolder (`workshopSubfolderId`)
 - Pins do not appear in search or the Eidos index
+- **Not synced** between devices — each phone/PC keeps its own user pin shortcuts (see desktop [flow.md](https://github.com/Tuf12/OptimalXDesktop1.0/blob/main/flow.md#fk-apply-order))
 
 ---
 
@@ -233,12 +237,16 @@ A single message inside a conversation.
 | conversationId | Long | ID of the conversation this message belongs to |
 | role | String | Who sent the message: "user" or "eidos" |
 | content | String | Full text content of the message |
+| assistantReasoningContent | String? | Provider thinking text for assistant rows |
+| navigationTargetsJson | String? | JSON array of navigation chips (assistant) |
+| imageAttachmentJson | String? | Chat vision attach: `{ fileName, mimeType, storedName }`. Desktop + mobile (Room v30). Bytes stay device-local. |
 | createdAt | Long | Unix timestamp of the message |
 
 Rules:
 - A message belongs to exactly one conversation (via conversationId)
-- Messages are append only — they are never edited after being written
+- Messages are append only — they are never edited after being written (desktop/mobile chat **Edit** truncates following rows, then the user sends again)
 - Deleting a conversation deletes all its messages
+- Chat-attach image **bytes** are device-local (`filesDir/chat-images/<storedName>` on mobile). Tier 2 may sync `imageAttachmentJson` without the file.
 
 ---
 

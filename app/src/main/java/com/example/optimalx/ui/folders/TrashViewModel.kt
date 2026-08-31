@@ -24,12 +24,20 @@ class TrashViewModel(app: Application) : AndroidViewModel(app) {
         repo.getDeletedSubfolders()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val deletedFiles: StateFlow<List<com.example.optimalx.data.imagestudio.FileReferenceWithFolderLabels>> =
+        repo.getDeletedFileReferences()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     fun restoreParentFolder(id: Long) {
         viewModelScope.launch { repo.restoreParentFolder(id) }
     }
 
     fun restoreSubfolder(id: Long) {
         viewModelScope.launch { repo.restoreSubfolder(id) }
+    }
+
+    fun restoreFile(id: Long) {
+        viewModelScope.launch { repo.restoreFileReference(id) }
     }
 
     fun permanentlyDeleteParentFolder(id: Long) {
@@ -40,5 +48,9 @@ class TrashViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.permanentlyDeleteSubfolder(getApplication<Application>().applicationContext, id)
         }
+    }
+
+    fun permanentlyDeleteFile(id: Long) {
+        viewModelScope.launch { repo.permanentlyDeleteFileReference(id) }
     }
 }

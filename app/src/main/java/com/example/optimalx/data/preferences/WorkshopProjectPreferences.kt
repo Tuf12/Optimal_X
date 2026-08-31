@@ -21,9 +21,20 @@ object WorkshopProjectPreferences {
     private fun alignFingerprintKey(subfolderId: Long, scope: WorkshopDocAlignScope) =
         "workshop_${subfolderId}_align_fp_${scope.name}"
 
+    private fun alignSpecFingerprintsKey(subfolderId: Long, scope: WorkshopDocAlignScope) =
+        "workshop_${subfolderId}_align_specfp_${scope.name}"
+
+    /** SHA-256 of design runtime files captured when Build design was kicked off. */
+    private fun designBuildBaselineKey(subfolderId: Long) =
+        "workshop_${subfolderId}_design_build_baseline"
+
+    /** SHA-256 of logic runtime files captured when Build logic was kicked off. */
+    private fun logicBuildBaselineKey(subfolderId: Long) =
+        "workshop_${subfolderId}_logic_build_baseline"
+
     private fun eidosModeKey(subfolderId: Long) = "workshop_${subfolderId}_eidos_mode"
 
-    /** Active one-shot Build design / Build logic / Build plan kickoff (cleared after send). */
+    /** Active one-shot Build design / Build logic kickoff (cleared after send). */
     private fun buildKickoffKey(subfolderId: Long) = "workshop_${subfolderId}_build_kickoff"
 
     private fun projectPhaseKey(subfolderId: Long) = "workshop_${subfolderId}_project_phase"
@@ -55,14 +66,16 @@ object WorkshopProjectPreferences {
     private fun pendingUpdateDocAlignDoneKey(subfolderId: Long) =
         "workshop_${subfolderId}_pending_update_doc_align_done"
 
-    private fun implementationPlanAcceptedKey(subfolderId: Long) =
-        "workshop_${subfolderId}_implementation_plan_accepted"
-
-    private fun implementationPlanAcceptedHashKey(subfolderId: Long) =
-        "workshop_${subfolderId}_implementation_plan_accepted_hash"
-
     /** Epoch ms when runtime files were last copied to `panel_releases/{subfolderId}/`. */
     private fun publishedAtKey(subfolderId: Long) = "workshop_${subfolderId}_published_at_ms"
+
+    /** Set when Generate specs kickoff is sent; cleared after a successful summary or failed send. */
+    private fun pendingProjectSummaryAfterSpecGenerateKey(subfolderId: Long) =
+        "workshop_${subfolderId}_pending_project_summary_after_spec_generate"
+
+    /** Bounded spec digest ([WorkshopSpecMarkdown]) at last successful project summary. */
+    private fun projectSummarySpecDigestKey(subfolderId: Long) =
+        "workshop_${subfolderId}_project_summary_spec_digest"
 
     fun isInitialBuildSent(context: Context, subfolderId: Long): Boolean =
         prefs(context).getBoolean(initialKey(subfolderId), false)
@@ -90,6 +103,46 @@ object WorkshopProjectPreferences {
         fingerprint: String,
     ) {
         prefs(context).edit().putString(alignFingerprintKey(subfolderId, scope), fingerprint).apply()
+    }
+
+    /** Per-spec fingerprints (spec content + its relevant code) after the last successful [scope] align. */
+    fun getAlignSpecFingerprints(
+        context: Context,
+        subfolderId: Long,
+        scope: WorkshopDocAlignScope,
+    ): Map<String, String> {
+        val raw = prefs(context).getString(alignSpecFingerprintsKey(subfolderId, scope), null)
+            ?: return emptyMap()
+        return raw.split('\n').mapNotNull { line ->
+            val idx = line.indexOf('\t')
+            if (idx <= 0) null else line.substring(0, idx) to line.substring(idx + 1)
+        }.toMap()
+    }
+
+    fun setAlignSpecFingerprints(
+        context: Context,
+        subfolderId: Long,
+        scope: WorkshopDocAlignScope,
+        fingerprints: Map<String, String>,
+    ) {
+        val raw = fingerprints.entries.joinToString("\n") { "${it.key}\t${it.value}" }
+        prefs(context).edit().putString(alignSpecFingerprintsKey(subfolderId, scope), raw).apply()
+    }
+
+    /** Runtime digest snapshot captured when Build design was kicked off (empty = none). */
+    fun getDesignBuildBaseline(context: Context, subfolderId: Long): String =
+        prefs(context).getString(designBuildBaselineKey(subfolderId), null) ?: ""
+
+    fun setDesignBuildBaseline(context: Context, subfolderId: Long, digestHex: String) {
+        prefs(context).edit().putString(designBuildBaselineKey(subfolderId), digestHex).apply()
+    }
+
+    /** Runtime digest snapshot captured when Build logic was kicked off (empty = none). */
+    fun getLogicBuildBaseline(context: Context, subfolderId: Long): String =
+        prefs(context).getString(logicBuildBaselineKey(subfolderId), null) ?: ""
+
+    fun setLogicBuildBaseline(context: Context, subfolderId: Long, digestHex: String) {
+        prefs(context).edit().putString(logicBuildBaselineKey(subfolderId), digestHex).apply()
     }
 
     /**
@@ -144,27 +197,27 @@ object WorkshopProjectPreferences {
     fun getEidosModeOverride(context: Context, subfolderId: Long): WorkshopEidosMode? =
         WorkshopEidosMode.fromStored(prefs(context).getString(eidosModeKey(subfolderId), null))
 
-    fun setEidosModeOverride(context: Context, subfolderId: Long, mode: WorkshopEidosMode?, commit: Boolean = false) {
+    fun setEidosModeOverride(context: Context, subfolderId: Long, mode: WorkshopEidosMode?) {
         val editor = prefs(context).edit()
         if (mode == null) {
             editor.remove(eidosModeKey(subfolderId))
         } else {
             editor.putString(eidosModeKey(subfolderId), mode.name)
         }
-        if (commit) editor.commit() else editor.apply()
+        editor.apply()
     }
 
     fun getBuildKickoff(context: Context, subfolderId: Long): WorkshopBuildKickoff? =
         WorkshopBuildKickoff.fromStored(prefs(context).getString(buildKickoffKey(subfolderId), null))
 
-    fun setBuildKickoff(context: Context, subfolderId: Long, kickoff: WorkshopBuildKickoff?, commit: Boolean = false) {
+    fun setBuildKickoff(context: Context, subfolderId: Long, kickoff: WorkshopBuildKickoff?) {
         val editor = prefs(context).edit()
         if (kickoff == null) {
             editor.remove(buildKickoffKey(subfolderId))
         } else {
             editor.putString(buildKickoffKey(subfolderId), kickoff.name)
         }
-        if (commit) editor.commit() else editor.apply()
+        editor.apply()
     }
 
     fun clearBuildKickoff(context: Context, subfolderId: Long) {
@@ -220,31 +273,6 @@ object WorkshopProjectPreferences {
         prefs(context).edit().putBoolean(pendingUpdateDocAlignDoneKey(subfolderId), done).apply()
     }
 
-    fun isImplementationPlanAccepted(context: Context, subfolderId: Long): Boolean =
-        prefs(context).getBoolean(implementationPlanAcceptedKey(subfolderId), false)
-
-    fun getImplementationPlanAcceptedContentHash(context: Context, subfolderId: Long): String =
-        prefs(context).getString(implementationPlanAcceptedHashKey(subfolderId), null).orEmpty()
-
-    fun setImplementationPlanAccepted(
-        context: Context,
-        subfolderId: Long,
-        accepted: Boolean,
-        contentHash: String,
-    ) {
-        prefs(context).edit()
-            .putBoolean(implementationPlanAcceptedKey(subfolderId), accepted)
-            .putString(implementationPlanAcceptedHashKey(subfolderId), contentHash)
-            .apply()
-    }
-
-    fun clearImplementationPlanAcceptance(context: Context, subfolderId: Long) {
-        prefs(context).edit()
-            .remove(implementationPlanAcceptedKey(subfolderId))
-            .remove(implementationPlanAcceptedHashKey(subfolderId))
-            .apply()
-    }
-
     fun getPublishedAtMs(context: Context, subfolderId: Long): Long =
         prefs(context).getLong(publishedAtKey(subfolderId), 0L)
 
@@ -254,5 +282,21 @@ object WorkshopProjectPreferences {
 
     fun clearPublishedAt(context: Context, subfolderId: Long) {
         prefs(context).edit().remove(publishedAtKey(subfolderId)).apply()
+    }
+
+    fun isPendingProjectSummaryAfterSpecGenerate(context: Context, subfolderId: Long): Boolean =
+        prefs(context).getBoolean(pendingProjectSummaryAfterSpecGenerateKey(subfolderId), false)
+
+    fun setPendingProjectSummaryAfterSpecGenerate(context: Context, subfolderId: Long, pending: Boolean) {
+        prefs(context).edit()
+            .putBoolean(pendingProjectSummaryAfterSpecGenerateKey(subfolderId), pending)
+            .apply()
+    }
+
+    fun getProjectSummarySpecDigest(context: Context, subfolderId: Long): String =
+        prefs(context).getString(projectSummarySpecDigestKey(subfolderId), null).orEmpty()
+
+    fun setProjectSummarySpecDigest(context: Context, subfolderId: Long, digestHex: String) {
+        prefs(context).edit().putString(projectSummarySpecDigestKey(subfolderId), digestHex).apply()
     }
 }

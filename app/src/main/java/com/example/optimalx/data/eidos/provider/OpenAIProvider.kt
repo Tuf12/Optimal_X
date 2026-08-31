@@ -24,21 +24,29 @@ class OpenAIProvider(
 ) : EidosProvider {
 
     override suspend fun send(request: EidosRequest): EidosResponse {
+        val markStableSystemBreakpoint = shouldMarkStableSystemBreakpoint(request)
         val payload = buildJsonObject {
-            put("model", JsonPrimitive("gpt-5.4-mini-2026-03-17"))
-            put(
-                "reasoning",
-                buildJsonObject {
-                    put("effort", JsonPrimitive("medium"))
-                    put("summary", JsonPrimitive("auto"))
-                },
-            )
+            put("model", JsonPrimitive("gpt-5.6-luna"))
+            request.reasoningEffort?.let { effort ->
+                put(
+                    "reasoning",
+                    buildJsonObject {
+                        put("effort", JsonPrimitive(effort))
+                        put("summary", JsonPrimitive("auto"))
+                    },
+                )
+            }
             put("text", buildJsonObject { put("verbosity", JsonPrimitive("low")) })
             put("tools", buildTools(request))
             if (!request.previousResponseId.isNullOrBlank()) {
                 put("previous_response_id", JsonPrimitive(request.previousResponseId))
             }
-            put("input", buildInput(request))
+            OpenAiPromptCache.appendRequestFields(
+                builder = this,
+                promptCacheKey = request.promptCacheKey,
+                markStableSystemBreakpoint = markStableSystemBreakpoint,
+            )
+            put("input", buildInput(request, markStableSystemBreakpoint))
         }
 
         val requestBody = json.encodeToString(JsonObject.serializer(), payload)
@@ -114,24 +122,24 @@ class OpenAIProvider(
         }
     }
 
-    private fun buildInput(request: EidosRequest) = buildJsonArray {
+    private fun shouldMarkStableSystemBreakpoint(request: EidosRequest): Boolean {
+        val incremental = request.phase == EidosRequestPhase.TOOL_CONTINUATION &&
+            !request.previousResponseId.isNullOrBlank()
+        if (incremental) return false
+        val stable = request.stableSystemPrefix?.trim().orEmpty()
+        if (stable.isNotBlank()) return true
+        return request.systemPrompt.isNotBlank()
+    }
+
+    private fun buildInput(
+        request: EidosRequest,
+        markStableSystemBreakpoint: Boolean,
+    ) = buildJsonArray {
         val incremental = request.phase == EidosRequestPhase.TOOL_CONTINUATION &&
             !request.previousResponseId.isNullOrBlank()
 
-        if (!incremental && request.systemPrompt.isNotBlank()) {
-            add(
-                buildJsonObject {
-                    put("role", JsonPrimitive("system"))
-                    put("content", buildJsonArray {
-                        add(
-                            buildJsonObject {
-                                put("type", JsonPrimitive("input_text"))
-                                put("text", JsonPrimitive(request.systemPrompt))
-                            }
-                        )
-                    })
-                }
-            )
+        if (!incremental) {
+            appendSystemInstructions(request, markStableSystemBreakpoint)
         }
 
         request.conversationHistory.forEach { message ->
@@ -166,23 +174,62 @@ class OpenAIProvider(
             }
         }
 
-        if (request.userMessage.isNotBlank()) {
-            addUserMessage(request.userMessage)
+        if (request.userMessage.isNotBlank() || request.attachedImagePaths.isNotEmpty()) {
+            addUserMessage(request.userMessage, request.attachedImagePaths)
         }
     }
 
-    private fun kotlinx.serialization.json.JsonArrayBuilder.addUserMessage(content: String) {
+    private fun kotlinx.serialization.json.JsonArrayBuilder.appendSystemInstructions(
+        request: EidosRequest,
+        markStableSystemBreakpoint: Boolean,
+    ) {
+        val stable = request.stableSystemPrefix?.trim().orEmpty()
+        val volatile = request.volatileSystemSuffix?.trim().orEmpty()
+        if (stable.isNotBlank()) {
+            add(
+                OpenAiPromptCache.developerMessage(
+                    text = stable,
+                    markCacheBreakpoint = markStableSystemBreakpoint,
+                ),
+            )
+            if (volatile.isNotBlank()) {
+                add(OpenAiPromptCache.developerMessage(text = volatile, markCacheBreakpoint = false))
+            }
+            return
+        }
+
+        if (request.systemPrompt.isBlank()) return
+        add(
+            buildJsonObject {
+                put("role", JsonPrimitive("system"))
+                put("content", buildJsonArray {
+                    add(
+                        if (markStableSystemBreakpoint) {
+                            OpenAiPromptCache.developerTextBlock(
+                                text = request.systemPrompt,
+                                markCacheBreakpoint = true,
+                            )
+                        } else {
+                            buildJsonObject {
+                                put("type", JsonPrimitive("input_text"))
+                                put("text", JsonPrimitive(request.systemPrompt))
+                            }
+                        },
+                    )
+                })
+            },
+        )
+    }
+
+    private fun kotlinx.serialization.json.JsonArrayBuilder.addUserMessage(
+        content: String,
+        imagePaths: List<String> = emptyList(),
+    ) {
+        val images = ChatVisionUserContent.encodePaths(imagePaths)
         add(
             buildJsonObject {
                 put("role", JsonPrimitive("user"))
-                put("content", buildJsonArray {
-                    add(
-                        buildJsonObject {
-                            put("type", JsonPrimitive("input_text"))
-                            put("text", JsonPrimitive(content))
-                        }
-                    )
-                })
+                put("content", ChatVisionUserContent.openAiInputContent(content, images))
             }
         )
     }

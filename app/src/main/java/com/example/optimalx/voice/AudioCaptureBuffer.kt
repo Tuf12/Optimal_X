@@ -7,12 +7,11 @@ import com.example.optimalx.voice.pipeline.VoicePipelineConfig
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
- * Captures mono 16 kHz PCM while the mic is open and can encode a WAV file for Whisper upload.
- * Supports pause/resume without flushing the accumulated buffer.
+ * Captures mono 16 kHz PCM while the mic is open and can encode WAV for Whisper / local Gemma scribe.
+ * Supports pause/resume without flushing the accumulated buffer, and mid-session PCM range copies
+ * so Gemma can transcribe rolling slices without stopping [AudioRecord].
  */
 class AudioCaptureBuffer {
     private val pcmStream = ByteArrayOutputStream()
@@ -20,9 +19,20 @@ class AudioCaptureBuffer {
     private var captureThread: Thread? = null
     @Volatile private var capturing = false
 
+    /** Absolute byte index of [pcmStream] index 0 (advances when prefix is dropped). */
+    private var pcmOriginBytes: Int = 0
+
     val isCapturing: Boolean get() = capturing
 
     fun hasAudio(): Boolean = synchronized(pcmStream) { pcmStream.size() > 0 }
+
+    /** Bytes currently held in the buffer (not including already-dropped prefix). */
+    fun bufferedPcmBytes(): Int = synchronized(pcmStream) { pcmStream.size() }
+
+    /** Absolute end of buffered PCM (= origin + size). */
+    fun absolutePcmEnd(): Int = synchronized(pcmStream) { pcmOriginBytes + pcmStream.size() }
+
+    fun pcmOrigin(): Int = synchronized(pcmStream) { pcmOriginBytes }
 
     fun start() {
         stopInternal(clearBuffer = true)
@@ -43,14 +53,71 @@ class AudioCaptureBuffer {
     fun stopAndWriteWav(target: File): Boolean {
         stopInternal(clearBuffer = false)
         val pcm = synchronized(pcmStream) { pcmStream.toByteArray() }
-        pcmStream.reset()
+        clearPcmLocked()
         if (pcm.isEmpty()) return false
         writeWavFile(target, pcm)
         return true
     }
 
+    /**
+     * Returns a WAV-wrapped copy of the capture and clears the buffer.
+     * LiteRT-LM miniaudio needs a container (WAV), not raw PCM16.
+     */
+    fun stopAndGetWavBytes(): ByteArray? {
+        stopInternal(clearBuffer = false)
+        val pcm = synchronized(pcmStream) { pcmStream.toByteArray() }
+        clearPcmLocked()
+        if (pcm.isEmpty()) return null
+        return AudioWavCodec.encodeWav(pcm)
+    }
+
+    /**
+     * Copy absolute PCM range [absStart, absEnd) as a WAV without stopping capture.
+     * Returns null if the range is empty or not fully buffered yet.
+     */
+    fun copyWavRange(absStart: Int, absEnd: Int): ByteArray? {
+        val start = AudioWavCodec.alignToFrame(absStart)
+        val end = AudioWavCodec.alignToFrame(absEnd)
+        if (end <= start) return null
+        val pcm = synchronized(pcmStream) {
+            val localStart = start - pcmOriginBytes
+            val localEnd = end - pcmOriginBytes
+            if (localStart < 0 || localEnd > pcmStream.size() || localStart >= localEnd) {
+                return null
+            }
+            pcmStream.toByteArray().copyOfRange(localStart, localEnd)
+        }
+        return AudioWavCodec.encodeWav(pcm)
+    }
+
+    /**
+     * Drop buffered PCM before [absKeepFrom] (absolute index). Keeps [absKeepFrom, end).
+     * Used after a rolling slice is committed so long meetings do not retain all PCM in RAM.
+     */
+    fun dropPcmBefore(absKeepFrom: Int) {
+        val keepFrom = AudioWavCodec.alignToFrame(absKeepFrom)
+        synchronized(pcmStream) {
+            val localKeep = keepFrom - pcmOriginBytes
+            if (localKeep <= 0) return
+            if (localKeep >= pcmStream.size()) {
+                clearPcmLocked()
+                pcmOriginBytes = keepFrom
+                return
+            }
+            val kept = pcmStream.toByteArray().copyOfRange(localKeep, pcmStream.size())
+            pcmStream.reset()
+            pcmStream.write(kept)
+            pcmOriginBytes = keepFrom
+        }
+    }
+
     fun clear() {
         stopInternal(clearBuffer = true)
+    }
+
+    private fun clearPcmLocked() {
+        pcmStream.reset()
+        pcmOriginBytes = 0
     }
 
     private fun startRecordingThread() {
@@ -102,36 +169,13 @@ class AudioCaptureBuffer {
         audioRecord = null
         if (clearBuffer) {
             synchronized(pcmStream) {
-                pcmStream.reset()
+                clearPcmLocked()
             }
         }
     }
 
     private fun writeWavFile(file: File, pcm: ByteArray) {
         file.parentFile?.mkdirs()
-        val totalDataLen = pcm.size + 36
-        val byteRate = VoicePipelineConfig.SAMPLE_RATE_HZ * 2
-        FileOutputStream(file).use { out ->
-            out.write("RIFF".toByteArray())
-            out.write(intToLittleEndian(totalDataLen))
-            out.write("WAVE".toByteArray())
-            out.write("fmt ".toByteArray())
-            out.write(intToLittleEndian(16))
-            out.write(shortToLittleEndian(1))
-            out.write(shortToLittleEndian(1))
-            out.write(intToLittleEndian(VoicePipelineConfig.SAMPLE_RATE_HZ))
-            out.write(intToLittleEndian(byteRate))
-            out.write(shortToLittleEndian(2))
-            out.write(shortToLittleEndian(16))
-            out.write("data".toByteArray())
-            out.write(intToLittleEndian(pcm.size))
-            out.write(pcm)
-        }
+        FileOutputStream(file).use { out -> out.write(AudioWavCodec.encodeWav(pcm)) }
     }
-
-    private fun intToLittleEndian(value: Int): ByteArray =
-        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array()
-
-    private fun shortToLittleEndian(value: Int): ByteArray =
-        ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(value.toShort()).array()
 }

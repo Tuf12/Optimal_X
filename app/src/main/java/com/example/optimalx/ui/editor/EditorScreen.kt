@@ -31,29 +31,41 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.optimalx.data.model.CustomPanelAssignment
 import com.example.optimalx.data.model.FileReference
+import com.example.optimalx.ui.components.NoteContentCodec
+import com.example.optimalx.ui.editor.NoteEditorSaveStatus
+import com.example.optimalx.ui.editor.toStatusLabel
 import com.example.optimalx.ui.editor.components.EditorTopBar
 import com.example.optimalx.ui.editor.panels.DocxViewerPanel
 import com.example.optimalx.ui.editor.panels.FilesPanel
 import com.example.optimalx.ui.editor.panels.ImageViewerPanel
 import com.example.optimalx.ui.editor.panels.NotePanel
+import com.example.optimalx.ui.imagestudio.ImageStudioPanel
+import com.example.optimalx.ui.navigation.RegisterNavigationLeaveGuard
 import com.example.optimalx.ui.editor.panels.PdfViewerPanel
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
+import com.example.optimalx.ui.theme.SyneFamily
 import com.example.optimalx.ui.web.WebPanel
+import com.example.optimalx.ui.web.WebPanelScope
 import com.example.optimalx.ui.workshop.WorkshopPreviewPanel
 import com.example.optimalx.voice.VoiceController
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -62,8 +74,17 @@ import java.io.File
 
 private const val PAGE_NOTE = 0
 private const val PAGE_FILES = 1
-private const val PAGE_WEB = 2
-private const val PAGE_CUSTOM_PANELS_START = 3
+private const val PAGE_IMAGE_STUDIO = 2
+private const val PAGE_WEB = 3
+private const val PAGE_CUSTOM_PANELS_START = 4
+
+private val IMAGE_FILE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "heic")
+
+private fun FileReference.isImageAttachment(): Boolean {
+    val type = fileType.lowercase()
+    if (type == "image" || type in IMAGE_FILE_EXTENSIONS) return true
+    return fileName.substringAfterLast('.', "").lowercase() in IMAGE_FILE_EXTENSIONS
+}
 
 @Composable
 fun EditorScreen(
@@ -73,6 +94,7 @@ fun EditorScreen(
     onEidosClick: () -> Unit = { /* Phase 7 */ },
     onEidosSectionClick: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
+    onOpenDiffReview: (Long) -> Unit = {},
 ) {
     val viewModel: EditorViewModel = viewModel(
         key = "editor_$subfolderId",
@@ -100,22 +122,40 @@ fun EditorScreen(
     val parentFolderId by viewModel.parentFolderId.collectAsState()
     val note by viewModel.note.collectAsState()
     val isViewMode by viewModel.isViewMode.collectAsState()
+    val userHasEdited by viewModel.userHasEdited.collectAsState()
+    val noteSaveStatus by viewModel.noteSaveStatus.collectAsState()
+    val isDirtyVsHead by viewModel.isDirtyVsHead.collectAsState()
     val isAiLocked by viewModel.isAiLocked.collectAsState()
     val isAiBlind by viewModel.isAiBlind.collectAsState()
-    val hasNoteSummary by viewModel.hasNoteSummary.collectAsState()
-    val summaryGenerating by viewModel.summaryGenerating.collectAsState()
+    val noteSummarySections by viewModel.noteSummarySections.collectAsState()
+    val noteSummaryUpdatedAt by viewModel.noteSummaryUpdatedAt.collectAsState()
     val noteReadAloudBarVisible by viewModel.noteReadAloudBarVisible.collectAsState()
     val noteReadAloudIsPlaying by viewModel.noteReadAloudIsPlaying.collectAsState()
     val fileReferences by viewModel.fileReferences.collectAsState()
     val openFiles by viewModel.openFiles.collectAsState()
+    val fileFetchBusy by viewModel.fileFetchBusy.collectAsState()
+    val fileFetchError by viewModel.fileFetchError.collectAsState()
     val customPanels by viewModel.customPanelAssignments.collectAsState()
     val workshopProjects by viewModel.workshopProjects.collectAsState()
     val noteCheckpoints by viewModel.noteCheckpoints.collectAsState()
+    val pendingChangeCount by viewModel.pendingChangeCount.collectAsState()
+    val isNoteDirty by viewModel.isNoteDirty.collectAsState()
+    RegisterNavigationLeaveGuard(hasUnsavedChanges = isNoteDirty)
+    var hadPendingNoteReview by remember { mutableStateOf(false) }
+    LaunchedEffect(pendingChangeCount) {
+        if (pendingChangeCount > 0) {
+            hadPendingNoteReview = true
+        } else if (hadPendingNoteReview) {
+            viewModel.reloadNoteAfterDiffAccept()
+            hadPendingNoteReview = false
+        }
+    }
     var pendingOpenFileId by remember { mutableStateOf<Long?>(null) }
     var showAddPanelDialog by remember { mutableStateOf(false) }
     var summaryDialogMessage by remember { mutableStateOf<String?>(null) }
     var showHistorySheet by remember { mutableStateOf(false) }
     var restoreFeedbackMessage by remember { mutableStateOf<String?>(null) }
+    var commitFeedbackMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(viewModel) {
         viewModel.summaryFeedback.collect { summaryDialogMessage = it }
@@ -123,6 +163,31 @@ fun EditorScreen(
 
     LaunchedEffect(viewModel) {
         viewModel.restoreFeedback.collect { restoreFeedbackMessage = it }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.commitFeedback.collect { commitFeedbackMessage = it }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.fileOpenReady.collect { ref ->
+            pendingOpenFileId = ref.id
+        }
+    }
+
+    fileFetchError?.let { message ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearFileFetchError,
+            title = { Text("Could not load file", color = colors.textPrimary, fontFamily = SyneFamily) },
+            text = {
+                Text(message, color = colors.textDim, fontFamily = DmMonoFamily, fontSize = 12.sp)
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearFileFetchError) {
+                    Text("OK", color = colors.accent)
+                }
+            },
+        )
     }
 
     val filesOffset = PAGE_CUSTOM_PANELS_START + customPanels.size
@@ -135,7 +200,8 @@ fun EditorScreen(
         if (fileIdx >= 0) {
             val targetPage = filesOffset + fileIdx
             if (targetPage < pagerState.pageCount) {
-                pagerState.animateScrollToPage(targetPage)
+                // Jump directly — animating would compose Image Studio + Web panels en route.
+                pagerState.scrollToPage(targetPage)
                 pendingOpenFileId = null
             }
         }
@@ -145,12 +211,46 @@ fun EditorScreen(
         onDispose { eidosViewModel.clearSubfolderEditorSurfaceReport(subfolderId) }
     }
 
+    DisposableEffect(viewModel, eidosViewModel) {
+        eidosViewModel.noteFlushBeforeSend = {
+            viewModel.flushNoteToDbForEidos()
+        }
+        onDispose {
+            eidosViewModel.noteFlushBeforeSend = null
+        }
+    }
+
+    LaunchedEffect(eidosViewModel) {
+        var wasSending = false
+        eidosViewModel.isSending.collect { sending ->
+            if (wasSending && !sending) {
+                viewModel.reloadNoteAfterExternalWrite()
+            }
+            wasSending = sending
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.reloadNoteAfterExternalWrite()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LaunchedEffect(subfolderId, openFiles, customPanels, eidosViewModel) {
         snapshotFlow { pagerState.currentPage }
             .distinctUntilChanged()
             .collect { page ->
                 when (page) {
                     PAGE_WEB -> eidosViewModel.setWebEditorScope(subfolderId)
+                    PAGE_IMAGE_STUDIO -> eidosViewModel.setImageStudioScope(
+                        hub = false,
+                        saveSubfolderId = subfolderId,
+                    )
                     else -> {
                         eidosViewModel.setSubfolderScope(subfolderId)
                         val description = when {
@@ -176,9 +276,25 @@ fun EditorScreen(
             }
     }
 
+    LaunchedEffect(eidosViewModel, subfolderId, scope) {
+        eidosViewModel.pendingImageStudioDraftHandoff.collect { handoff ->
+            if (handoff != null && !handoff.hub && handoff.saveSubfolderId == subfolderId) {
+                scope.launch { pagerState.animateScrollToPage(PAGE_IMAGE_STUDIO) }
+            }
+        }
+    }
+
+    val exitEditor: () -> Unit = {
+        scope.launch {
+            viewModel.flushNoteBeforeExit()
+            onBack()
+        }
+    }
+
     // Back behavior:
     // - From any open file panel, return directly to Files in one press.
-    // - From Web, return to Note.
+    // - From Web, return to Image.
+    // - From Image, return to Files.
     // - From Files, return to Note.
     // - From Note, exit editor screen.
     BackHandler {
@@ -188,10 +304,12 @@ fun EditorScreen(
             pagerState.currentPage in PAGE_CUSTOM_PANELS_START until filesOffset ->
                 scope.launch { pagerState.animateScrollToPage(PAGE_NOTE) }
             pagerState.currentPage == PAGE_WEB ->
-                scope.launch { pagerState.animateScrollToPage(PAGE_NOTE) }
+                scope.launch { pagerState.animateScrollToPage(PAGE_IMAGE_STUDIO) }
+            pagerState.currentPage == PAGE_IMAGE_STUDIO ->
+                scope.launch { pagerState.animateScrollToPage(PAGE_FILES) }
             pagerState.currentPage == PAGE_FILES ->
                 scope.launch { pagerState.animateScrollToPage(PAGE_NOTE) }
-            else -> onBack()
+            else -> exitEditor()
         }
     }
 
@@ -202,10 +320,27 @@ fun EditorScreen(
     ) {
         EditorTopBar(
             subfolderName = subfolderName,
-            onTitleClick = onBack,
+            onTitleClick = exitEditor,
+            saveStatusLabel = if (pagerState.currentPage == PAGE_NOTE) {
+                noteSaveStatus.toStatusLabel(isDirtyVsHead = isDirtyVsHead)
+            } else {
+                null
+            },
+            showCommit = pagerState.currentPage == PAGE_NOTE && isDirtyVsHead,
+            onCommitClick = if (pagerState.currentPage == PAGE_NOTE && isDirtyVsHead) {
+                { viewModel.commitNoteToHead() }
+            } else {
+                null
+            },
             onEidosClick = onEidosClick,
             onEidosSectionClick = onEidosSectionClick,
             onSettingsClick = onSettingsClick,
+            pendingChangeCount = pendingChangeCount,
+            onReviewClick = if (pendingChangeCount > 0) {
+                { onOpenDiffReview(subfolderId) }
+            } else {
+                null
+            },
             onAddPanelClick = {
                 viewModel.loadWorkshopProjects()
                 showAddPanelDialog = true
@@ -223,21 +358,30 @@ fun EditorScreen(
         ) { page ->
             when (page) {
                 PAGE_NOTE -> NotePanel(
-                    initialContent = note?.content ?: "",
+                    initialContent = NoteContentCodec.normalizeLegacyToMarkdown(note?.content ?: ""),
                     initialContentReady = note != null,
+                    noteUpdatedAt = note?.updatedAt ?: 0L,
                     isViewMode = isViewMode,
                     isAiLocked = isAiLocked,
                     isAiBlind = isAiBlind,
                     restoreContentFlow = viewModel.restoreContent,
+                    onEditorSnapshot = viewModel::onNoteEditorSnapshot,
+                    onNoteEditorLoaded = viewModel::markNoteEditorLoaded,
+                    onNoteEditSessionStarted = viewModel::onNoteEditSessionStarted,
+                    onRegisterLiveContentProvider = viewModel::setLiveNoteContentProvider,
                     onContentChanged = viewModel::onContentSave,
-                    onUndo = viewModel::undo,
-                    onRedo = viewModel::redo,
+                    onDictationSaved = { viewModel.onContentSave(it, force = true) },
+                    isNoteDirty = viewModel.isNoteDirty.collectAsState().value,
+                    userHasEdited = userHasEdited,
                     onToggleViewMode = viewModel::toggleViewMode,
                     onToggleAiLock = viewModel::toggleAiLock,
                     onToggleAiBlind = viewModel::toggleAiBlind,
-                    hasNoteSummary = hasNoteSummary,
-                    summaryGenerating = summaryGenerating,
-                    onGenerateSummary = viewModel::generateOrRegenerateNoteSummary,
+                    memoryBullets = noteSummarySections.memoryBullets,
+                    contentDigest = noteSummarySections.contentDigest,
+                    summaryUpdatedAt = noteSummaryUpdatedAt,
+                    onSaveNoteSummary = viewModel::saveNoteSummary,
+                    exportBaseName = subfolderName.ifBlank { "note" },
+                    onFlushBeforeExport = viewModel::flushNoteBeforeExport,
                     onReadNoteAloud = viewModel::speakNoteAloud,
                     onStopNoteSpeech = viewModel::stopNoteSpeech,
                     noteReadAloudBarVisible = noteReadAloudBarVisible,
@@ -250,22 +394,38 @@ fun EditorScreen(
 
                 PAGE_FILES -> FilesPanel(
                     files = fileReferences,
-                    onFileClick = { ref ->
-                        viewModel.openFile(ref)
-                        // Defer navigation until pager pageCount includes this file.
-                        pendingOpenFileId = ref.id
-                    },
+                    onFileClick = { ref -> viewModel.requestOpenFile(ref) },
+                    loading = fileFetchBusy,
                     onImport = { uri ->
                         viewModel.importFile(viewModel.getApplication<Application>(), uri)
                     },
                     onDelete = viewModel::deleteFileReference,
                 )
 
-                PAGE_WEB -> WebPanel(
-                    panelTitle = "Subfolder Web panel",
+                PAGE_IMAGE_STUDIO -> ImageStudioPanel(
+                    saveSubfolderId = subfolderId,
+                    onOpenFiles = {
+                        scope.launch { pagerState.animateScrollToPage(PAGE_FILES) }
+                    },
+                    onSettingsClick = onSettingsClick,
                     eidosViewModel = eidosViewModel,
-                    scopeKey = "editor:$parentFolderId:$subfolderId",
                 )
+
+                PAGE_WEB -> if (pagerState.currentPage == PAGE_WEB) {
+                    key("web_panel_${WebPanelScope.editor(subfolderId)}") {
+                        WebPanel(
+                            panelTitle = "Subfolder Web panel",
+                            eidosViewModel = eidosViewModel,
+                            scopeKey = WebPanelScope.editor(subfolderId),
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(colors.background),
+                    )
+                }
 
                 in PAGE_CUSTOM_PANELS_START until filesOffset -> {
                     val assignment = customPanels.getOrNull(page - PAGE_CUSTOM_PANELS_START)
@@ -322,7 +482,7 @@ fun EditorScreen(
         AlertDialog(
             onDismissRequest = { summaryDialogMessage = null },
             containerColor = colors.surface,
-            title = { Text("Eidos summary", color = colors.textPrimary, fontFamily = DmSansFamily) },
+            title = { Text("Note summary", color = colors.textPrimary, fontFamily = DmSansFamily) },
             text = { Text(msg, color = colors.textMid, fontFamily = DmSansFamily) },
             confirmButton = {
                 TextButton(onClick = { summaryDialogMessage = null }) {
@@ -336,7 +496,7 @@ fun EditorScreen(
         com.example.optimalx.ui.workshop.components.ContentHistorySheet(
             sourceLabel = subfolderName.ifBlank { "Note" },
             checkpoints = noteCheckpoints,
-            workingCopy = note?.content ?: "",
+                    workingCopy = NoteContentCodec.normalizeLegacyToMarkdown(note?.content ?: ""),
             onRestore = { checkpointId ->
                 viewModel.restoreNoteCheckpoint(checkpointId)
                 showHistorySheet = false
@@ -353,6 +513,20 @@ fun EditorScreen(
             text = { Text(msg, color = colors.textMid, fontFamily = DmSansFamily) },
             confirmButton = {
                 TextButton(onClick = { restoreFeedbackMessage = null }) {
+                    Text("OK", color = colors.accent, fontFamily = DmSansFamily)
+                }
+            },
+        )
+    }
+
+    commitFeedbackMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { commitFeedbackMessage = null },
+            containerColor = colors.surface,
+            title = { Text("Commit", color = colors.textPrimary, fontFamily = DmSansFamily) },
+            text = { Text(msg, color = colors.textMid, fontFamily = DmSansFamily) },
+            confirmButton = {
+                TextButton(onClick = { commitFeedbackMessage = null }) {
                     Text("OK", color = colors.accent, fontFamily = DmSansFamily)
                 }
             },
@@ -439,7 +613,6 @@ private fun OpenFilePanel(
     onImageRotationCommit: (Float) -> Unit,
     onClose: () -> Unit,
 ) {
-    val imageExtensions = setOf("jpg", "jpeg", "png", "gif", "webp", "heic")
     val docExtensions = setOf("docx", "odt", "doc")
     val ext = file.fileType.lowercase()
 
@@ -450,7 +623,7 @@ private fun OpenFilePanel(
             initialRotation = initialPdfRotation,
             onRotationCommit = onPdfRotationCommit,
         )
-        ext in imageExtensions -> ImageViewerPanel(
+        file.isImageAttachment() -> ImageViewerPanel(
             filePath = file.filePath,
             initialRotation = initialImageRotation,
             onRotationCommit = onImageRotationCommit,

@@ -5,7 +5,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.db.SystemFolderNames
-import com.example.optimalx.data.eidos.agentbyte.TagHintNotifier
 import com.example.optimalx.data.eidos.model.ToolExecutionResult
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.ParentFolder
@@ -35,7 +34,7 @@ import java.io.File
  * - Build phases auto-accept (disk written, checkpoint created).
  * - Review phases queue pending changes (disk untouched).
  *
- * `workshop_replace_string` has its own focused test
+ * `workshop_edit_file` has its own focused test
  * ([RoomToolExecutorWorkshopReplaceStringTest]); this test only re-covers what's
  * unique to the full-content tools (creating a new file, no-op writes, duplicate
  * filename rejection).
@@ -59,7 +58,6 @@ class RoomToolExecutorWorkshopWriteTest {
             context = context,
             db = db,
             semanticIndexer = SemanticIndexer(db, EmbeddingEngine(context)),
-            tagHintNotifier = TagHintNotifier.NoOp,
         )
         workshopRoot = File(context.filesDir, "workshop")
 

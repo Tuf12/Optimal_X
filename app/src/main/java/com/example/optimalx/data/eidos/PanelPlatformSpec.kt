@@ -12,6 +12,14 @@ object PanelPlatformSpec {
 
     const val PLATFORM_VERSION: Int = 1
 
+    val WORKSHOP_PRODUCT_STANDARD: String = """
+        Panel Workshop product standard:
+        - Each project is a complete, user-facing application.
+        - Spec markdown and runtime code target what ships in Preview and Gallery — production quality at every phase.
+        - Design build and logic build are sequential delivery phases of the same finished product, not a prototype, demo, MVP, proof-of-concept, or trial.
+        - Never tell the user to "play a prototype" or treat Preview as a disposable demo — they are verifying the real panel.
+    """.trimIndent()
+
     /** Markdown spec files (not executed). */
     val SPEC_MARKDOWN_FILES: List<String> = listOf(
         "README.md",
@@ -21,11 +29,8 @@ object PanelPlatformSpec {
         "DESIGN.md",
     )
 
-    /** Optional phased build plan (Plan mode only — not required for Accept gates). */
-    const val IMPLEMENTATION_PLAN_MD: String = "IMPLEMENTATION_PLAN.md"
-
-    /** All `.md` files Plan mode may author (specs + optional implementation plan). */
-    val PLAN_MARKDOWN_FILES: List<String> = SPEC_MARKDOWN_FILES + IMPLEMENTATION_PLAN_MD
+    /** All `.md` files Plan mode may author (spec markdown only). */
+    val PLAN_MARKDOWN_FILES: List<String> = SPEC_MARKDOWN_FILES
 
     /** Runtime panel sources the platform expects to bundle. */
     val RUNTIME_FILES: List<String> = listOf(
@@ -40,29 +45,18 @@ object PanelPlatformSpec {
         "search_semantic",
         "workshop_read_file",
         "workshop_write_file",
-        "workshop_create_file",
-        "workshop_replace_string",
+        "workshop_edit_file",
+        "workshop_append_file",
         "call_panel_function",
     )
 
     val EIDOS_WORKSHOP_RETRIEVAL_POLICY: String = """
         Retrieval (all workshop modes):
-        - Call search_semantic(query) first — scoped to this project (scopeType=local_first, scopeId=subfolderId). Answers from chunk_text hits.
-        - Use workshop_read_file(fileReferenceId, query=…) or startLine/endLine to expand a region, then workshop_replace_string for targeted edits or workshop_write_file for rewrites.
-        - Do not workshop_read_file entire large runtime files without query — search finds the relevant passage.
-    """.trimIndent()
-
-    /** Auto-Continue — required when pausing before a kickoff finishes (Phase 1.5). */
-    val EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS: String = """
-        Auto-continue handoff (build/plan kickoffs):
-        When pausing before the kickoff is finished, end your visible reply with:
-
-        ${WorkshopHandoffParser.SECTION_HEADING}
-        - Done: (concrete progress this chunk)
-        - Next: (exact next files/steps for the following chunk)
-        - Constraints: (phase/mode limits — e.g. no .md writes in build design)
-
-        Do not claim the kickoff is complete unless the full goal is done.
+        - Retrieved context may already include relevant workshop file/note passages on turn 1; call search_semantic when you need more or before editing.
+        - Scope search to this project (scopeType=local_first, scopeId=subfolderId). Answers from chunk_text hits.
+        - Hits include lineNumbersApplyTo — use startLine/endLine from file hits only for workshop_read_file; never conversation line numbers.
+        - Large files: truncated workshop_read_file is head-only (previewEndsAtLine < totalLines) — use file semantic hit + line range for tail code.
+        - Use workshop_read_file(fileReferenceId, query=…) or startLine/endLine from a file hit before workshop_edit_file or workshop_write_file.
     """.trimIndent()
 
     /**
@@ -71,24 +65,22 @@ object PanelPlatformSpec {
      */
     val EIDOS_WORKSHOP_RUNTIME_EDIT_POLICY: String = """
         Runtime edits (all Edit/Build/Debug modes):
-        - workshop_read_file / workshop_replace_string / workshop_write_file work without Preview open — use them to fix bugs directly.
+        - workshop_read_file / workshop_edit_file / workshop_append_file / workshop_write_file work without Preview open — use them to fix bugs directly.
         - Canvas, touch, stylus/S Pen, stroke, and pointer bugs are fixed in script.js (and html/css if needed) — not via call_panel_function.
         - call_panel_function is optional — only when Preview is open and you need live getState/runAction. Never block a code fix on Preview.
-        - Never ask the user to edit source code themselves — apply fixes with workshop_replace_string or workshop_write_file.
+        - Never ask the user to edit source code themselves — apply fixes with workshop_edit_file or workshop_write_file.
     """.trimIndent()
 
     /**
-     * Patch-first guidance shared by all modes that author file edits. Use this everywhere a
-     * runtime/code change is in scope so the model picks `workshop_replace_string` for
-     * targeted edits and reserves `workshop_write_file` for scaffolds and large rewrites.
+     * Edit-first guidance: one line-range edit tool, plus append and full write.
      */
     val EIDOS_WORKSHOP_PATCH_POLICY: String = """
         Targeted edits (prefer over full rewrites):
-        - Use workshop_replace_string(fileReferenceId, oldString, newString) for any change under ~30 lines.
-          oldString must match exactly one occurrence — include at least 3 lines of surrounding context so it is unique.
-        - Use workshop_write_file only for the initial scaffold of a file or a true rewrite of >~70% of it.
-        - If workshop_replace_string returns an error with a snippet (0 or multiple matches), add more context to oldString and retry.
-          Do NOT fall back to workshop_write_file as a workaround — the snippet already gives you enough to re-anchor.
+        - Use workshop_edit_file(fileReferenceId, startLine, endLine, newContent) for all localized changes.
+          Single-line: set startLine and endLine to the same line. Line numbers from file semantic hits or workshop_read_file.
+        - Use workshop_append_file(fileReferenceId, content) to add text at EOF.
+        - Use workshop_write_file only for new file scaffolds or intentional full rewrites.
+        - Do NOT pseudo-rewrite via workshop_edit_file(startLine=1, endLine=EOF) — use workshop_write_file for true rewrites.
     """.trimIndent()
 
     /**
@@ -96,10 +88,10 @@ object PanelPlatformSpec {
      * writes when implementing behavior so the model is not forced into many tiny patches.
      */
     val EIDOS_WORKSHOP_SUBSTANTIAL_WRITE_POLICY: String = """
-        Substantial runtime implementation (logic build / build-plan kickoff):
+        Substantial runtime implementation (logic build):
         - You may use workshop_write_file on script.js, bridge.js, index.html, or style.css when implementing a behavior slice or any change over ~30 lines.
-        - Prefer one complete file write per file when that is faster than many workshop_replace_string calls in one turn.
-        - workshop_replace_string remains appropriate for small, localized fixes.
+        - Prefer one complete file write per file when that is faster than many workshop_edit_file calls in one turn.
+        - workshop_edit_file remains appropriate for small, localized fixes; workshop_append_file for EOF additions.
         - You may call multiple write tools in one assistant turn until the requested behavior is implemented.
     """.trimIndent()
 
@@ -111,9 +103,9 @@ object PanelPlatformSpec {
     val EIDOS_WORKSHOP_REVIEW_QUEUE_NOTICE: String = """
         Diff Review (this phase queues edits — required every Edit turn):
         - Runtime edits are proposals until the user accepts them in the workshop **Diff Review** panel (top bar badge or chat banner).
-        - **One Diff Review row per file** (not per tool call): many workshop_replace_string calls on script.js update the same row; bridge.js / index.html / style.css each get their own row when edited.
+        - **One Diff Review row per file** (not per tool call): many workshop_edit_file calls on script.js update the same row; bridge.js / index.html / style.css each get their own row when edited.
         - After writes, call **workshop_list_pending_review** (or read the queue line in tool results) before telling the user how many accepts are needed.
-        - **workshop_read_file** and **workshop_replace_string** use the latest pending content for a file so chained patches in one turn compose correctly.
+        - **workshop_read_file** and **workshop_edit_file** use the latest pending content for a file so chained patches in one turn compose correctly.
         - The diff the user sees is always **disk → your latest proposal** for that file.
         - Describe what you proposed in plain language. Do NOT claim the file is "updated", "fixed", or "live"
           until the user accepts in Diff Review.
@@ -130,13 +122,6 @@ object PanelPlatformSpec {
         - Do NOT nag about Accept buttons, Preview, or switching modes unless the user asks how to proceed.
         - Prefer search_semantic; at most one workshop_read_file when search is insufficient, then reply.
         - $WORKSHOP_CHAT_MODE_AVAILABILITY
-    """.trimIndent()
-
-    val EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION: String = """
-        Optional implementation plan ($IMPLEMENTATION_PLAN_MD):
-        - You may create or update $IMPLEMENTATION_PLAN_MD with ordered phases, files to touch, and test/acceptance notes.
-        - Keep it in human language — not a copy of HTML/JS/CSS. Do NOT edit runtime files from Plan mode.
-        - Suggested sections: ## Phases (numbered steps), ## Files touched, ## Test notes.
     """.trimIndent()
 
     /**
@@ -172,7 +157,7 @@ object PanelPlatformSpec {
         Panel Gallery rules:
         - User is browsing the panel list — not inside a running panel; no Panel Bridge.
         - COMPLETE panels launch in Panel Runner; drafts open in Panel Workshop.
-        - Do not use workshop_write_file, workshop_create_file, or call_panel_function here.
+        - Do not use workshop_write_file or call_panel_function here.
         - Answer list questions from the project list above; suggest opening a panel or Workshop for edits.
     """.trimIndent()
 
@@ -182,7 +167,7 @@ object PanelPlatformSpec {
         - Help the user use the panel: explain controls, troubleshoot behavior, play games via the bridge when visible.
         - call_panel_function: getState with args "{}" first when you need current UI/game state; then runAction with actions from script.js.
         - workshop_read_file is read-only (script.js, bridge.js, specs) — use search_semantic with scopeType=local_first and scopeId=$subfolderId when helpful.
-        - Do NOT use workshop_write_file, workshop_create_file, or workshop_replace_string — direct layout/code changes to Panel Workshop.
+        - Do NOT use workshop_write_file or workshop_edit_file — direct layout/code changes to Panel Workshop.
         - ${eidosContextSummary()}
     """.trimIndent()
 
@@ -223,7 +208,7 @@ object PanelPlatformSpec {
         Capability("bridge_get_state_run_action", "OptimalXPanelBridge + global getState/runAction via bridge.js"),
         Capability("call_panel_function", "Eidos tool invokes visible panel JS when preview/tab is open"),
         Capability("console_error_capture", "Preview WebView ERROR/WARNING → workshop console buffer"),
-        Capability("workshop_file_io", "workshop_read_file / workshop_write_file / workshop_create_file"),
+        Capability("workshop_file_io", "workshop_read_file / workshop_write_file"),
         Capability(
             "panel_state_persistence",
             "Room panel_state + bridge load/save when panelStateScopeKey set; " +
@@ -274,7 +259,7 @@ object PanelPlatformSpec {
         docAlignScope: WorkshopDocAlignScope? = null,
         updateSection: WorkshopUpdateSection? = null,
     ): String {
-        if (docAlignScope != null) {
+        if (docAlignScope != null && mode == WorkshopEidosMode.PLAN) {
             return eidosAlignDocsFromCodeInstructions(subfolderId, docAlignScope, updateSection)
         }
         val effective = WorkshopEidosMode.effectiveForInstructions(mode, phase, docAlignScope)
@@ -322,7 +307,6 @@ object PanelPlatformSpec {
             return when (effective) {
                 WorkshopEidosMode.CHAT -> eidosUpdateChatInstructionsUnified(subfolderId)
                 WorkshopEidosMode.PLAN -> eidosUpdatePlanInstructions(subfolderId)
-                WorkshopEidosMode.BUILD_PLAN -> eidosBuildFromImplementationPlanInstructions(subfolderId)
                 else -> eidosUpdateEditInstructionsUnified(subfolderId)
             }
         }
@@ -331,7 +315,6 @@ object PanelPlatformSpec {
             WorkshopEidosMode.BUILD -> eidosWorkshopInstructions(subfolderId)
             WorkshopEidosMode.BUILD_DESIGN -> eidosBuildDesignInstructions(subfolderId)
             WorkshopEidosMode.BUILD_LOGIC -> eidosBuildLogicInstructions(subfolderId)
-            WorkshopEidosMode.BUILD_PLAN -> eidosBuildFromImplementationPlanInstructions(subfolderId)
             WorkshopEidosMode.CHAT -> eidosChatModeInstructions(subfolderId)
             else -> logicEditOrDebugInstructions(subfolderId, phase)
         }
@@ -347,7 +330,7 @@ object PanelPlatformSpec {
             WorkshopProjectPhase.DESIGN_BUILD,
             WorkshopProjectPhase.DESIGN_REVIEW,
             -> """
-                Scope: index.html, style.css, script.js — layout and stub handlers only (no business logic).
+                Scope: index.html, style.css, script.js — complete static design per accepted specs (interaction ships in logic build).
                 Read spec .md with workshop_read_file; do not write spec .md in Edit until Accept design.
             """.trimIndent()
             WorkshopProjectPhase.LOGIC_BUILD,
@@ -358,14 +341,13 @@ object PanelPlatformSpec {
             """.trimIndent()
             WorkshopProjectPhase.UPDATE -> """
                 Scope: runtime file writes (index.html, style.css, bridge.js, script.js).
-                Read ${IMPLEMENTATION_PLAN_MD} and other spec .md with workshop_read_file anytime.
+                Read spec .md files with workshop_read_file anytime.
                 Do not write spec .md in Edit — Plan mode or Accept update (doc align) updates specs.
             """.trimIndent()
             else -> """
                 Scope: change only files required for the user's request.
             """.trimIndent()
         }
-
         val persistenceBlock = if (phase == WorkshopProjectPhase.LOGIC_BUILD ||
             phase == WorkshopProjectPhase.LOGIC_REVIEW ||
             phase == WorkshopProjectPhase.COMPLETE
@@ -380,17 +362,6 @@ object PanelPlatformSpec {
             else -> EIDOS_WORKSHOP_PATCH_POLICY
         }
 
-        val editAutoContinueBlock = if (WorkshopReviewPolicy.shouldReview(phase, WorkshopEidosMode.EDIT)) {
-            """
-            Edit auto-continue:
-            - Long edits may span multiple tool chunks — the app Auto-Continues until this request is done or a safety cap is hit.
-            - Proposals queue during the run; disk is unchanged until the user accepts in Diff Review.
-            - When finished, tell the user to verify in Preview (shows proposed code), then open Diff Review to accept.
-            """.trimIndent()
-        } else {
-            ""
-        }
-
         return """
             Panel Workshop — EDIT ($phaseLabel) (subfolderId=$subfolderId)
             Active phase: $phaseLabel — apply the user's current request.
@@ -403,13 +374,10 @@ object PanelPlatformSpec {
 
             ${reviewNoticeFor(phase, WorkshopEidosMode.EDIT)}
 
-            $editAutoContinueBlock
-
             $persistenceBlock
 
             Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
-            ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
             ${if (phase == WorkshopProjectPhase.DESIGN_REVIEW) WorkshopAndroidLayoutRules.EIDOS_CONTEXT_SUMMARY + "\n\n" else ""}${eidosContextSummary()}
         """.trimIndent()
@@ -419,7 +387,10 @@ object PanelPlatformSpec {
     private fun logicEditOrDebugInstructions(
         subfolderId: Long,
         phase: WorkshopProjectPhase?,
-    ): String = eidosPhaseEditInstructions(subfolderId, phase ?: WorkshopProjectPhase.COMPLETE)
+    ): String {
+        val resolvedPhase = phase ?: WorkshopProjectPhase.COMPLETE
+        return eidosPhaseEditInstructions(subfolderId, resolvedPhase)
+    }
 
     fun eidosGenerateSpecsInstructions(subfolderId: Long): String = """
         Panel Workshop — GENERATE SPECS (Plan) (subfolderId=$subfolderId)
@@ -437,12 +408,6 @@ object PanelPlatformSpec {
         Do NOT workshop_write_file on index.html, style.css, bridge.js, or script.js.
         When specs match the intake, tell the user to review files in the Docs drawer and tap **Accept specs**.
 
-        $EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION
-
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
-
-        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
-
         ${eidosContextSummary()}
     """.trimIndent()
 
@@ -452,37 +417,35 @@ object PanelPlatformSpec {
 
         $WORKSHOP_CHAT_CONVERSATIONAL_RULES
 
-        Tools: search_semantic, workshop_read_file (optional). No workshop_write_file / workshop_create_file.
+        Tools: search_semantic, workshop_read_file (optional). No workshop_write_file.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
 
     fun eidosBuildDesignInstructions(subfolderId: Long): String = """
         Panel Workshop — BUILD DESIGN (subfolderId=$subfolderId)
-        Active phase: DESIGN_BUILD — layout shell only (HTML/CSS + stub JS).
+        Active phase: DESIGN_BUILD — deliver the full static design (HTML/CSS + render hooks in script.js).
 
-        Goal: Visible layout in Preview — screens, controls, labels, spacing. Spec .md files were accepted; do not rewrite them.
+        $WORKSHOP_PRODUCT_STANDARD
 
-        Update runtime files only: index.html, style.css, script.js (stub handlers / placeholder text only).
+        Goal: Every FLOW screen visible in Preview with production layout, typography, and on-screen content. Spec .md files were accepted; do not rewrite them.
+
+        Update runtime files only: index.html, style.css, script.js.
         Start from project scaffolds in the manifest; expand structure to match accepted specs and intake summary.
-        Keep bridge.js as scaffold unless bridge wiring is required for layout placeholders.
-        Do NOT workshop_write_file or workshop_create_file for any .md file.
+        Keep bridge.js as scaffold unless bridge wiring is required for layout.
+        Do NOT workshop_write_file for any .md file.
 
-        Excludes: business logic, calculations, real getState/runAction behavior, network calls.
+        Interaction and game rules ship in the logic build phase — deliver complete static visuals now.
 
         Tool choice in this phase:
-        - Initial scaffold: workshop_create_file / workshop_write_file are the right tools — full-file writes are auto-accepted to disk.
-        - Tightening up the scaffold (small label/style fixes after the first pass): workshop_replace_string for one-spot edits.
+        - Initial files: workshop_write_file is the right tool — full-file writes are auto-accepted to disk.
+        - Targeted fixes: workshop_edit_file for one-spot edits.
 
-        When the shell renders in Preview, tell the user to open Preview, iterate in Design mode if needed, then tap **Accept design**.
+        When Preview shows every FLOW screen, tell the user to refresh Preview if needed, then tap **Accept design**.
 
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
-
-        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
 
         ${WorkshopAndroidLayoutRules.EIDOS_CONTEXT_SUMMARY}
 
@@ -499,9 +462,8 @@ object PanelPlatformSpec {
 
         $WORKSHOP_CHAT_CONVERSATIONAL_RULES
 
-        Tools: search_semantic (runtime passages). No workshop_write_file / workshop_create_file / call_panel_function.
+        Tools: search_semantic (runtime passages). No workshop_write_file / call_panel_function.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -510,13 +472,15 @@ object PanelPlatformSpec {
         Panel Workshop — BUILD LOGIC (subfolderId=$subfolderId)
         Active phase: LOGIC_BUILD — wire behavior, state, and bridge actions.
 
-        Goal: Implement panel behavior — calculations, canvas/stylus input, state, panelGetState/panelRestoreState/panelHandleAction as needed.
+        $WORKSHOP_PRODUCT_STANDARD
+
+        Goal: Implement every panel behavior from FEATURES.md — calculations, canvas/stylus input, state, panelGetState/panelRestoreState/panelHandleAction as needed.
 
         $EIDOS_PERSISTENCE_POLICY
 
         Update script.js and bridge.js as needed. Adjust index.html/style.css only when required for behavior.
         Layout shell was accepted in design review — preserve structure unless behavior requires small UI tweaks.
-        Do NOT workshop_write_file or workshop_create_file for any .md file.
+        Do NOT workshop_write_file for any .md file.
 
         $EIDOS_WORKSHOP_RUNTIME_EDIT_POLICY
 
@@ -528,9 +492,6 @@ object PanelPlatformSpec {
 
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
-
-        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -541,9 +502,8 @@ object PanelPlatformSpec {
 
         $WORKSHOP_CHAT_CONVERSATIONAL_RULES
 
-        Tools: search_semantic (runtime passages). No workshop_write_file / workshop_create_file / call_panel_function.
+        Tools: search_semantic (runtime passages). No workshop_write_file / call_panel_function.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -558,7 +518,6 @@ object PanelPlatformSpec {
 
         When aligned, tell the user to tap **Accept changes** in the workshop top bar.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -579,7 +538,6 @@ object PanelPlatformSpec {
 
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${WorkshopAndroidLayoutRules.EIDOS_CONTEXT_SUMMARY}
 
@@ -603,7 +561,6 @@ object PanelPlatformSpec {
 
         Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -616,7 +573,6 @@ object PanelPlatformSpec {
 
         Tools: search_semantic, workshop_read_file (optional).
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -629,48 +585,7 @@ object PanelPlatformSpec {
         Write or update: ${PLAN_MARKDOWN_FILES.joinToString(", ")} only.
         Do NOT workshop_write_file on index.html, style.css, bridge.js, or script.js.
 
-        $EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION
-
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
-
         ${eidosContextSummary()}
-    """.trimIndent()
-
-    fun eidosBuildFromImplementationPlanInstructions(subfolderId: Long): String = """
-        Panel Workshop — BUILD PLAN (Update) (subfolderId=$subfolderId)
-        Active phase: UPDATE — execute the **accepted** ${IMPLEMENTATION_PLAN_MD} on runtime files (build-run profile).
-
-        Rules:
-        - Read ${IMPLEMENTATION_PLAN_MD} with workshop_read_file (query for the current phase section).
-        - Execute plan phases **in order**. One plan phase per slice when possible.
-        - Edit index.html, style.css, script.js, and bridge.js as needed for the **current** plan phase only.
-        - You may update ${IMPLEMENTATION_PLAN_MD} to mark phase progress (e.g. checkboxes).
-        - Do NOT workshop_write_file or workshop_create_file for other spec .md files — use Plan mode for those.
-        - Writes apply **directly to disk** (no Diff Review during Build plan). User verifies in Preview when the full plan is done.
-
-        $EIDOS_WORKSHOP_RUNTIME_EDIT_POLICY
-
-        $EIDOS_WORKSHOP_SUBSTANTIAL_WRITE_POLICY
-
-        When a **single plan phase** is complete, end with ## Workshop handoff (Done / Next phase / Constraints).
-        Auto-Continue will start the next plan phase automatically — do not ask the user to tap Build plan again.
-        When **all** plan phases are complete, say clearly that the implementation plan is complete and tell the user to verify in Preview, then **Accept update**.
-
-        Tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}.
-
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
-
-        $EIDOS_WORKSHOP_HANDOFF_INSTRUCTIONS
-
-        ${eidosContextSummary()}
-    """.trimIndent()
-
-    fun workshopBuildFromPlanKickoffFooter(): String = """
-        Build plan — run the accepted ${IMPLEMENTATION_PLAN_MD} from first incomplete phase through all remaining phases.
-        Runtime files only (plus optional phase markers in ${IMPLEMENTATION_PLAN_MD}).
-        After each plan phase, end with ## Workshop handoff — the app Auto-Continues to the next phase.
-        When every phase is done, state that the implementation plan is complete; user reviews in Preview then Accept update.
-        Do not ask for Diff Review during this run.
     """.trimIndent()
 
     fun eidosUpdateEditInstructionsUnified(subfolderId: Long): String =
@@ -696,9 +611,8 @@ object PanelPlatformSpec {
 
         When satisfied, tell the user to tap **Accept changes** in the workshop top bar.
 
-        Tools: search_semantic only. No workshop_write_file / workshop_create_file / call_panel_function.
+        Tools: search_semantic only. No workshop_write_file / call_panel_function.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -729,20 +643,20 @@ object PanelPlatformSpec {
             Active pass: $passLabel — code → spec snapshots on user approval only (when Kotlin started this pass).
             This is NOT a logic-build or runtime-edit pass — do not implement panel behavior or change .html/.css/.js.
 
-            Read $runtimeSources with workshop_read_file (query or line range).
-            Compare with: $filesLine.
-            Update a spec .md file only when it no longer matches the current code — leave matching files unchanged.
-            If all listed specs already match the code, reply briefly that no changes were needed and do not call workshop_write_file.
-            Use workshop_write_file / workshop_create_file tools only — do not paste tool-call JSON or fenced JSON blobs in chat.
+            The current code ($runtimeSources) and the specs to review are INLINED in the user's message.
+            Do NOT call workshop_read_file or search_semantic — everything you need is already provided.
+            Only the spec files listed as out of date need updating; if a listed spec already matches the code, leave it unchanged.
+            Candidate spec files: $filesLine.
+            If nothing needs changing, reply briefly that no changes were needed and do not call workshop_write_file.
+            Use workshop_write_file only — do not paste tool-call JSON or fenced JSON blobs in chat.
             Summarize layout and behavior in plain human language — do NOT paste HTML/JS/CSS into specs.
             ${WorkshopSpecValidation.specLengthGuidanceForPrompt()}
 
             Do NOT workshop_write_file on index.html, style.css, bridge.js, or script.js in this pass.
             When done, briefly confirm which spec files you updated (if any).
 
-            Tools: search_semantic, workshop_read_file, workshop_write_file, workshop_create_file.
+            Tools: workshop_write_file.
 
-            ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
             ${eidosContextSummary()}
         """.trimIndent()
@@ -758,7 +672,7 @@ object PanelPlatformSpec {
         3. How should it work?
 
         Hard rules:
-        - Do NOT call workshop_write_file, workshop_create_file, or call_panel_function.
+        - Do NOT call workshop_write_file or call_panel_function.
         - Do NOT ask the user to fill in README.md — intake lives in this chat.
         - Ask one topic at a time when helpful; confirm understanding before moving on.
         - When aligned on all three, mention **Generate specs** in the workshop top bar once (do not repeat every turn).
@@ -767,7 +681,6 @@ object PanelPlatformSpec {
 
         Tools: search_semantic, workshop_read_file (optional).
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -782,10 +695,6 @@ object PanelPlatformSpec {
 
         Do not audit every file each turn — use search_semantic for spec passages; read/write only docs you must update.
         Capture decisions in STRUCTURE.md, FEATURES.md, FLOW.md, and DESIGN.md (DESIGN.md must include Android WebView layout rules).
-
-        $EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION
-
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -833,11 +742,10 @@ object PanelPlatformSpec {
         $WORKSHOP_CHAT_CONVERSATIONAL_RULES
 
         Hard rules:
-        - Do NOT call workshop_write_file, workshop_create_file, or call_panel_function.
+        - Do NOT call workshop_write_file or call_panel_function.
 
-        Tools: search_semantic, workshop_read_file (optional).
+        Tools: search_semantic, workshop_read_file (optional), read_file (host-project files from search hits when panel is linked).
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         ${eidosContextSummary()}
     """.trimIndent()
@@ -848,12 +756,6 @@ object PanelPlatformSpec {
         This thread is long. For a new unrelated task, ask the user to tap New Chat in Eidos so old build/edit instructions do not mix with the current request.
         Only continue this thread if the user is clearly continuing the same task.
         """.trimIndent()
-
-    fun historyTrimNotice(memoryDepth: String): String {
-        val budget = EidosContextLimits.historyBudget(memoryDepth)
-        return "Older chat turns were trimmed to match in-chat memory ($memoryDepth: " +
-            "last ${budget.maxUserExchanges} user messages, ~${budget.maxChars} chars max)."
-    }
 
     /** Workshop “how to work” instructions (Eidos system context). */
     fun eidosWorkshopInstructions(subfolderId: Long): String = """
@@ -870,7 +772,6 @@ object PanelPlatformSpec {
 
         Available tools: ${EIDOS_WORKSHOP_TOOL_NAMES.joinToString(", ")}. Use fileReferenceId from the project file list.
 
-        ${EIDOS_WORKSHOP_RETRIEVAL_POLICY}
 
         Platform (Kotlin provides — panel code must not reimplement):
         - PanelHtmlComposer: inlines all .css/.js; removes external script/link href; loads composite HTML in WebView.
@@ -899,10 +800,10 @@ object PanelPlatformSpec {
 
     /** Footer for DESIGN_BUILD → Build design (runtime shell only). System block: [eidosBuildDesignInstructions]. */
     fun workshopBuildDesignKickoffFooter(): String = """
-        Build the layout shell from accepted specs and the intake summary in system context.
-        Update index.html, style.css, and script.js (stub handlers only) — use project scaffolds as a base.
-        Do NOT write any .md files. No business logic yet.
-        When done, tell the user to open Preview and iterate in Design mode until they tap Accept design.
+        Build the full static design from accepted specs and the intake summary in system context.
+        Update index.html, style.css, and script.js — use project scaffolds only as a starting point.
+        Do NOT write any .md files. Interaction and game rules ship in the logic build phase.
+        When done, tell the user to refresh Preview, verify every FLOW screen, then tap Accept design.
     """.trimIndent()
 
     /** Footer for LOGIC_BUILD → Build logic. System block: [eidosBuildLogicInstructions]. */
@@ -913,7 +814,7 @@ object PanelPlatformSpec {
         Wire user edits to persistPanelStateDebounced() when the scaffold provides it.
         Test behavior in Preview; verify save/restore in Panel Gallery or an editor tab before Accept logic.
         $EIDOS_PERSISTENCE_POLICY
-        When done, tell the user to use Edit/Debug for fixes, then tap Accept logic.
+        When done, tell the user to test Preview, then tap Accept logic.
     """.trimIndent()
 
     fun workshopAlignDocsKickoffFooter(
@@ -921,18 +822,51 @@ object PanelPlatformSpec {
         updateSection: WorkshopUpdateSection? = null,
     ): String = when (scope) {
         WorkshopDocAlignScope.DESIGN ->
-            "Compare the current layout shell (index.html, style.css, stub script.js) against the spec .md files. " +
-                "Update any specs that are out of date; skip files that already match. .md only — no runtime edits."
+            "Using the inlined code + specs below, update any spec .md that is out of date; skip files that already match. " +
+                ".md only — no runtime edits, no file reads."
         WorkshopDocAlignScope.FINISH ->
-            "Compare current code against all spec .md files — update only what is out of date. .md only."
+            "Using the inlined code + specs below, update only the spec .md files that are out of date. " +
+                ".md only — no file reads."
         WorkshopDocAlignScope.UPDATE ->
-            "Compare current code against all spec .md files — update only what is out of date. .md only."
+            "Using the inlined code + specs below, update only the spec .md files that are out of date. " +
+                ".md only — no file reads."
+    }
+
+    /** Full one-shot Align user message: intent line, out-of-date spec list, and the inlined payload. */
+    fun workshopAlignDocsInlineMessage(
+        scope: WorkshopDocAlignScope,
+        staleSpecs: List<String>,
+        inlinePayload: String,
+        updateSection: WorkshopUpdateSection? = null,
+    ): String {
+        val header = when (scope) {
+            WorkshopDocAlignScope.DESIGN ->
+                "Accept design — sync spec docs from the code below (no file reads):"
+            WorkshopDocAlignScope.FINISH ->
+                "Accept logic — sync spec docs from the code below (no file reads):"
+            WorkshopDocAlignScope.UPDATE ->
+                "Accept update — sync spec docs from the code below (no file reads):"
+        }
+        val staleLine = if (staleSpecs.isEmpty()) {
+            "Out of date: none detected — reply that no changes were needed."
+        } else {
+            "Out of date (update only these): ${staleSpecs.joinToString(", ")}."
+        }
+        return buildString {
+            append(header)
+            append("\n")
+            append(staleLine)
+            append("\n")
+            append(workshopAlignDocsKickoffFooter(scope, updateSection))
+            append("\n\n")
+            append(inlinePayload)
+        }
     }
 
     /** Footer for INTAKE → Generate specs (spec .md only). System block: [eidosGenerateSpecsInstructions]. */
     fun workshopGenerateSpecsKickoffFooter(): String = """
         Write all spec files listed in your GENERATE SPECS instructions from the intake above.
-        Use workshop_write_file / workshop_create_file for .md only — no runtime files yet.
+        Use workshop_write_file for .md only — no runtime files yet.
         When done, briefly tell the user to open Docs to review and tap Accept specs.
     """.trimIndent()
 
@@ -1112,7 +1046,7 @@ object PanelPlatformSpec {
             PLAN_MARKDOWN_FILES.any { it.equals(fileName, ignoreCase = true) }
     }
 
-    /** `.md` files Plan mode may create, read, or write (includes optional implementation plan). */
+    /** `.md` files Plan mode may create, read, or write. */
     fun isPlanMarkdownFile(fileName: String): Boolean =
         PLAN_MARKDOWN_FILES.any { it.equals(fileName, ignoreCase = true) }
 

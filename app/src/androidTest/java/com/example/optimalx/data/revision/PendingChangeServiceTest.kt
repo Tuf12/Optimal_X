@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.model.FileReference
+import com.example.optimalx.data.model.Note
 import com.example.optimalx.data.model.ParentFolder
 import com.example.optimalx.data.model.Subfolder
 import kotlinx.coroutines.runBlocking
@@ -44,11 +45,17 @@ class PendingChangeServiceTest {
         ).allowMainThreadQueries().build()
 
         workshopRoot = tempFolder.newFolder("workshop")
-        checkpointRepo = CheckpointRepository(db.contentCheckpointDao(), db.contentPatchDao())
+        checkpointRepo = CheckpointRepository(
+            db.contentCheckpointDao(),
+            db.contentPatchDao(),
+            db.pendingChangeDao(),
+        )
         applier = DirectWriteApplier(
             fileReferenceDao = db.fileReferenceDao(),
             checkpointRepository = checkpointRepo,
             indexer = WorkshopFileIndexer.NoOp,
+            noteDao = db.noteDao(),
+            noteIndexer = NoteIndexer.NoOp,
             workshopFilePath = { sid, fileName ->
                 File(workshopRoot, "$sid/$fileName")
             },
@@ -56,6 +63,7 @@ class PendingChangeServiceTest {
         service = PendingChangeService(
             pendingDao = db.pendingChangeDao(),
             fileReferenceDao = db.fileReferenceDao(),
+            noteDao = db.noteDao(),
             checkpointRepository = checkpointRepo,
             directWriteApplier = applier,
         )
@@ -66,6 +74,7 @@ class PendingChangeServiceTest {
         subfolderId = db.subfolderDao().insert(
             Subfolder(parentFolderId = parentId, name = "Bid template"),
         )
+        db.noteDao().insert(Note(subfolderId = subfolderId, content = "# Seed\n"))
     }
 
     @After
@@ -220,6 +229,23 @@ class PendingChangeServiceTest {
     }
 
     @Test
+    fun dismiss_afterConcurrentChange_clearsQueueAndKeepsDisk() = runBlocking {
+        val ref = seedWorkshopFile("script.js", "v0\n")
+        val queued = service.proposeWorkshopFile(ref.id, null, "v1\n") as ProposeResult.Queued
+        File(ref.filePath).writeText("user edited\n")
+
+        assertTrue(service.accept(queued.itemId) is AcceptResult.ConcurrentChange)
+
+        val dismissed = service.dismiss(queued.itemId)
+        assertTrue("expected Ok but got $dismissed", dismissed is RejectResult.Ok)
+        assertEquals("user edited\n", File(ref.filePath).readText())
+
+        val item = db.pendingChangeDao().getItem(queued.itemId)!!
+        assertEquals(PENDING_ITEM_STATUS_REJECTED, item.status)
+        assertEquals(0, db.pendingChangeDao().countPending(queued.setId))
+    }
+
+    @Test
     fun acceptCreate_createsFileReferenceAndDiskFile() = runBlocking {
         val proposal = service.proposeWorkshopCreate(
             subfolderId = subfolderId,
@@ -324,6 +350,33 @@ class PendingChangeServiceTest {
         val accepted = service.accept(second.itemId)
         assertTrue(accepted is AcceptResult.Applied)
         assertEquals("v2\n", File(ref.filePath).readText())
+    }
+
+    @Test
+    fun proposeNote_queuesUntilAccept() = runBlocking {
+        val before = db.noteDao().getBySubfolderOnce(subfolderId)!!.content
+        val queued = service.proposeNote(
+            subfolderId = subfolderId,
+            conversationId = null,
+            proposedContent = "$before\n\nAppended block.",
+        ) as ProposeResult.Queued
+
+        assertEquals(before, db.noteDao().getBySubfolderOnce(subfolderId)!!.content)
+        assertEquals(
+            "$before\n\nAppended block.",
+            service.effectiveWorkingContentForNote(subfolderId),
+        )
+
+        val accept = service.accept(queued.itemId)
+        assertTrue(accept is AcceptResult.Applied)
+        assertEquals(
+            "$before\n\nAppended block.",
+            db.noteDao().getBySubfolderOnce(subfolderId)!!.content,
+        )
+        val item = db.pendingChangeDao().getItem(queued.itemId)
+        assertEquals(SOURCE_TYPE_NOTE, item?.sourceType)
+        val set = db.pendingChangeDao().findOpenSetForScope(SCOPE_SUBFOLDER, subfolderId)
+        assertNotNull(set)
     }
 
     @Test

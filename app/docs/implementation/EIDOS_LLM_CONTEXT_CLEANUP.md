@@ -1,6 +1,6 @@
 # Eidos LLM context & provider architecture
 
-**Status:** Phases 1–5 **complete** for original scope (2026-05-21). Superseded in part by chunk semantic search — see [SEARCH_AND_RETRIEVAL.md](../systems/SEARCH_AND_RETRIEVAL.md) and [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md).  
+**Status:** Phases 1–5 **complete** for original scope (2026-05-21). Transport fix track active (2026-06) — [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md). Superseded in part by chunk semantic search — see [SEARCH_AND_RETRIEVAL.md](../systems/SEARCH_AND_RETRIEVAL.md) and [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md).  
 **Goal:** Smart reasoning, lean prompts, tool-first context, correct per-provider transport.
 
 **Kimi K2.6:** Moonshot-specific transport, preserved thinking, Formula web tools, streaming, and chat-linked reasoning UX are defined in [KIMI_K26_MOONSHOT_SPEC.md](./KIMI_K26_MOONSHOT_SPEC.md). When that doc conflicts with this file on Kimi behavior, **follow the Kimi spec** and update this doc.
@@ -15,8 +15,9 @@
 | Phase 4 Content summaries | ✅ | `FileReference.summary` still deferred |
 | Phase 5 Observability | ✅ | |
 | Semantic chunk index | ✅ | Not in original doc — shipped separately |
-| Eidos Index (Tag & Hint) | On hold | Retrieval via `search_semantic` |
+| Eidos Index (Tag & Hint) | Removed | Retrieval via `search_semantic` only |
 | PROMPT_SYSTEM alignment | 🟡 | Inventories, daily inject, loop guards — see PROMPT_SYSTEM checklist |
+| Workshop hop transport | 🟡 | Responses incremental ✅; bulk tool stub trim ✅ (2026-06-08) |
 
 **Original cleanup goal is met.** Remaining work lives under PROMPT_SYSTEM (prompt contents, daily inject, inventories) — not this file’s Phase 1–5 scope.
 
@@ -39,15 +40,17 @@
 
 Code: `EidosProviderFamily.kt`, `providerFamily()`, `EidosRequestPhase` (`FULL` | `TOOL_CONTINUATION`).
 
-5. **In-chat memory tiers** — User-controlled **Low / Medium / High** for how much **conversation thread** is resent (not note/folder content). Settings default today; per-conversation override on `Conversation` entity planned.
+5. **Rolling conversation summary** — Fixed policy replaces Low/Medium/High tiers. Recent turns stay verbatim in `messages[]`; older turns fold into `Conversation.threadSummary` when thresholds are crossed. Full `chat_messages` rows remain for semantic search.
 
-| Tier | ~Messages | ~Chars |
-|------|-----------|--------|
-| Low (default) | 8 | 12,000 |
-| Medium | 16 | 30,000 |
-| High | 40 | 80,000 |
+| Constant | Value | Role |
+|----------|-------|------|
+| `MIN_VERBATIM_USER_EXCHANGES` | 6 | Never fold the most recent exchanges |
+| `FOLD_TRIGGER_USER_EXCHANGES` | 8 | Fold when unfoldered tail exceeds this |
+| `FOLD_TRIGGER_CHARS` | 12,000 | Alternate fold trigger (chars) |
+| `MAX_SUMMARY_CHARS` | 6,000 | Stored summary cap |
+| `OUTBOUND_HARD_CAP_CHARS` | 30,000 | Safety trim on total outbound |
 
-Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
+Code: `ConversationOutboundHistory.kt` (verbatim tail + hard cap; conversation rolling summary removed).
 
 6. **Future: multi-model orchestration (V3/V4)** — Grok search → Claude/Kimi reason/plan → GPT write. Out of scope for this cleanup; keep xAI/OpenAI for future image generation.
 
@@ -60,7 +63,6 @@ Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
 - `buildBasePrompt()` + `EidosContextLimits.TOOL_FIRST_CONTEXT_RULES`
 - Location rules, scope label, provider web note (xAI/OpenAI/Anthropic hosted web; Kimi Formula `web_search` + local Eidos tools)
 - Full **tool catalog** (required for function calling)
-- In-chat memory tier label
 
 ### Subfolder / note (not workshop)
 
@@ -72,13 +74,16 @@ Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
 
 ### Panel workshop
 
-- Project name, subfolder id, **compact file manifest** (`fileName` + `fileReferenceId` per file)
-- **Bounded open-tab excerpt** (≤6k chars of active editor buffer; not full-project dump)
+- Project name, subfolder id, **compact file manifest** (`fileName` + `fileReferenceId` per file — metadata only)
+- **Bounded open-tab excerpt** (≤6k chars of active editor buffer; hop 1 only; not full-project dump)
 - Mode instructions (`PanelPlatformSpec`) — **build run** vs **edit** profile (see [PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md](./PANEL_WORKSHOP_AUTO_CONTINUE_PLAN.md))
-- Optional user-generated **project summary** or bounded spec `.md` fallback (project summary may be dropped from prompt per Auto-Continue Phase 1)
-- Tool loops: **full system + history every hop** (no incremental-only Responses continuations for workshop)
-- **Auto-Continue (planned):** chunked `send()` + synthetic user handoff between chunks on build kickoffs — not unbounded single-loop tool storms
+- Bounded spec `.md` cold-start orientation (`WorkshopSpecMarkdown`) — hop 1 / phase entry only; no project summary inject
+- **Auto-Continue:** chunked `send()` + synthetic user handoff between chunks on build kickoffs
 - **No** inlined full runtime tree (old ~24k open-file dump removed on purpose)
+
+**Tool-loop transport (target):** Same as other scopes on Responses APIs — hop 1 system + history; hop 2+ chained incremental input. On Messages APIs — stable cached system once per turn; append messages; trim stale tool bodies. See [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md).
+
+**Legacy bug (shipping code):** Workshop sets `useIncremental = false`, re-sending full `assembledSystemPrompt` and full `mutableHistory` on every hop. This was documented as intentional for prefix cache / ID retention — **incorrect**. Fix Phase 1 of transport plan. Prefix cache reduces cost; it does not require re-transmitting stable context each hop.
 
 ### Parent-folder scope
 
@@ -95,22 +100,33 @@ Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
 | Provider | Endpoint | Reasoning | Caching / chain |
 |----------|----------|-----------|-----------------|
 | xAI Grok 4.3 | `/v1/responses` | `reasoning_effort: medium` | `prompt_cache_key`, `previous_response_id`, incremental tool input |
-| OpenAI 5.4 mini | `/v1/responses` | `reasoning.effort: medium` | auto prefix cache, `previous_response_id`, incremental tool input |
+| OpenAI GPT-5.6 Luna | `/v1/responses` | `reasoning.effort: medium` | `prompt_cache_key`, explicit breakpoint on system prefix, `previous_response_id`, incremental tool input |
 | Anthropic Sonnet 4.6 | `/v1/messages` | (model default) | `cache_control` on system/tools/history breakpoint |
 | Kimi K2.6 | `/v1/chat/completions` | `thinking: enabled`, `keep: all` | `cache_control`, `prompt_cache_key`, Formula `web_search`, full messages (lean prefix). Remaining Moonshot alignment: [KIMI_K26_MOONSHOT_SPEC.md](./KIMI_K26_MOONSHOT_SPEC.md) |
 
 ---
 
-## Tool loop (implemented)
+## Tool loop
 
-**First call (`EidosRequestPhase.FULL`):** lean system + **full** conversation history + user message + tools.
+### Target (per provider family)
 
-**History trim:** `trimHistoryIfNeeded` is **disabled** (2026-05) until tool-round-safe trimming exists. Memory tier UI remains for future use.
+**First HTTP round (`EidosRequestPhase.FULL`):** lean system + conversation history + user message + tools.
 
-**Tool continuations:**
+**Tool continuations (`TOOL_CONTINUATION`):**
 
-- **RESPONSES_CHAINED:** `phase = TOOL_CONTINUATION`, empty system string, `conversationHistory` = last assistant tool-call round only, `previous_response_id` set → providers skip system block in `buildInput`.
-- **MESSAGES_CACHED:** full lean system (stable for cache) + **full** history with new tool results. Kimi: echo `reasoning_content` on **all** assistant replay (tool-call and final); Formula `web_search` via Fiber; workshop writes redact large `content` in replay args. Gaps tracked in [KIMI_K26_MOONSHOT_SPEC.md](./KIMI_K26_MOONSHOT_SPEC.md).
+| Family | System prompt | History | Chain |
+|--------|---------------|---------|-------|
+| **RESPONSES_CHAINED** (xAI, OpenAI) | **Empty** — context chained via `previous_response_id` | Last assistant + tool round only (incremental `input`) | All scopes including workshop |
+| **MESSAGES_CACHED** (Kimi, Anthropic) | Stable prefix once per **user turn** (cache markers) | Growing `messages[]` — append only new rows per hop | Trim stale tool-result bodies (Phase 3) |
+
+**History trim:** `trimHistoryIfNeeded` is **disabled** (2026-05) until tool-round-safe trimming exists. Re-enable in transport plan Phase 3.
+
+**Kimi on continuations:** `reasoning_content` required on assistant rows **with `tool_calls`** in the current turn (`prepareKimiOutboundHistory`). Text-only reasoning on older turns is stripped. This is **not** a reason to re-send the full system prompt each hop — see [KIMI_K26_MOONSHOT_SPEC.md](./KIMI_K26_MOONSHOT_SPEC.md).
+
+### Shipping code gaps
+
+- **Workshop + Responses:** incremental continuations enabled (2026-06-08) via `shouldUseIncrementalToolContinuation`.
+- **All scopes + Messages:** Hop 2+ omits system block (`shouldOmitSystemPromptOnToolContinuation`); full history with bulk tool stubs (`prepareOutboundHistory`).
 
 ---
 
@@ -132,12 +148,9 @@ Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
 - [x] Panel bridge only when visible
 - [x] Settings: Low/Medium/High chat memory depth
 
-### Phase 3 — Per-conversation memory UI ✅
+### Phase 3 — Per-conversation memory UI (superseded)
 
-- [x] `Conversation.memoryDepth` column + migration 12→13 (`AppDatabaseMigration12To13Test`)
-- [x] `EidosApiClient` resolves per-conversation depth before Settings default
-- [x] Tap **Memory: …** chip in Eidos header (active thread) to cycle: App default → Low → Medium → High → App default
-- [x] Settings **Eidos chat** section still sets app-wide default for new threads
+- [x] ~~`Conversation.memoryDepth` column~~ — legacy column retained; **superseded by rolling thread summary** (DB v22: `threadSummary`, `threadSummaryCoversMessageId`).
 
 ### Phase 4 — Content summaries ✅
 
@@ -167,7 +180,7 @@ Code: `EidosContextLimits.kt`, `SettingsKeys.CONVERSATION_MEMORY_DEPTH`.
   + mode instructions (workshop)
 
 [Dynamic suffix — grows each turn]
-  chat messages (per memory tier)
+  rolling summary block (when present) + recent verbatim chat messages
   + user message
   + tool results (appended)
 ```
@@ -184,10 +197,10 @@ When user edits note/workshop code, **summary unchanged** until regenerate → p
 | Assembly + loop | `EidosApiClient.kt` |
 | Providers | `XAIProvider.kt`, `OpenAIProvider.kt`, `AnthropicProvider.kt`, `KimiProvider.kt`, `KimiFormulaToolService.kt`, `PromptCacheMarkers.kt` |
 | Models | `EidosModels.kt` (`EidosRequestPhase`), `Conversation.memoryDepth` |
-| Memory UI | `EidosContextLimits.kt`, `EidosChatViewModel.cycleConversationMemoryDepth`, `EidosBottomSheet` header chip |
-| Settings | `SettingsPreferences.kt`, `SettingsViewModel.kt`, `SettingsScreen.kt` |
-| DB | `AppDatabase` v14, `MIGRATION_12_13`, `MIGRATION_13_14` |
-| Summaries | `ContentSummaryService.kt`, `WorkshopSpecMarkdown.kt`, `ContentSummaryChunk.kt` |
+| Memory UI | Removed — rolling summary is automatic |
+| Settings | `SettingsScreen.kt` (Eidos chat note) |
+| DB | `AppDatabase` v22, `MIGRATION_21_22`, `AppDatabaseMigration21To22Test` |
+| Summaries | `ContentSummaryService.kt`, `ConversationOutboundHistory.kt`, `WorkshopSpecMarkdown.kt`, `ContentSummaryChunk.kt` |
 | Usage logging | `ProviderUsageParser.kt`, `EidosUsageLogger.kt`, `EidosTokenUsage` |
 | Docs | `LLM_API_REFERENCE.md`, [KIMI_K26_MOONSHOT_SPEC.md](./KIMI_K26_MOONSHOT_SPEC.md), [API.md](../reference/API.md), this file |
 
@@ -195,8 +208,9 @@ When user edits note/workshop code, **summary unchanged** until regenerate → p
 
 ## Open questions (remaining)
 
-1. xAI/OpenAI: periodic regression — incremental `input` + `previous_response_id` on 3+ tool hops.
-2. Summary generation: which model for “Generate Summary” — active provider or fixed cheap model?
-3. Re-enable history trim with atomic `(assistant tool_use + tool_results)*` rounds.
+1. xAI/OpenAI workshop: regression test incremental `input` + `previous_response_id` on 3+ tool hops after Phase 1.
+2. Kimi/Anthropic: can TOOL_CONTINUATION omit system body when byte-identical (cache key only)?
+3. Summary generation: which model for “Generate Summary” — active provider or fixed cheap model?
+4. Re-enable history trim with atomic `(assistant tool_use + tool_results)*` rounds.
 
-Prompt/memory policy follow-ups: [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md) checklist.
+Prompt/memory policy follow-ups: [PROMPT_SYSTEM.md](../systems/PROMPT_SYSTEM.md) checklist. Transport fix: [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](./PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md).

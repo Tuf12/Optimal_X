@@ -6,11 +6,12 @@ import com.example.optimalx.data.db.AppDatabase
 import com.example.optimalx.data.panel.PanelReleaseStore
 
 /**
- * System prompt block for [ConversationScopes.PANEL_GALLERY] — panel list / launch surface.
+ * Volatile project list for panel gallery — composed by
+ * [com.example.optimalx.data.eidos.prompt.EidosPromptComposer].
  */
 object PanelGalleryContext {
 
-    suspend fun buildPromptBlock(context: Context, database: AppDatabase): String {
+    suspend fun buildProjectContext(context: Context, database: AppDatabase): String {
         val app = context.applicationContext as? OptimalXApplication
         val parentId = app?.folderRepository?.getWorkshopParentId()
         val projects = if (parentId == null) {
@@ -36,13 +37,10 @@ object PanelGalleryContext {
             lines.joinToString("\n")
         }
         return buildString {
-            appendLine("Panel Gallery — browse and launch custom panels")
             appendLine("Counts: $complete launchable (COMPLETE), $draft draft/in-progress")
             appendLine()
             appendLine("Projects:")
             appendLine(listBlock)
-            appendLine()
-            appendLine(PanelPlatformSpec.eidosPanelGalleryRules())
         }.trim()
     }
 }

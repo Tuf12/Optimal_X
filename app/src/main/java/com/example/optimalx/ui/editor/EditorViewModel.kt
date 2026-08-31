@@ -13,24 +13,25 @@ import com.example.optimalx.data.model.CustomPanelAssignment
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.Note
 import com.example.optimalx.data.model.Subfolder
-import com.example.optimalx.data.eidos.ContentSummaryChunksCodec
-import com.example.optimalx.data.eidos.ContentSummaryResult
+import com.example.optimalx.ui.components.NoteContentCodec
+import com.example.optimalx.data.eidos.NoteSummaryCodec
+import com.example.optimalx.data.eidos.NoteSummarySections
 import com.example.optimalx.data.model.ContentCheckpoint
 import com.example.optimalx.data.repository.EditorRepository
+import com.example.optimalx.data.repository.SaveNoteSummaryResult
+import com.example.optimalx.data.sync.SyncCallResult
+import com.example.optimalx.data.sync.SyncFileService
 import com.example.optimalx.data.revision.CHECKPOINT_AUTHOR_USER
+import com.example.optimalx.data.revision.CHECKPOINT_LABEL_COMMITTED_EDITS
 import com.example.optimalx.data.revision.CheckpointRepository
-import com.example.optimalx.data.revision.ContentDiff
-import com.example.optimalx.data.revision.SOURCE_TYPE_NOTE
-import com.example.optimalx.voice.NOTE_READ_ALOUD_SKIP_CHARS
-import com.example.optimalx.voice.Controls
-import com.example.optimalx.voice.NoteReadAloudNotification
-import com.example.optimalx.voice.NoteReadAloudSessionBridge
-import com.example.optimalx.voice.TextToSpeechEngine
-import com.example.optimalx.voice.buildReadAloudChunkStarts
-import com.example.optimalx.voice.chunkIndexForCharOffset
-import com.example.optimalx.voice.chunkNoteForReadAloud
-import com.example.optimalx.voice.stripMarkdownForTts
+import com.example.optimalx.data.revision.PENDING_ITEM_STATUS_ACCEPTED
+import com.example.optimalx.data.revision.PENDING_ITEM_STATUS_PENDING
+import com.example.optimalx.data.revision.SCOPE_SUBFOLDER
+import com.example.optimalx.voice.ReadAloudSession
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -38,53 +39,83 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.example.optimalx.data.revision.SOURCE_TYPE_NOTE
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
+
+private const val WORKING_COPY_AUTOSAVE_MS = 800L
 
 /**
  * Hosts the note editor's per-subfolder state (note body, AI lock/blind flags,
- * file references, undo/redo ring) and bridges into the DIFF_REVIEW checkpoint
- * pipeline via [SOURCE_TYPE_NOTE] so the user can see note history and restore
- * prior versions through the shared [com.example.optimalx.ui.workshop.components.ContentHistorySheet].
+ * file references) and bridges into the DIFF_REVIEW checkpoint pipeline via
+ * [SOURCE_TYPE_NOTE] so the user can see note history and restore prior versions
+ * through the shared [com.example.optimalx.ui.workshop.components.ContentHistorySheet].
  *
- * Pending-review for notes (i.e. queuing Eidos edits before they touch the
- * working copy) is still deferred — see Phase 7+ of
- * `app/docs/implementation/DIFF_REVIEW_IMPLEMENTATION_PLAN.md`.
+ * Pending Eidos note edits are queued in DIFF_REVIEW ([SCOPE_SUBFOLDER]) until the user
+ * accepts them in [com.example.optimalx.ui.workshop.review.DiffReviewScreen].
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class EditorViewModel(
     app: Application,
     val subfolderId: Long,
-) : AndroidViewModel(app), Controls {
+) : AndroidViewModel(app) {
 
     private val appRef = app as OptimalXApplication
-    private var noteTts: TextToSpeechEngine? = null
+    private val readAloudSession: ReadAloudSession = appRef.readAloudSession
+    private val syncFileService = SyncFileService(app.applicationContext, appRef.database)
 
-    private val readAloudLock = Any()
-    private var readAloudChunks: List<String> = emptyList()
-    private var readAloudStarts: IntArray = IntArray(0)
-    private var readAloudChunkIndex: Int = 0
-    private var readAloudWantsPlaying: Boolean = false
-
-    private val _noteReadAloudBarVisible = MutableStateFlow(false)
-    val noteReadAloudBarVisible: StateFlow<Boolean> = _noteReadAloudBarVisible.asStateFlow()
-
-    private val _noteReadAloudIsPlaying = MutableStateFlow(false)
-    val noteReadAloudIsPlaying: StateFlow<Boolean> = _noteReadAloudIsPlaying.asStateFlow()
-    private val appContext = app.applicationContext
+    val noteReadAloudBarVisible: StateFlow<Boolean> = readAloudSession.barVisible
+    val noteReadAloudIsPlaying: StateFlow<Boolean> = readAloudSession.isPlaying
     private val repo = EditorRepository(
         db = AppDatabase.getInstance(app),
         semanticIndexer = appRef.semanticIndexer,
-        appIndexSync = appRef.appIndexSyncService,
         semanticSync = appRef.semanticSyncService,
         semanticChunkBuilder = appRef.semanticChunkBuilder,
     )
+    private val db = AppDatabase.getInstance(app)
+
+    // ── DIFF_REVIEW pending changes ─────────────────────────────────────────
+    private val openPendingSet =
+        db.pendingChangeDao()
+            .observeOpenSetForScope(SCOPE_SUBFOLDER, subfolderId)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val pendingChangeCount: StateFlow<Int> = openPendingSet
+        .flatMapLatest { set ->
+            if (set == null) {
+                flowOf(0)
+            } else {
+                db.pendingChangeDao().observeItems(set.id).map { items ->
+                    items.count { it.status == PENDING_ITEM_STATUS_PENDING }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     init {
-        NoteReadAloudSessionBridge.register(this)
+        viewModelScope.launch {
+            openPendingSet
+                .flatMapLatest { set ->
+                    if (set == null) {
+                        flowOf(0)
+                    } else {
+                        db.pendingChangeDao().observeItems(set.id).map { items ->
+                            items.count { it.status == PENDING_ITEM_STATUS_ACCEPTED }
+                        }
+                    }
+                }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { reloadNoteAfterDiffAccept() }
+        }
     }
 
     // ── DB state ──────────────────────────────────────────────────────────────
@@ -102,10 +133,16 @@ class EditorViewModel(
 
     val note: StateFlow<Note?> = repo.getNote(subfolderId)
         .onEach { note ->
-            // Seed undo history on first load
-            if (note != null && contentHistory.isEmpty()) {
-                contentHistory.addLast(note.content)
-                historyIndex = 0
+            if (note == null) return@onEach
+            if (!editorInitialized) {
+                val canonical = NoteContentCodec.normalizeLegacyToMarkdown(note.content)
+                if (canonical != note.content) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        repo.saveNoteContent(subfolderId, canonical)
+                    }
+                }
+                editorInitialized = true
+                markNoteEditorLoaded(canonical, note.updatedAt)
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -118,25 +155,19 @@ class EditorViewModel(
         .map { it?.aiBlind ?: false }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    val hasNoteSummary: StateFlow<Boolean> = note
-        .map { n ->
-            n != null && (
-                !n.summary.isNullOrBlank() ||
-                    ContentSummaryChunksCodec.decode(n.summaryChunksJson).isNotEmpty()
-                )
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val noteSummarySections: StateFlow<NoteSummarySections> = note
+        .map { n -> if (n == null) NoteSummarySections() else NoteSummaryCodec.parse(n.summary) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), NoteSummarySections())
 
-    private val _summaryGenerating = MutableStateFlow(false)
-    val summaryGenerating: StateFlow<Boolean> = _summaryGenerating.asStateFlow()
+    val noteSummaryUpdatedAt: StateFlow<Long> = note
+        .map { it?.summaryUpdatedAt ?: 0L }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     private val _summaryFeedback = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val summaryFeedback: SharedFlow<String> = _summaryFeedback.asSharedFlow()
 
     val fileReferences: StateFlow<List<FileReference>> = repo.getFileReferences(subfolderId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    private val db = AppDatabase.getInstance(app)
 
     val customPanelAssignments: StateFlow<List<CustomPanelAssignment>> =
         db.customPanelAssignmentDao().getByTargetSubfolder(subfolderId)
@@ -193,9 +224,12 @@ class EditorViewModel(
             val workshopParent = db.parentFolderDao().getSystemFolderByName(SystemFolderNames.PANEL_WORKSHOP)
             if (workshopParent != null) {
                 val ctx = getApplication<Application>().applicationContext
+                com.example.optimalx.data.panel.PanelReleaseStore
+                    .ensureAllWorkshopReleasesFromSources(ctx, db)
                 val subs = db.subfolderDao().getAllByParentOnce(workshopParent.id)
                 _workshopProjects.value = subs.filter { subfolder ->
                     subfolder.deletedAt == null &&
+                        !subfolder.isSystemSubfolder &&
                         com.example.optimalx.data.panel.PanelReleaseStore.hasRelease(ctx, subfolder.id)
                 }
             }
@@ -204,33 +238,185 @@ class EditorViewModel(
 
     // ── UI state ──────────────────────────────────────────────────────────────
 
-    private val _isViewMode = MutableStateFlow(false)
+    private val _isViewMode = MutableStateFlow(true)
     val isViewMode: StateFlow<Boolean> = _isViewMode.asStateFlow()
 
     private val _openFiles = MutableStateFlow<List<FileReference>>(emptyList())
     val openFiles: StateFlow<List<FileReference>> = _openFiles.asStateFlow()
+
+    private val _fileFetchBusy = MutableStateFlow(false)
+    val fileFetchBusy: StateFlow<Boolean> = _fileFetchBusy.asStateFlow()
+
+    private val _fileFetchError = MutableStateFlow<String?>(null)
+    val fileFetchError: StateFlow<String?> = _fileFetchError.asStateFlow()
+
+    private val _fileOpenReady = MutableSharedFlow<FileReference>(extraBufferCapacity = 1)
+    val fileOpenReady: SharedFlow<FileReference> = _fileOpenReady.asSharedFlow()
     private val fileViewPrefs = app.getSharedPreferences("file_view_state", Context.MODE_PRIVATE)
 
-    // ── Undo / Redo ───────────────────────────────────────────────────────────
+    private var editorInitialized = false
 
-    private val contentHistory = ArrayDeque<String>()
-    private var historyIndex = -1
-
-    private val _restoreContent = MutableSharedFlow<String>()
+    private val _restoreContent = MutableSharedFlow<String>(replay = 1)
     val restoreContent: SharedFlow<String> = _restoreContent.asSharedFlow()
 
-    val canUndo: StateFlow<Boolean> = MutableStateFlow(false) // updated on each history change
-    val canRedo: StateFlow<Boolean> = MutableStateFlow(false)
+    // ── Eidos / external write sync ───────────────────────────────────────────
+    // Mirrors workshop dirty + reload-after-send so open note buffers do not clobber tool writes.
+
+    private val _isNoteDirty = MutableStateFlow(false)
+    val isNoteDirty: StateFlow<Boolean> = _isNoteDirty.asStateFlow()
+
+    private val _userHasEdited = MutableStateFlow(false)
+    val userHasEdited: StateFlow<Boolean> = _userHasEdited.asStateFlow()
+
+    private var pendingEditorContent: String? = null
+    private var lastPersistedContent: String? = null
+    private var lastLoadedUpdatedAt: Long = 0L
+    private var editSessionBaseline: String? = null
+    private var liveNoteContentProvider: (() -> String)? = null
+    private var workingCopyAutosaveJob: Job? = null
+    private val _editorHeadContent = MutableStateFlow("")
+
+    private val _noteSaveStatus = MutableStateFlow(NoteEditorSaveStatus.Saved)
+    val noteSaveStatus: StateFlow<NoteEditorSaveStatus> = _noteSaveStatus.asStateFlow()
+
+    private val workingCopyFlusher = NoteEditorWorkingCopyFlusher(
+        onSaving = { _noteSaveStatus.value = NoteEditorSaveStatus.Saving },
+        onSaved = { _noteSaveStatus.value = NoteEditorSaveStatus.Saved },
+        onPersist = { content -> persistWorkingCopy(content) },
+    )
+
+    /** Supplies the latest WYSIWYG markdown for flush-on-exit (avoids stale [pendingEditorContent]). */
+    fun setLiveNoteContentProvider(provider: (() -> String)?) {
+        liveNoteContentProvider = provider
+    }
+
+    /** Called when the user enters Edit mode and the WYSIWYG buffer is loaded. */
+    fun onNoteEditSessionStarted(baseline: String) {
+        editSessionBaseline = baseline
+        _userHasEdited.value = false
+        pendingEditorContent = baseline
+        _editorHeadContent.value = baseline
+    }
+
+    /** Called from [NotePanel] when the rich-text buffer changes during an edit session. */
+    fun onNoteEditorSnapshot(content: String) {
+        pendingEditorContent = content
+        val baseline = editSessionBaseline
+        if (baseline != null && content != baseline) {
+            _userHasEdited.value = true
+        } else if (NoteEditorSyncPolicy.shouldPersistWorkingCopy(content, lastPersistedContent)) {
+            // Edit session may not have started yet (view→edit race); still track real edits.
+            _userHasEdited.value = true
+        }
+        val dirtyVsWorkingCopy = content != lastPersistedContent
+        _isNoteDirty.value = dirtyVsWorkingCopy
+        _noteSaveStatus.value = if (dirtyVsWorkingCopy) {
+            NoteEditorSaveStatus.Unsaved
+        } else {
+            NoteEditorSaveStatus.Saved
+        }
+        _editorHeadContent.value = content
+        scheduleWorkingCopyAutosave(content, dirtyVsWorkingCopy)
+    }
+
+    private fun scheduleWorkingCopyAutosave(content: String, dirty: Boolean) {
+        workingCopyAutosaveJob?.cancel()
+        if (!dirty) return
+        workingCopyAutosaveJob = viewModelScope.launch {
+            delay(WORKING_COPY_AUTOSAVE_MS)
+            workingCopyFlusher.flush(
+                content = content,
+                shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(
+                    content,
+                    lastPersistedContent,
+                ),
+            )
+        }
+    }
+
+    /** Called after load, restore, or external reload — canonical row matches UI display. */
+    fun markNoteEditorLoaded(content: String, updatedAt: Long = note.value?.updatedAt ?: 0L) {
+        pendingEditorContent = content
+        lastPersistedContent = content
+        lastLoadedUpdatedAt = updatedAt
+        _isNoteDirty.value = false
+        _noteSaveStatus.value = NoteEditorSaveStatus.Saved
+        _editorHeadContent.value = content
+    }
+
+    private fun markNoteEditorPersisted(content: String, updatedAt: Long) {
+        pendingEditorContent = content
+        lastPersistedContent = content
+        lastLoadedUpdatedAt = updatedAt
+        _isNoteDirty.value = false
+        _noteSaveStatus.value = NoteEditorSaveStatus.Saved
+        _editorHeadContent.value = content
+        // Keep userHasEdited true while the user remains in Edit mode — clearing it
+        // re-triggers NotePanel DB reload and wipes WYSIWYG spans / cursor.
+    }
+
+    /**
+     * Reload note body from Room after Eidos (or another external writer) updates it.
+     * Skips when the user has local unsaved edits ([isNoteDirty]).
+     */
+    fun reloadNoteAfterExternalWrite() {
+        viewModelScope.launch {
+            if (_userHasEdited.value) return@launch
+            val latest = withContext(Dispatchers.IO) {
+                db.noteDao().getBySubfolderOnce(subfolderId)
+            } ?: return@launch
+            if (!NoteEditorSyncPolicy.shouldReloadExternalWrite(
+                    userHasEdited = _userHasEdited.value,
+                    dbUpdatedAt = latest.updatedAt,
+                    lastLoadedUpdatedAt = lastLoadedUpdatedAt,
+                    dbContent = latest.content,
+                    lastPersistedContent = lastPersistedContent,
+                )
+            ) {
+                if (latest.updatedAt > lastLoadedUpdatedAt) {
+                    lastLoadedUpdatedAt = latest.updatedAt
+                }
+                return@launch
+            }
+            _restoreContent.emit(latest.content)
+            markNoteEditorLoaded(latest.content, latest.updatedAt)
+        }
+    }
+
+    /**
+     * After the user accepts a note Diff Review item, always reload from Room.
+     * Clears a dirty editor buffer so accepted proposals are visible and are not
+     * overwritten on NotePanel dispose / ON_STOP (mirrors [com.example.optimalx.ui.workshop.WorkshopEditorViewModel.reloadFromDiskAfterDiffAccept]).
+     */
+    fun reloadNoteAfterDiffAccept() {
+        viewModelScope.launch {
+            _isNoteDirty.value = false
+            _userHasEdited.value = false
+            editSessionBaseline = null
+            val latest = withContext(Dispatchers.IO) {
+                db.noteDao().getBySubfolderOnce(subfolderId)
+            } ?: return@launch
+            _restoreContent.emit(latest.content)
+            markNoteEditorLoaded(latest.content, latest.updatedAt)
+        }
+    }
+
+    /** Persist the open note buffer before an Eidos send so tools see what the user typed. */
+    suspend fun flushNoteToDbForEidos() {
+        val content = liveNoteContentProvider?.invoke() ?: pendingEditorContent ?: return
+        if (!NoteEditorSyncPolicy.shouldPersistWorkingCopy(content, lastPersistedContent)) return
+        persistWorkingCopy(content)
+    }
 
     // ── DIFF_REVIEW checkpoint history ────────────────────────────────────────
-    // Notes share the same `content_checkpoints` table as workshop files (with
-    // `sourceType = "note"`, `sourceId = subfolderId`). Saves snapshot via
-    // [snapshotNoteCheckpoint] so the user can browse history and restore via
-    // the shared [ContentHistorySheet].
+    // Notes share `content_checkpoints` (`sourceType = "note"`, `sourceId = subfolderId`).
+    // Working-copy flush ([persistWorkingCopy]) does not advance HEAD — only
+    // [commitWorkingCopy], Diff Review accept, empty-note auto-apply, and restore do.
     private val checkpointRepository by lazy {
         CheckpointRepository(
             checkpointDao = db.contentCheckpointDao(),
             patchDao = db.contentPatchDao(),
+            pendingChangeDao = db.pendingChangeDao(),
         )
     }
 
@@ -240,42 +426,73 @@ class EditorViewModel(
             .observeForSource(SOURCE_TYPE_NOTE, subfolderId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** True when editor content differs from the latest checkpoint (HEAD). */
+    val isDirtyVsHead: StateFlow<Boolean> = combine(
+        noteCheckpoints,
+        _editorHeadContent,
+    ) { checkpoints, content ->
+        CheckpointRepository.isWorkingCopyDirtyVsHead(
+            workingCopy = content,
+            latestCheckpointHash = checkpoints.firstOrNull()?.contentHash,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     private val _restoreFeedback = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val restoreFeedback: SharedFlow<String> = _restoreFeedback.asSharedFlow()
 
+    private val _commitFeedback = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val commitFeedback: SharedFlow<String> = _commitFeedback.asSharedFlow()
+
     /**
-     * Append a checkpoint for [content] under `(note, subfolderId)`. Skips when the
-     * latest checkpoint already has the same hash so back-to-back saves with no
-     * net change don't churn the timeline.
+     * Append a checkpoint (HEAD) for [content]. Skips when the latest checkpoint
+     * already has the same hash. Does not write Room — caller must persist working copy first
+     * when needed.
      */
-    private suspend fun snapshotNoteCheckpoint(
+    private suspend fun commitWorkingCopy(
         content: String,
         author: String = CHECKPOINT_AUTHOR_USER,
         label: String? = null,
-    ) {
-        val latest = checkpointRepository.getLatest(SOURCE_TYPE_NOTE, subfolderId)
-        val newHash = ContentDiff.sha256Hex(content)
-        if (latest != null && latest.contentHash == newHash) return
-        // Capture the first save as the baseline so the timeline is anchored.
-        checkpointRepository.baselineIfMissing(
+    ): ContentCheckpoint? =
+        checkpointRepository.commitWorkingCopyIfDirty(
             sourceType = SOURCE_TYPE_NOTE,
             sourceId = subfolderId,
-            content = latest?.contentBlob ?: content,
-        )
-        checkpointRepository.createCheckpoint(
-            sourceType = SOURCE_TYPE_NOTE,
-            sourceId = subfolderId,
-            content = content,
+            workingCopy = content,
             author = author,
             label = label,
         )
+
+    /**
+     * Commit the working copy to History (HEAD). Flushes the open buffer first when needed.
+     * Does not reload the WYSIWYG buffer.
+     */
+    fun commitNoteToHead() {
+        viewModelScope.launch {
+            val buffer = liveNoteContentProvider?.invoke() ?: pendingEditorContent
+            if (buffer != null &&
+                NoteEditorSyncPolicy.shouldPersistWorkingCopy(buffer, lastPersistedContent)
+            ) {
+                persistWorkingCopy(buffer)
+            }
+            val working = withContext(Dispatchers.IO) {
+                db.noteDao().getBySubfolderOnce(subfolderId)?.content.orEmpty()
+            }
+            val committed = withContext(Dispatchers.IO) {
+                commitWorkingCopy(
+                    content = working,
+                    author = CHECKPOINT_AUTHOR_USER,
+                    label = CHECKPOINT_LABEL_COMMITTED_EDITS,
+                )
+            }
+            _editorHeadContent.value = working
+            if (committed != null) {
+                _commitFeedback.tryEmit("Committed to history")
+            }
+        }
     }
 
     /**
-     * Restore the note body to [checkpointId]. Writes via [EditorRepository.saveNoteContent]
-     * so semantic + app-index sync run, emits to [restoreContent] so the open
-     * editor view replaces its buffer, and appends a fresh `user`-authored
-     * "Restored to seq N (...)" checkpoint so the timeline shows the restore.
+     * Restore the note body to [checkpointId]. Persists to Room before updating the
+     * editor so a fast exit cannot leave the old working copy on disk.
      */
     fun restoreNoteCheckpoint(checkpointId: Long) {
         viewModelScope.launch {
@@ -289,82 +506,83 @@ class EditorViewModel(
                 return@launch
             }
             val content = cp.contentBlob
-            // Replace the open editor buffer so the WYSIWYG view refreshes.
-            _restoreContent.emit(content)
-            // Keep undo/redo in sync with the restored content.
-            seedUndoHistoryAfterRestore(content)
-            withContext(Dispatchers.IO) {
+            val updatedAt = withContext(Dispatchers.IO) {
                 repo.saveNoteContent(subfolderId, content)
                 val labelSuffix = cp.label?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
-                snapshotNoteCheckpoint(
+                commitWorkingCopy(
                     content = content,
                     author = CHECKPOINT_AUTHOR_USER,
                     label = "Restored to seq ${cp.sequence}$labelSuffix",
                 )
+                db.noteDao().getBySubfolderOnce(subfolderId)?.updatedAt ?: System.currentTimeMillis()
             }
+            markNoteEditorLoaded(content, updatedAt)
+            _userHasEdited.value = false
+            _isNoteDirty.value = false
+            editSessionBaseline = content
+            _editorHeadContent.value = content
+            _restoreContent.emit(content)
             _restoreFeedback.tryEmit("Restored to seq ${cp.sequence}")
         }
     }
 
-    private fun seedUndoHistoryAfterRestore(content: String) {
-        val current = contentHistory.getOrNull(historyIndex)
-        if (content == current) return
-        while (contentHistory.size > historyIndex + 1) contentHistory.removeLast()
-        if (contentHistory.size >= 50) {
-            contentHistory.removeFirst()
-            historyIndex--
-        }
-        contentHistory.addLast(content)
-        historyIndex = contentHistory.size - 1
-    }
-
-    // Called from NotePanel on teardown (dispose / ON_STOP) and undo/redo.
-    fun onContentSave(html: String) {
-        val current = contentHistory.getOrNull(historyIndex)
-        if (html == current) return
-
-        // Trim redo stack
-        while (contentHistory.size > historyIndex + 1) contentHistory.removeLast()
-
-        // Cap history at 50 entries
-        if (contentHistory.size >= 50) {
-            contentHistory.removeFirst()
-            historyIndex--
-        }
-
-        contentHistory.addLast(html)
-        historyIndex = contentHistory.size - 1
-
-        viewModelScope.launch(Dispatchers.IO) {
-            repo.saveNoteContent(subfolderId, html)
-            snapshotNoteCheckpoint(content = html)
-        }
-    }
-
-    fun undo() {
-        if (historyIndex <= 0) return
-        historyIndex--
-        val content = contentHistory[historyIndex]
+    // Called from NotePanel on teardown (dispose / ON_STOP) when dirty, or forced (dictation).
+    fun onContentSave(content: String, force: Boolean = false) {
         viewModelScope.launch {
-            _restoreContent.emit(content)
-            withContext(Dispatchers.IO) {
-                repo.saveNoteContent(subfolderId, content)
-                snapshotNoteCheckpoint(content = content)
-            }
+            workingCopyFlusher.flush(
+                content = content,
+                shouldPersist = force || NoteEditorSyncPolicy.shouldPersistWorkingCopy(
+                    content,
+                    lastPersistedContent,
+                ),
+            )
         }
     }
 
-    fun redo() {
-        if (historyIndex >= contentHistory.size - 1) return
-        historyIndex++
-        val content = contentHistory[historyIndex]
-        viewModelScope.launch {
-            _restoreContent.emit(content)
-            withContext(Dispatchers.IO) {
-                repo.saveNoteContent(subfolderId, content)
-                snapshotNoteCheckpoint(content = content)
-            }
+    /** Persist latest markdown to the working copy before export/share. */
+    suspend fun flushNoteBeforeExport(content: String) {
+        workingCopyFlusher.flush(
+            content = content,
+            shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(content, lastPersistedContent),
+        )
+    }
+
+    /** Persist pending edits to the working copy before navigating away from the editor. */
+    suspend fun flushNoteBeforeExit(content: String? = null) {
+        val toSave = content ?: liveNoteContentProvider?.invoke() ?: pendingEditorContent ?: return
+        workingCopyFlusher.flush(
+            content = toSave,
+            shouldPersist = NoteEditorSyncPolicy.shouldPersistWorkingCopy(toSave, lastPersistedContent),
+        )
+    }
+
+    /** Write [content] to `notes.content` only — does not create a History checkpoint. */
+    private suspend fun persistWorkingCopy(content: String) {
+        withContext(Dispatchers.IO) {
+            persistNoteContent(content)
         }
+        val updatedAt = withContext(Dispatchers.IO) {
+            db.noteDao().getBySubfolderOnce(subfolderId)?.updatedAt ?: System.currentTimeMillis()
+        }
+        markNoteEditorPersisted(content, updatedAt)
+    }
+
+    private suspend fun persistNoteContent(content: String) {
+        val row = db.noteDao().getBySubfolderOnce(subfolderId)
+        if (row != null &&
+            NoteEditorSyncPolicy.shouldSkipPersistClobberingExternalWrite(
+                dbUpdatedAt = row.updatedAt,
+                lastLoadedUpdatedAt = lastLoadedUpdatedAt,
+                persistContent = content,
+                dbContent = row.content,
+            )
+        ) {
+            return
+        }
+
+        if (content == lastPersistedContent) return
+
+        repo.saveNoteContent(subfolderId, content)
     }
 
     // ── View mode / AI lock ───────────────────────────────────────────────────
@@ -379,168 +597,31 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) { repo.toggleAiBlind(subfolderId) }
     }
 
-    fun generateOrRegenerateNoteSummary() {
-        viewModelScope.launch {
-            val current = note.value ?: run {
-                _summaryFeedback.emit("No note to summarize.")
-                return@launch
-            }
-            if (current.aiBlind) {
-                _summaryFeedback.emit("Note is blind from Eidos. Reveal it first.")
-                return@launch
-            }
-            val hadSummary = hasNoteSummary.value
-            _summaryGenerating.value = true
-            val result = appRef.contentSummaryService.generateNoteSummary(current.id)
-            _summaryGenerating.value = false
-            val message = when (result) {
-                ContentSummaryResult.Success ->
-                    if (hadSummary) "Eidos summary updated." else "Eidos summary generated."
-                is ContentSummaryResult.Failed -> result.message
-            }
-            _summaryFeedback.emit(message)
-        }
-    }
-
-    /** Starts chunked read-aloud for [plainText] and shows the in-note playback bar. */
-    fun speakNoteAloud(plainText: String) {
-        val sanitized = stripMarkdownForTts(plainText.trim())
-        if (sanitized.isBlank()) return
-        val chunks = chunkNoteForReadAloud(sanitized)
-        if (chunks.isEmpty()) return
-
-        synchronized(readAloudLock) {
-            readAloudChunks = chunks
-            readAloudStarts = buildReadAloudChunkStarts(chunks)
-            readAloudChunkIndex = 0
-            readAloudWantsPlaying = true
-            _noteReadAloudBarVisible.value = true
-            _noteReadAloudIsPlaying.value = true
-        }
-        syncReadAloudNotification()
-        ensureNoteTts().stop()
-        enqueueSpeakChainFromCurrentChunk()
-    }
-
-    fun toggleNoteReadAloudPlayback() {
-        val startPlayback: Boolean
-        synchronized(readAloudLock) {
-            if (!_noteReadAloudBarVisible.value || readAloudChunks.isEmpty()) return
-            startPlayback = !_noteReadAloudIsPlaying.value
-            readAloudWantsPlaying = startPlayback
-            _noteReadAloudIsPlaying.value = startPlayback
-            if (!startPlayback) {
-                noteTts?.stop()
-                syncReadAloudNotification()
-                return
-            }
-            if (readAloudChunkIndex >= readAloudChunks.size) {
-                readAloudChunkIndex = 0
-            }
-        }
-        syncReadAloudNotification()
-        if (startPlayback) enqueueSpeakChainFromCurrentChunk()
-    }
-
-    fun noteReadAloudRewind10Seconds() {
-        val shouldResume: Boolean
-        synchronized(readAloudLock) {
-            if (readAloudChunks.isEmpty()) return
-            val idx = readAloudChunkIndex.coerceAtMost(readAloudChunks.lastIndex.coerceAtLeast(0))
-            val curStart = readAloudStarts[idx]
-            val targetOffset = (curStart - NOTE_READ_ALOUD_SKIP_CHARS).coerceAtLeast(0)
-            readAloudChunkIndex = chunkIndexForCharOffset(readAloudStarts, targetOffset)
-            shouldResume = readAloudWantsPlaying
-        }
-        noteTts?.stop()
-        syncReadAloudNotification()
-        if (shouldResume) enqueueSpeakChainFromCurrentChunk()
-    }
-
-    fun noteReadAloudForward10Seconds() {
-        val shouldResume: Boolean
-        synchronized(readAloudLock) {
-            if (readAloudChunks.isEmpty()) return
-            val totalLen = readAloudStarts.last()
-            val idx = readAloudChunkIndex.coerceAtMost(readAloudChunks.lastIndex.coerceAtLeast(0))
-            val curStart = readAloudStarts[idx]
-            val targetOffset =
-                (curStart + NOTE_READ_ALOUD_SKIP_CHARS).coerceAtMost((totalLen - 1).coerceAtLeast(0))
-            readAloudChunkIndex = chunkIndexForCharOffset(readAloudStarts, targetOffset)
-            shouldResume = readAloudWantsPlaying
-        }
-        noteTts?.stop()
-        syncReadAloudNotification()
-        if (shouldResume) enqueueSpeakChainFromCurrentChunk()
-    }
-
-    fun stopNoteSpeech() {
-        synchronized(readAloudLock) {
-            readAloudWantsPlaying = false
-            readAloudChunks = emptyList()
-            readAloudStarts = IntArray(0)
-            readAloudChunkIndex = 0
-            _noteReadAloudBarVisible.value = false
-            _noteReadAloudIsPlaying.value = false
-        }
-        noteTts?.stop()
-        syncReadAloudNotification()
-    }
-
-    private fun ensureNoteTts(): TextToSpeechEngine {
-        return noteTts ?: TextToSpeechEngine(getApplication()).also { noteTts = it }
-    }
-
-    private fun enqueueSpeakChainFromCurrentChunk() {
-        viewModelScope.launch(Dispatchers.Main) {
-            val chunkText: String
-            val utteranceIndex: Int
-            synchronized(readAloudLock) {
-                if (!readAloudWantsPlaying) return@launch
-                if (readAloudChunkIndex >= readAloudChunks.size) {
-                    readAloudWantsPlaying = false
-                    _noteReadAloudIsPlaying.value = false
-                    syncReadAloudNotification()
-                    return@launch
-                }
-                utteranceIndex = readAloudChunkIndex
-                chunkText = readAloudChunks[utteranceIndex]
-            }
-            ensureNoteTts().speak(chunkText) {
-                viewModelScope.launch(Dispatchers.Main) {
-                    synchronized(readAloudLock) {
-                        if (!readAloudWantsPlaying) return@launch
-                        if (readAloudChunkIndex != utteranceIndex) return@launch
-                        readAloudChunkIndex++
-                        if (readAloudChunkIndex >= readAloudChunks.size) {
-                            readAloudWantsPlaying = false
-                            _noteReadAloudIsPlaying.value = false
-                            syncReadAloudNotification()
-                            return@launch
-                        }
-                    }
-                    enqueueSpeakChainFromCurrentChunk()
-                }
+    fun saveNoteSummary(memoryBullets: List<String>, contentDigest: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val sections = NoteSummarySections(
+                memoryBullets = memoryBullets,
+                contentDigest = contentDigest,
+            )
+            when (val result = repo.saveNoteSummarySections(subfolderId, sections)) {
+                SaveNoteSummaryResult.Success ->
+                    _summaryFeedback.emit("Folder summary saved.")
+                is SaveNoteSummaryResult.Failed ->
+                    _summaryFeedback.emit(result.message)
             }
         }
     }
 
-    private fun syncReadAloudNotification() {
-        val visible = _noteReadAloudBarVisible.value
-        if (!visible) {
-            NoteReadAloudNotification.hide(appContext)
-            return
-        }
-        NoteReadAloudNotification.show(appContext, _noteReadAloudIsPlaying.value)
-    }
+    /** Starts chunked read-aloud for note [content] (HTML or markdown source) and shows the playback bar. */
+    fun speakNoteAloud(content: String) = readAloudSession.startFromNote(content)
 
-    override fun onToggle() = toggleNoteReadAloudPlayback()
+    fun toggleNoteReadAloudPlayback() = readAloudSession.togglePlayback()
 
-    override fun onRewind10() = noteReadAloudRewind10Seconds()
+    fun noteReadAloudRewind10Seconds() = readAloudSession.rewind10Seconds()
 
-    override fun onForward10() = noteReadAloudForward10Seconds()
+    fun noteReadAloudForward10Seconds() = readAloudSession.forward10Seconds()
 
-    override fun onStop() = stopNoteSpeech()
+    fun stopNoteSpeech() = readAloudSession.stop()
 
     // ── File panels ───────────────────────────────────────────────────────────
 
@@ -548,6 +629,25 @@ class EditorViewModel(
         if (_openFiles.value.none { it.id == ref.id }) {
             _openFiles.value = _openFiles.value + ref
         }
+    }
+
+    fun requestOpenFile(ref: FileReference) {
+        viewModelScope.launch {
+            _fileFetchError.value = null
+            _fileFetchBusy.value = true
+            when (val result = syncFileService.ensureAttachmentLocal(ref)) {
+                is SyncCallResult.Failure -> _fileFetchError.value = result.message
+                is SyncCallResult.Success -> {
+                    openFile(result.value)
+                    _fileOpenReady.emit(result.value)
+                }
+            }
+            _fileFetchBusy.value = false
+        }
+    }
+
+    fun clearFileFetchError() {
+        _fileFetchError.value = null
     }
 
     fun closeFile(ref: FileReference) {
@@ -587,6 +687,7 @@ class EditorViewModel(
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     destFile.outputStream().use { output -> input.copyTo(output) }
                 }
+                if (!destFile.isFile || destFile.length() <= 0L) return@launch
                 repo.insertFileReference(
                     FileReference(
                         subfolderId = subfolderId,
@@ -603,7 +704,6 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             closeFile(ref)
             repo.deleteFileReference(ref.id)
-            File(ref.filePath).delete()
         }
     }
 
@@ -614,20 +714,5 @@ class EditorViewModel(
             if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
         }
         return name.ifEmpty { uri.lastPathSegment?.substringAfterLast('/') ?: "file" }
-    }
-
-    override fun onCleared() {
-        synchronized(readAloudLock) {
-            readAloudChunks = emptyList()
-            readAloudStarts = IntArray(0)
-            readAloudWantsPlaying = false
-            _noteReadAloudBarVisible.value = false
-            _noteReadAloudIsPlaying.value = false
-        }
-        NoteReadAloudSessionBridge.unregister(this)
-        NoteReadAloudNotification.hide(appContext)
-        noteTts?.destroy()
-        noteTts = null
-        super.onCleared()
     }
 }

@@ -11,21 +11,23 @@ object DumpEditContextLimits {
     const val FULL_CONTEXT_CHAR_THRESHOLD = 8_192
 }
 
+/**
+ * Volatile DumpEdit buffer state for Eidos — composed by
+ * [com.example.optimalx.data.eidos.prompt.EidosPromptComposer].
+ */
 object DumpEditContext {
 
-    suspend fun buildPromptBlock(
+    suspend fun buildVolatileContext(
         context: Context,
         userMessage: String?,
         contentSectionRetriever: ContentSectionRetriever,
-    ): String {
-        val state = DumpEditPreferences.readState(context)
-        return buildString {
-            appendLine("DumpEdit scratch buffer:")
-            appendLine(formatStateBlock(state, userMessage, contentSectionRetriever))
-        }.trim()
-    }
+    ): String = formatStateBlock(
+        state = DumpEditPreferences.readState(context),
+        userMessage = userMessage,
+        contentSectionRetriever = contentSectionRetriever,
+    )
 
-    private fun formatStateBlock(
+    internal fun formatStateBlock(
         state: DumpEditState,
         userMessage: String?,
         contentSectionRetriever: ContentSectionRetriever,

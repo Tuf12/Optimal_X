@@ -12,6 +12,7 @@ object ConversationScopes {
     const val PANEL_GALLERY = "panel_gallery"
     const val PANEL_RUNNER = "panel_runner"
     const val DUMP_EDIT = "dump_edit"
+    const val IMAGE_STUDIO = "image_studio"
 
     val MAIN_CHAT_SCOPE_TYPES = listOf(
         GENERAL,

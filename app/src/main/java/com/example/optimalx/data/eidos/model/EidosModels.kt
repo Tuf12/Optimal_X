@@ -1,7 +1,6 @@
 package com.example.optimalx.data.eidos.model
 
-import com.example.optimalx.data.eidos.ReasoningPersistPolicy
-
+import com.example.optimalx.data.eidos.EidosNavigationTarget
 import kotlinx.serialization.json.JsonObject
 
 /** First HTTP call for a user turn vs continuation after local tool execution. */
@@ -14,19 +13,35 @@ enum class EidosRequestPhase {
  * Standard request shape used by all providers.
  */
 data class EidosRequest(
+    /** Full system prompt — used by Kimi, Anthropic, xAI, and OpenAI when no split is set. */
     val systemPrompt: String,
+    /**
+     * OpenAI GPT-5.6+ explicit cache: stable prefix (identity, rules, static location prose).
+     * When non-blank, [volatileSystemSuffix] follows without a cache breakpoint.
+     */
+    val stableSystemPrefix: String? = null,
+    val volatileSystemSuffix: String? = null,
     val conversationHistory: List<EidosMessage>,
     val toolDefinitions: List<EidosToolDefinition>,
     val userMessage: String,
     val previousResponseId: String? = null,
     /**
-     * Stable id for provider prompt-cache routing (xAI `prompt_cache_key`).
+     * Stable id for provider prompt-cache routing (`prompt_cache_key` on OpenAI / xAI / Kimi).
      * Use conversation id when available; rollover/widget may use their own keys.
      */
     val promptCacheKey: String? = null,
     val phase: EidosRequestPhase = EidosRequestPhase.FULL,
+    /**
+     * Whether reasoning providers (Kimi) run with thinking enabled. Off for quick-response
+     * scopes (widget Ask Eidos) to reduce first-token latency.
+     */
+    val thinkingEnabled: Boolean = true,
+    /** OpenAI / xAI Responses `reasoning.effort` or `reasoning_effort` when non-null. */
+    val reasoningEffort: String? = null,
     /** Kimi streaming only — live reasoning/content preview during send. */
     val streamListener: EidosStreamListener? = null,
+    /** Absolute paths to on-disk images included with the user turn (local provider vision). */
+    val attachedImagePaths: List<String> = emptyList(),
     /**
      * Developer API trace — invoked once per provider HTTP round with exact outbound JSON
      * (no Authorization header) and parsed response summary.
@@ -80,16 +95,15 @@ data class EidosResponse(
     val assistantReasoningContent: String? = null,
     /** All thinking blocks from this user turn (tool hops + final), for chat aggregation. */
     val reasoningTrace: List<EidosReasoningHop> = emptyList(),
-    /** Phase 1 — workshop send stopped at per-chunk tool-hop cap (Auto-Continue prep). */
-    val workshopPausedForToolCap: Boolean = false,
-    val workshopToolRoundsCompleted: Int = 0,
-    /** Phase 1.5 — chunk ended for handoff (tool cap or model-authored section). */
-    val workshopPausedForHandoff: Boolean = false,
+    /** Navigation chips for assistant replies (note/folder/workshop links). */
+    val navigationTargets: List<EidosNavigationTarget> = emptyList(),
+    /** True when the request failed due to network/transport issues (not a real model reply). */
+    val transportFailure: Boolean = false,
 )
 
-/** Non-blank final-hop reasoning for [ChatMessage.assistantReasoningContent] only. */
+/** Non-blank reasoning suitable for [ChatMessage.assistantReasoningContent] persistence. */
 fun EidosResponse.persistableReasoningContent(): String? =
-    ReasoningPersistPolicy.finalHopForChat(reasoningTrace, assistantReasoningContent)
+    formatPersistableReasoning(reasoningTrace, assistantReasoningContent)
 
 enum class EidosRole {
     USER,

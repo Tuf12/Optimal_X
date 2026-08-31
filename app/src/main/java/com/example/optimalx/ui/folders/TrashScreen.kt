@@ -52,8 +52,11 @@ fun TrashScreen(
     val viewModel: TrashViewModel = viewModel()
     val deletedParentFolders by viewModel.deletedParentFolders.collectAsState()
     val deletedSubfolders by viewModel.deletedSubfolders.collectAsState()
+    val deletedFiles by viewModel.deletedFiles.collectAsState()
     val colors = LocalOptimalXColors.current
-    val isEmpty = deletedParentFolders.isEmpty() && deletedSubfolders.isEmpty()
+    val isEmpty = deletedParentFolders.isEmpty() &&
+        deletedSubfolders.isEmpty() &&
+        deletedFiles.isEmpty()
 
     Column(
         modifier = Modifier
@@ -118,6 +121,19 @@ fun TrashScreen(
                             subtitle = "Subfolder",
                             onRestore = { viewModel.restoreSubfolder(subfolder.id) },
                             onDelete = { viewModel.permanentlyDeleteSubfolder(subfolder.id) },
+                        )
+                    }
+                    item { Spacer(Modifier.height(12.dp)) }
+                }
+
+                if (deletedFiles.isNotEmpty()) {
+                    item { SectionLabel("Files") }
+                    items(deletedFiles, key = { "file_${it.ref.id}" }) { row ->
+                        TrashItemRow(
+                            name = row.ref.fileName,
+                            subtitle = "${row.parentFolderName} / ${row.subfolderName}",
+                            onRestore = { viewModel.restoreFile(row.ref.id) },
+                            onDelete = { viewModel.permanentlyDeleteFile(row.ref.id) },
                         )
                     }
                 }

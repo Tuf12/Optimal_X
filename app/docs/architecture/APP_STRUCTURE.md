@@ -20,7 +20,7 @@ App
             └── Files Panel (swipe)
 ```
 
-System-level parent folders still exist in the database for legacy data and internal tools. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Memory**, and **Eidos Index** are reachable from the **Eidos section** (top bar menu). Legacy **Eidos Chats** / **Eidos Reasoning** parents may remain in the DB but are **hidden** from folder UI — chat navigation lives in the chat UI.
+System-level parent folders still exist in the database for legacy data and internal tools. **Eidos Journal**, **Eidos Log**, **Eidos Daily**, **Eidos Memory**, and **Eidos Reasoning** (rollover audit) are reachable from the **Eidos section** (top bar menu). Legacy **Eidos Chats** / **Eidos Index** parents may remain in the DB but are unused or hidden — chat navigation lives in the chat UI.
 
 **Quick Notes**, **Panel Workshop**, **Panels** (gallery), and **DumpEdit** are reached from the **pinned row** on the Parent Folder Page, not from the user folder grid.
 

@@ -29,18 +29,21 @@ class AnthropicProvider(
         val payload = buildJsonObject {
             put("model", JsonPrimitive("claude-sonnet-4-6"))
             put("max_tokens", JsonPrimitive(ANTHROPIC_MAX_TOKENS))
-            put(
-                "system",
-                buildJsonArray {
-                    add(
-                        buildJsonObject {
-                            put("type", JsonPrimitive("text"))
-                            put("text", JsonPrimitive(request.systemPrompt))
-                            put("cache_control", PromptCacheMarkers.ephemeralCacheControl())
-                        }
-                    )
-                }
-            )
+            // Omitted on tool continuations (blank system): the cached prefix carries it.
+            if (request.systemPrompt.isNotBlank()) {
+                put(
+                    "system",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("text"))
+                                put("text", JsonPrimitive(request.systemPrompt))
+                                put("cache_control", PromptCacheMarkers.ephemeralCacheControl())
+                            }
+                        )
+                    }
+                )
+            }
             put("messages", buildMessages(request))
             put("tools", buildTools(request))
         }
@@ -142,21 +145,12 @@ class AnthropicProvider(
             add(message.toAnthropicMessage(cacheBreakpoint = index == lastHistoryIndex))
         }
 
-        if (request.userMessage.isNotBlank()) {
+        if (request.userMessage.isNotBlank() || request.attachedImagePaths.isNotEmpty()) {
+            val images = ChatVisionUserContent.encodePaths(request.attachedImagePaths)
             add(
                 buildJsonObject {
                     put("role", JsonPrimitive("user"))
-                    put(
-                        "content",
-                        buildJsonArray {
-                            add(
-                                buildJsonObject {
-                                    put("type", JsonPrimitive("text"))
-                                    put("text", JsonPrimitive(request.userMessage))
-                                }
-                            )
-                        }
-                    )
+                    put("content", ChatVisionUserContent.anthropicContent(request.userMessage, images))
                 }
             )
         }

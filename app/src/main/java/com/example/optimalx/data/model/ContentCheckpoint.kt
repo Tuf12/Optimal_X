@@ -3,6 +3,7 @@ package com.example.optimalx.data.model
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 /**
  * Snapshot of a content resource at a meaningful moment (build, accepted Eidos proposal,
@@ -18,6 +19,7 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["sourceType", "sourceId", "sequence"]),
         Index(value = ["sourceType", "sourceId", "createdAt"]),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class ContentCheckpoint(
@@ -40,4 +42,6 @@ data class ContentCheckpoint(
     /** Conversation that produced this checkpoint, if any. */
     val conversationId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

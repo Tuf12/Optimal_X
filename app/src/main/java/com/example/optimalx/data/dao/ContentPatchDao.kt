@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.example.optimalx.data.model.ContentPatch
 
 @Dao
@@ -11,6 +12,9 @@ interface ContentPatchDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(patch: ContentPatch): Long
+
+    @Update
+    suspend fun update(patch: ContentPatch)
 
     @Query("SELECT * FROM content_patches WHERE id = :id")
     suspend fun getById(id: Long): ContentPatch?
@@ -40,4 +44,13 @@ interface ContentPatchDao {
         """
     )
     suspend fun deleteByCheckpoint(checkpointId: Long)
+
+    @Query("SELECT * FROM content_patches WHERE globalId = :globalId LIMIT 1")
+    suspend fun getByGlobalId(globalId: String): ContentPatch?
+
+    @Query("SELECT * FROM content_patches WHERE createdAt > :since ORDER BY createdAt")
+    suspend fun getChangedSince(since: Long): List<ContentPatch>
+
+    @Query("SELECT * FROM content_patches ORDER BY createdAt")
+    suspend fun getAllForSyncLookup(): List<ContentPatch>
 }

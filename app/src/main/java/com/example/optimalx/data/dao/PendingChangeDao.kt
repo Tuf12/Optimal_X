@@ -138,4 +138,26 @@ interface PendingChangeDao {
 
     @Query("DELETE FROM pending_change_items WHERE id = :id")
     suspend fun deleteItem(id: Long)
+
+    /** Pending items keep baseCheckpointId without FK; clear when retention prunes the baseline. */
+    @Query("UPDATE pending_change_items SET baseCheckpointId = NULL WHERE baseCheckpointId = :checkpointId")
+    suspend fun clearBaseCheckpointReferences(checkpointId: Long)
+
+    @Query("SELECT * FROM pending_change_sets WHERE globalId = :globalId LIMIT 1")
+    suspend fun getSetByGlobalId(globalId: String): PendingChangeSet?
+
+    @Query("SELECT * FROM pending_change_items WHERE globalId = :globalId LIMIT 1")
+    suspend fun getItemByGlobalId(globalId: String): PendingChangeItem?
+
+    @Query("SELECT * FROM pending_change_sets WHERE updatedAt > :since ORDER BY updatedAt")
+    suspend fun getChangedSetsSince(since: Long): List<PendingChangeSet>
+
+    @Query("SELECT * FROM pending_change_items WHERE updatedAt > :since ORDER BY updatedAt")
+    suspend fun getChangedItemsSince(since: Long): List<PendingChangeItem>
+
+    @Query("SELECT * FROM pending_change_sets ORDER BY updatedAt")
+    suspend fun getAllSetsForSyncLookup(): List<PendingChangeSet>
+
+    @Query("SELECT * FROM pending_change_items ORDER BY updatedAt")
+    suspend fun getAllItemsForSyncLookup(): List<PendingChangeItem>
 }

@@ -121,6 +121,8 @@ object ContentDiff {
         val startLine: Int,
         val endLine: Int,
         val text: String,
+        /** False when [needle] was not found and the window falls back to the file head. */
+        val needleFound: Boolean = true,
     ) {
         /** Pretty form used by Eidos failure messages: `23 |  the line text`. */
         fun formatWithLineNumbers(): String = buildString {
@@ -133,6 +135,12 @@ object ContentDiff {
                 append(" | ")
                 append(line)
             }
+        }
+
+        fun failureRegionLabel(): String = if (needleFound) {
+            "Current file (lines $startLine\u2013$endLine):\n"
+        } else {
+            "oldString not found — showing file head (lines $startLine\u2013$endLine), not the edit region:\n"
         }
     }
 
@@ -147,15 +155,18 @@ object ContentDiff {
         contextLines: Int = 5,
     ): FileSnippet {
         val lines = splitLines(content)
-        if (lines.isEmpty()) return FileSnippet(1, 1, "")
-        val targetLineIdx = findLineContaining(lines, needle).coerceAtLeast(0)
-        val startIdx = (targetLineIdx - contextLines).coerceAtLeast(0)
-        val endIdx = (targetLineIdx + contextLines).coerceAtMost(lines.size - 1)
+        if (lines.isEmpty()) return FileSnippet(1, 1, "", needleFound = false)
+        val targetLineIdx = findLineContaining(lines, needle)
+        val needleFound = targetLineIdx >= 0
+        val anchorIdx = if (needleFound) targetLineIdx else 0
+        val startIdx = (anchorIdx - contextLines).coerceAtLeast(0)
+        val endIdx = (anchorIdx + contextLines).coerceAtMost(lines.size - 1)
         val slice = lines.subList(startIdx, endIdx + 1).joinToString("\n")
         return FileSnippet(
             startLine = startIdx + 1,
             endLine = endIdx + 1,
             text = slice,
+            needleFound = needleFound,
         )
     }
 
@@ -380,7 +391,7 @@ object ContentDiff {
         lines.forEachIndexed { idx, line ->
             if (line.contains(firstNeedleLine)) return idx
         }
-        return 0
+        return -1
     }
 
     private val HEX = "0123456789abcdef".toCharArray()

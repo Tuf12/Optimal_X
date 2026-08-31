@@ -18,6 +18,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.eidos.EidosChatSendWorker
 import com.example.optimalx.data.eidos.PanelBridgeRegistry
+import com.example.optimalx.data.eidos.prompt.EidosEntrySurface
 import com.example.optimalx.data.eidos.WorkshopEidosModeResolver
 import com.example.optimalx.data.eidos.model.EidosRequest
 import com.example.optimalx.data.model.ChatMessage
@@ -55,7 +56,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-private const val OPENAI_PANEL_MODEL = "gpt-5.4"
+private const val OPENAI_PANEL_MODEL = "gpt-5.6-luna"
 private const val KIMI_PANEL_MODEL = "kimi-k2.6"
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -309,14 +310,6 @@ private suspend fun nativeEidosInfer(
     val cacheTtlMs = args["cacheTtlMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.coerceIn(1_000L, 3_600_000L)
         ?: InferResponseCache.DEFAULT_TTL_MS
 
-    val request = EidosRequest(
-        systemPrompt = systemPrompt,
-        conversationHistory = emptyList(),
-        toolDefinitions = emptyList(),
-        userMessage = prompt,
-        previousResponseId = null,
-    )
-
     val resolvedModel = when (provider) {
         "xai" -> modelOverride.ifBlank {
             app.settingsDataStore.data.first()[SettingsKeys.XAI_MODEL] ?: SettingsDefaults.XAI_MODEL
@@ -335,6 +328,18 @@ private suspend fun nativeEidosInfer(
     } else {
         null
     }
+
+    val request = EidosRequest(
+        systemPrompt = systemPrompt,
+        conversationHistory = emptyList(),
+        toolDefinitions = emptyList(),
+        userMessage = prompt,
+        previousResponseId = null,
+        promptCacheKey = when (provider) {
+            "openai", "xai" -> cacheKey ?: "optimalx-panel-infer"
+            else -> null
+        },
+    )
 
     if (!bypassCache && cacheKey != null) {
         val cached = InferResponseCache.get(cacheKey, ttlMs = cacheTtlMs)
@@ -509,6 +514,7 @@ private suspend fun routeBridgeEventToEidos(
         .putString(EidosChatSendWorker.KEY_WORKSHOP_EIDOS_MODE, resolvedMode.name)
         .putString(EidosChatSendWorker.KEY_WORKSHOP_PROJECT_PHASE, projectPhase.name)
         .putString(EidosChatSendWorker.KEY_WORKSHOP_UPDATE_SECTION, updateSection?.name)
+        .putString(EidosChatSendWorker.KEY_ENTRY_SURFACE, EidosEntrySurface.BACKGROUND_WORKER.name)
         .build()
 
     EidosChatSendWorker.enqueue(

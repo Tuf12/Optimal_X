@@ -8,7 +8,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.optimalx.OptimalXApplication
 import com.example.optimalx.data.db.AppDatabase
-import com.example.optimalx.data.eidos.AppIndexSyncService
 import com.example.optimalx.data.model.FileReference
 import com.example.optimalx.data.model.ParentFolder
 import com.example.optimalx.data.model.Subfolder
@@ -39,7 +38,6 @@ class ShareImportViewModel(app: Application) : AndroidViewModel(app) {
     private val appRef = app as OptimalXApplication
     private val db = AppDatabase.getInstance(app)
     private val folderRepo = appRef.folderRepository
-    private val appIndexSync: AppIndexSyncService = appRef.appIndexSyncService
     private val semanticSync = appRef.semanticSyncService
 
     private val _folders = MutableStateFlow<List<PickerParent>>(emptyList())
@@ -135,7 +133,6 @@ class ShareImportViewModel(app: Application) : AndroidViewModel(app) {
                 filePath = destFile.absolutePath,
             )
         )
-        appIndexSync.requestSync("share_import_file:$subfolderId")
         semanticSync.requestSync("share_import_file:$subfolderId")
     }
 

@@ -1,8 +1,14 @@
 package com.example.optimalx.ui.components
 
+import android.content.Intent
+import android.net.Uri
 import android.text.method.LinkMovementMethod
+import android.text.style.URLSpan
+import android.util.Log
 import android.util.TypedValue
+import android.view.MotionEvent
 import android.view.View.MeasureSpec
+import android.widget.TextView
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -48,6 +54,7 @@ fun MarkdownRichText(
     selectable: Boolean = false,
     /** When set, caps bubble height and scrolls inside the bubble. Null = expand to full message height. */
     selectableScrollMaxHeight: Dp? = null,
+    onLinkClick: ((String) -> Boolean)? = null,
 ) {
     val displayHtml = remember(text) { chatMarkdownToDisplayHtml(text) }
 
@@ -73,8 +80,9 @@ fun MarkdownRichText(
         modifier = modifier,
         contentKey = displayHtml,
         scrollMaxHeight = selectableScrollMaxHeight,
+        onLinkClick = onLinkClick,
     ) { textView ->
-        textView.movementMethod = LinkMovementMethod.getInstance()
+        textView.movementMethod = ChatLinkMovementMethod(onLinkClick)
         textView.text = HtmlCompat.fromHtml(displayHtml, HtmlCompat.FROM_HTML_MODE_COMPACT)
         textView.setTextColor(textColorArgb)
         textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
@@ -113,6 +121,7 @@ private fun SelectableTextAndroidHost(
     modifier: Modifier,
     contentKey: String,
     scrollMaxHeight: Dp?,
+    onLinkClick: ((String) -> Boolean)? = null,
     update: (android.widget.TextView) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -160,16 +169,26 @@ private val FENCED_CODE_BLOCK = Regex("(?m)^ {0,3}```([^\\n]*)\\n([\\s\\S]*?)\\n
  * Converts chat markdown (including ``` fenced code blocks) to HTML for display.
  * Fenced blocks are preserved as `<pre><code>` because richeditor only supports inline code spans.
  */
-internal fun chatMarkdownToDisplayHtml(text: String): String {
+fun chatMarkdownToDisplayHtml(text: String): String {
     if (text.isBlank()) return ""
-    if (!text.contains("```")) {
-        return richTextSegmentToHtml(text)
+    return runCatching {
+        chatMarkdownToDisplayHtmlInternal(text)
+    }.getOrElse { error ->
+        Log.w(TAG, "Markdown render failed, using plain fallback: ${error.message}")
+        plainTextToFallbackHtml(text)
+    }
+}
+
+private fun chatMarkdownToDisplayHtmlInternal(text: String): String {
+    val normalized = text.normalizeMarkdownInput()
+    if (!normalized.contains("```")) {
+        return richTextSegmentToHtml(normalized)
     }
 
     val builder = StringBuilder()
     var lastIndex = 0
-    for (match in FENCED_CODE_BLOCK.findAll(text)) {
-        val before = text.substring(lastIndex, match.range.first)
+    for (match in FENCED_CODE_BLOCK.findAll(normalized)) {
+        val before = normalized.substring(lastIndex, match.range.first)
         if (before.isNotEmpty()) {
             builder.append(richTextSegmentToHtml(before))
         }
@@ -179,7 +198,7 @@ internal fun chatMarkdownToDisplayHtml(text: String): String {
         builder.append("</code></pre>")
         lastIndex = match.range.last + 1
     }
-    val after = text.substring(lastIndex)
+    val after = normalized.substring(lastIndex)
     if (after.isNotEmpty()) {
         builder.append(richTextSegmentToHtml(after))
     }
@@ -189,14 +208,31 @@ internal fun chatMarkdownToDisplayHtml(text: String): String {
 @OptIn(ExperimentalRichTextApi::class)
 private fun richTextSegmentToHtml(text: String): String {
     if (text.isBlank()) return ""
-    val state = RichTextState()
-    if (text.looksLikeHtml()) {
-        state.setHtml(text)
-    } else {
-        state.setMarkdown(text)
+    return runCatching {
+        val state = RichTextState()
+        if (text.noteTextLooksLikeHtml()) {
+            state.setHtml(text)
+        } else {
+            state.setMarkdown(text)
+        }
+        state.toHtml().ifBlank { plainTextToFallbackHtml(text) }
+    }.getOrElse { error ->
+        Log.w(TAG, "Markdown segment render failed, using plain fallback: ${error.message}")
+        plainTextToFallbackHtml(text)
     }
-    return state.toHtml().ifBlank { text }
 }
+
+/** Escaped plain text when richeditor's markdown/HTML parser cannot safely parse input. */
+internal fun plainTextToFallbackHtml(text: String): String =
+    text.lineSequence()
+        .joinToString(separator = "") { line ->
+            if (line.isEmpty()) "<br>" else "<p>${escapeHtmlText(line)}</p>"
+        }
+
+private fun String.normalizeMarkdownInput(): String =
+    replace("\r\n", "\n").replace('\r', '\n')
+
+private const val TAG = "OptimalX.MarkdownRichText"
 
 internal fun escapeHtmlText(text: String): String =
     text.replace("&", "&amp;")
@@ -204,13 +240,40 @@ internal fun escapeHtmlText(text: String): String =
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
 
-private fun String.looksLikeHtml(): Boolean =
-    contains("<p", ignoreCase = true) ||
-        contains("<div", ignoreCase = true) ||
-        contains("<br", ignoreCase = true) ||
-        contains("<span", ignoreCase = true)
-
 private fun TextStyle.lineSpacingMultiplier(): Float {
     if (fontSize == TextUnit.Unspecified || lineHeight == TextUnit.Unspecified) return 1.35f
     return lineHeight.value / fontSize.value
+}
+
+private class ChatLinkMovementMethod(
+    private val onLinkClick: ((String) -> Boolean)?,
+) : LinkMovementMethod() {
+    override fun onTouchEvent(widget: TextView, buffer: android.text.Spannable, event: MotionEvent): Boolean {
+        if (event.action != MotionEvent.ACTION_UP) {
+            return super.onTouchEvent(widget, buffer, event)
+        }
+        val x = (event.x - widget.totalPaddingLeft + widget.scrollX).toInt()
+        val y = (event.y - widget.totalPaddingTop + widget.scrollY).toInt()
+        val layout = widget.layout ?: return super.onTouchEvent(widget, buffer, event)
+        val line = layout.getLineForVertical(y)
+        val offset = layout.getOffsetForHorizontal(line, x.toFloat())
+        val spans = buffer.getSpans(offset, offset, URLSpan::class.java)
+        if (spans.isNotEmpty()) {
+            val href = spans[0].url.orEmpty()
+            if (href.startsWith("optimalx://")) {
+                if (onLinkClick?.invoke(href) == true) return true
+            }
+            if (href.startsWith("http://") || href.startsWith("https://")) {
+                runCatching {
+                    widget.context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(href)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        },
+                    )
+                }
+                return true
+            }
+        }
+        return super.onTouchEvent(widget, buffer, event)
+    }
 }

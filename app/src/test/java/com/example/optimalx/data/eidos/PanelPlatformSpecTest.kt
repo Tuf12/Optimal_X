@@ -14,6 +14,18 @@ class PanelPlatformSpecTest {
     }
 
     @Test
+    fun alignInlineMessage_listsStaleSpecsAndInlinesPayload() {
+        val message = PanelPlatformSpec.workshopAlignDocsInlineMessage(
+            scope = WorkshopDocAlignScope.DESIGN,
+            staleSpecs = listOf("DESIGN.md", "FLOW.md"),
+            inlinePayload = "----- index.html -----\n<html></html>",
+        )
+        assertTrue(message.contains("DESIGN.md, FLOW.md"))
+        assertTrue(message.contains("no file reads"))
+        assertTrue(message.contains("<html></html>"))
+    }
+
+    @Test
     fun validateProjectFiles_okForStandardScaffold() {
         val result = PanelPlatformSpec.validateProjectFiles(
             PanelPlatformSpec.SPEC_MARKDOWN_FILES + PanelPlatformSpec.RUNTIME_FILES,
@@ -36,7 +48,7 @@ class PanelPlatformSpecTest {
     }
 
     @Test
-    fun eidosInstructionsForMode_includesRetrievalPolicyOnce() {
+    fun eidosInstructionsForMode_omitsRetrievalPolicy() {
         val instructions = PanelPlatformSpec.eidosInstructionsForMode(
             WorkshopEidosMode.BUILD_DESIGN,
             subfolderId = 1L,
@@ -45,7 +57,7 @@ class PanelPlatformSpecTest {
             updateSection = null,
         )
         val marker = "Call search_semantic(query) first"
-        assertEquals(1, instructions.split(marker).size - 1)
+        assertEquals(0, instructions.split(marker).size - 1)
     }
 
     @Test
@@ -56,18 +68,18 @@ class PanelPlatformSpecTest {
     // ── Phase 4: DIFF_REVIEW prompt wiring ──────────────────────────────────
 
     @Test
-    fun toolNames_includeWorkshopReplaceString() {
+    fun toolNames_includeWorkshopEditFile() {
         assertTrue(
-            "EIDOS_WORKSHOP_TOOL_NAMES should advertise workshop_replace_string after Phase 4",
-            PanelPlatformSpec.EIDOS_WORKSHOP_TOOL_NAMES.contains("workshop_replace_string"),
+            "EIDOS_WORKSHOP_TOOL_NAMES should advertise workshop_edit_file",
+            PanelPlatformSpec.EIDOS_WORKSHOP_TOOL_NAMES.contains("workshop_edit_file"),
         )
     }
 
     @Test
-    fun patchPolicy_mentionsReplaceStringAndUniqueness() {
+    fun patchPolicy_mentionsEditFile() {
         val policy = PanelPlatformSpec.EIDOS_WORKSHOP_PATCH_POLICY
-        assertTrue(policy.contains("workshop_replace_string"))
-        assertTrue(policy.contains("unique"))
+        assertTrue(policy.contains("workshop_edit_file"))
+        assertTrue(policy.contains("workshop_append_file"))
     }
 
     @Test
@@ -127,7 +139,7 @@ class PanelPlatformSpecTest {
     @Test
     fun buildDesignPrompt_hasNoReviewQueueNotice() {
         val prompt = PanelPlatformSpec.eidosBuildDesignInstructions(subfolderId = 7L)
-        assertTrue("build_design should advertise workshop_replace_string", prompt.contains("workshop_replace_string"))
+        assertTrue("build_design should advertise workshop_edit_file", prompt.contains("workshop_edit_file"))
         assertFalse(
             "build_design must not claim edits are queued — they auto-accept: $prompt",
             prompt.contains("queued for review"),
@@ -137,7 +149,7 @@ class PanelPlatformSpecTest {
     @Test
     fun buildLogicPrompt_includesPatchPolicy_withoutQueueNotice() {
         val prompt = PanelPlatformSpec.eidosBuildLogicInstructions(subfolderId = 7L)
-        assertTrue(prompt.contains("workshop_replace_string"))
+        assertTrue(prompt.contains("workshop_edit_file"))
         assertFalse(
             "build_logic must not claim edits are queued — they auto-accept: $prompt",
             prompt.contains("queued for review"),
@@ -150,7 +162,7 @@ class PanelPlatformSpecTest {
             subfolderId = 7L,
             phase = WorkshopProjectPhase.DESIGN_REVIEW,
         )
-        assertTrue(prompt.contains("workshop_replace_string"))
+        assertTrue(prompt.contains("workshop_edit_file"))
         assertTrue(prompt.contains("Diff Review"))
         assertTrue(prompt.contains("queued for review"))
     }
@@ -174,13 +186,6 @@ class PanelPlatformSpecTest {
     }
 
     @Test
-    fun planMode_allowsImplementationPlanArtifact() {
-        val prompt = PanelPlatformSpec.eidosPlanModeInstructions(subfolderId = 1L)
-        assertTrue(prompt.contains(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
-        assertTrue(prompt.contains(PanelPlatformSpec.EIDOS_PLAN_IMPLEMENTATION_ARTIFACT_SECTION.take(40)))
-    }
-
-    @Test
     fun chatPrompts_avoidRepeatedAcceptNagging() {
         val designChat = PanelPlatformSpec.eidosDesignReviewChatInstructions(subfolderId = 1L)
         assertFalse(designChat.contains("Accept design"))
@@ -193,7 +198,7 @@ class PanelPlatformSpecTest {
     @Test
     fun updateLogicPrompt_includesPatchPolicyAndQueueNotice() {
         val prompt = PanelPlatformSpec.eidosUpdateLogicInstructions(subfolderId = 7L)
-        assertTrue(prompt.contains("workshop_replace_string"))
+        assertTrue(prompt.contains("workshop_edit_file"))
         assertTrue(prompt.contains("queued for review"))
     }
 

@@ -29,6 +29,11 @@ class EidosApiTraceRecorder(
         scopeType: String,
         provider: String,
         userMessage: String,
+        resolvedProfileId: String = "",
+        entrySurface: String = "",
+        toolAllowlistHash: String = "",
+        stablePrefixSha256: String = "",
+        sectionCharCountsJson: String = "{}",
     ) {
         mutex.withLock {
             finished = false
@@ -43,6 +48,11 @@ class EidosApiTraceRecorder(
                     scopeType = scopeType,
                     provider = provider,
                     userMessagePreview = userMessage.trim().take(240),
+                    resolvedProfileId = resolvedProfileId,
+                    entrySurface = entrySurface,
+                    toolAllowlistHash = toolAllowlistHash,
+                    stablePrefixSha256 = stablePrefixSha256,
+                    sectionCharCountsJson = sectionCharCountsJson,
                     startedAtMillis = now,
                     roundCount = 0,
                     status = "in_progress",

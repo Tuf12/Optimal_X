@@ -12,8 +12,13 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
 
 private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+/** Abort if Moonshot opens a stream but sends no SSE lines (avoids multi-minute silent hangs). */
+private const val KIMI_STREAM_IDLE_MS = 90_000L
 
 class ProviderHttpException(
     val statusCode: Int,
@@ -164,9 +169,16 @@ suspend fun postJsonStream(
                     return@use
                 }
                 val sseJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                source.timeout().timeout(KIMI_STREAM_IDLE_MS, TimeUnit.MILLISECONDS)
                 while (!source.exhausted()) {
                     coroutineContext.ensureActive()
-                    val line = source.readUtf8Line() ?: break
+                    val line = try {
+                        source.readUtf8Line()
+                    } catch (e: SocketTimeoutException) {
+                        throw SocketTimeoutException(
+                            "Kimi stream idle for ${KIMI_STREAM_IDLE_MS / 1000}s with no SSE data",
+                        )
+                    } ?: break
                     parseKimiSseDataLine(line, sseJson, onChunk)
                 }
                 if (cont.isActive) {

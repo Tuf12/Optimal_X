@@ -21,7 +21,6 @@ import com.example.optimalx.data.dao.PendingChangeDao
 import com.example.optimalx.data.dao.SemanticChunkDao
 import com.example.optimalx.data.dao.SemanticVectorDao
 import com.example.optimalx.data.dao.SubfolderDao
-import com.example.optimalx.data.dao.TagHintLineDao
 import com.example.optimalx.data.model.ChatMessage
 import com.example.optimalx.data.model.EidosApiTraceRound
 import com.example.optimalx.data.model.EidosApiTraceRun
@@ -39,7 +38,6 @@ import com.example.optimalx.data.model.PendingChangeSet
 import com.example.optimalx.data.model.SemanticChunk
 import com.example.optimalx.data.model.SemanticVector
 import com.example.optimalx.data.model.Subfolder
-import com.example.optimalx.data.model.TagHintLine
 
 @Database(
     entities = [
@@ -51,7 +49,6 @@ import com.example.optimalx.data.model.TagHintLine
         SemanticChunk::class,
         Conversation::class,
         ChatMessage::class,
-        TagHintLine::class,
         CustomPanelAssignment::class,
         ContentCheckpoint::class,
         ContentPatch::class,
@@ -62,7 +59,7 @@ import com.example.optimalx.data.model.TagHintLine
         EidosApiTraceRun::class,
         EidosApiTraceRound::class,
     ],
-    version = 22,
+    version = 32,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -75,7 +72,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun semanticChunkDao(): SemanticChunkDao
     abstract fun conversationDao(): ConversationDao
     abstract fun chatMessageDao(): ChatMessageDao
-    abstract fun tagHintLineDao(): TagHintLineDao
     abstract fun customPanelAssignmentDao(): CustomPanelAssignmentDao
     abstract fun contentCheckpointDao(): ContentCheckpointDao
     abstract fun contentPatchDao(): ContentPatchDao
@@ -86,7 +82,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "optimalx.db"
-        const val SCHEMA_VERSION = 20
+        const val SCHEMA_VERSION = 32
 
         @Volatile
         private var INSTANCE: AppDatabase? = null
@@ -706,14 +702,6 @@ abstract class AppDatabase : RoomDatabase() {
 
         /** Persisted panel runtime state for gallery runner and editor custom tabs. Phase 4. */
         /** Developer API trace inspector — full outbound request/response per provider round. */
-        private val MIGRATION_21_22 = object : Migration(21, 22) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    "ALTER TABLE chat_messages ADD COLUMN isSyntheticHandoff INTEGER NOT NULL DEFAULT 0",
-                )
-            }
-        }
-
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -791,6 +779,294 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Rollback path when local DB was migrated past v21 (v22 `isSyntheticHandoff`,
+         * v23 trace transport metrics) but the app was reverted to older entities.
+         * Rebuilds affected tables to match v21 while preserving row data where possible.
+         */
+        private fun downgradeSchemaToV21(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages_v21 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    conversationId INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    assistantReasoningContent TEXT DEFAULT NULL,
+                    createdAt INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO chat_messages_v21 (
+                    id, conversationId, role, content, assistantReasoningContent, createdAt
+                )
+                SELECT id, conversationId, role, content, assistantReasoningContent, createdAt
+                FROM chat_messages
+                """.trimIndent(),
+            )
+            db.execSQL("DROP TABLE chat_messages")
+            db.execSQL("ALTER TABLE chat_messages_v21 RENAME TO chat_messages")
+
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS eidos_api_trace_rounds_v21 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    runId INTEGER NOT NULL,
+                    roundIndex INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    requestJson TEXT NOT NULL,
+                    responseJson TEXT NOT NULL,
+                    recordedAtMillis INTEGER NOT NULL,
+                    FOREIGN KEY(runId) REFERENCES eidos_api_trace_runs(id) ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO eidos_api_trace_rounds_v21 (
+                    id, runId, roundIndex, phase, requestJson, responseJson, recordedAtMillis
+                )
+                SELECT id, runId, roundIndex, phase, requestJson, responseJson, recordedAtMillis
+                FROM eidos_api_trace_rounds
+                """.trimIndent(),
+            )
+            db.execSQL("DROP TABLE eidos_api_trace_rounds")
+            db.execSQL("ALTER TABLE eidos_api_trace_rounds_v21 RENAME TO eidos_api_trace_rounds")
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS index_eidos_api_trace_rounds_runId_roundIndex
+                ON eidos_api_trace_rounds(runId, roundIndex)
+                """.trimIndent(),
+            )
+        }
+
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE conversations ADD COLUMN threadSummary TEXT DEFAULT NULL")
+                db.execSQL(
+                    "ALTER TABLE conversations ADD COLUMN threadSummaryCoversMessageId INTEGER DEFAULT NULL",
+                )
+                db.execSQL(
+                    "ALTER TABLE conversations ADD COLUMN threadSummaryUpdatedAt INTEGER DEFAULT NULL",
+                )
+            }
+        }
+
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS tag_hint_lines")
+            }
+        }
+
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE notes ADD COLUMN summaryContentWatermark INTEGER DEFAULT NULL",
+                )
+                migrateLegacyNoteSummariesToTwoSectionFormat(db)
+            }
+        }
+
+        private fun migrateLegacyNoteSummariesToTwoSectionFormat(db: SupportSQLiteDatabase) {
+            db.query(
+                """
+                SELECT id, summary, summaryChunksJson
+                FROM notes
+                WHERE summary IS NOT NULL OR summaryChunksJson IS NOT NULL
+                """.trimIndent(),
+            ).use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow("id")
+                val summaryIndex = cursor.getColumnIndexOrThrow("summary")
+                val chunksIndex = cursor.getColumnIndexOrThrow("summaryChunksJson")
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIndex)
+                    val summary = cursor.getString(summaryIndex)
+                    val chunksJson = cursor.getString(chunksIndex)
+                    val migrated = com.example.optimalx.data.eidos.NoteSummaryCodec
+                        .migrateLegacyStoredSummary(summary, chunksJson)
+                    when {
+                        migrated != null -> {
+                            db.execSQL(
+                                "UPDATE notes SET summary = ?, summaryChunksJson = NULL WHERE id = ?",
+                                arrayOf<Any>(migrated, id),
+                            )
+                        }
+                        !chunksJson.isNullOrBlank() -> {
+                            db.execSQL(
+                                "UPDATE notes SET summaryChunksJson = NULL WHERE id = ?",
+                                arrayOf(id),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                com.example.optimalx.data.eidos.NoteMemoryCacheMigrator.migrate(db)
+            }
+        }
+
+        private val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE eidos_api_trace_runs ADD COLUMN resolvedProfileId TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE eidos_api_trace_runs ADD COLUMN entrySurface TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
+        private val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE eidos_api_trace_runs ADD COLUMN toolAllowlistHash TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE eidos_api_trace_runs ADD COLUMN stablePrefixSha256 TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE eidos_api_trace_runs ADD COLUMN sectionCharCountsJson TEXT NOT NULL DEFAULT '{}'",
+                )
+            }
+        }
+
+        private val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE chat_messages ADD COLUMN navigationTargetsJson TEXT DEFAULT NULL",
+                )
+            }
+        }
+
+        private val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE chat_messages ADD COLUMN imageAttachmentJson TEXT DEFAULT NULL",
+                )
+            }
+        }
+
+        private val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                com.example.optimalx.data.imagestudio.ImageStudioSeed.migrate(db)
+            }
+        }
+
+        private val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                FileReferenceTrashMigration.migrate(db)
+            }
+        }
+
+        private val MIGRATION_32_31 = object : Migration(32, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps deletedAt.
+            }
+        }
+
+        private val MIGRATION_31_30 = object : Migration(31, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps metadataJson.
+            }
+        }
+
+        private val MIGRATION_30_29 = object : Migration(30, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps image attachment JSON.
+            }
+        }
+
+        private val MIGRATION_29_28 = object : Migration(29, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps navigation targets JSON.
+            }
+        }
+
+        private val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                com.example.optimalx.data.sync.SyncSchemaMigrator.migrate(db)
+            }
+        }
+
+        private val MIGRATION_28_27 = object : Migration(28, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps sync columns.
+            }
+        }
+
+        private val MIGRATION_27_26 = object : Migration(27, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps observability fields.
+            }
+        }
+
+        private val MIGRATION_26_25 = object : Migration(26, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Column drop not supported; downgrade keeps profile trace fields.
+            }
+        }
+
+        private val MIGRATION_25_24 = object : Migration(25, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Data migration is one-way; downgrade keeps migrated summaries.
+            }
+        }
+
+        private val MIGRATION_24_23 = object : Migration(24, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // SQLite cannot drop columns cheaply; watermark is ignored on v23.
+            }
+        }
+
+        private val MIGRATION_23_22 = object : Migration(23, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS tag_hint_lines (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        ref TEXT NOT NULL,
+                        objectType TEXT NOT NULL,
+                        scopeType TEXT NOT NULL,
+                        scopeId TEXT,
+                        parentRef TEXT,
+                        rootBranch TEXT NOT NULL,
+                        tag TEXT NOT NULL,
+                        hint TEXT NOT NULL,
+                        objectName TEXT NOT NULL,
+                        parentFolderName TEXT,
+                        subfolderName TEXT,
+                        date INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_tag_hint_lines_ref ON tag_hint_lines(ref)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_hint_lines_objectType ON tag_hint_lines(objectType)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_hint_lines_scopeType ON tag_hint_lines(scopeType)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_hint_lines_rootBranch ON tag_hint_lines(rootBranch)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_hint_lines_tag ON tag_hint_lines(tag)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_hint_lines_date ON tag_hint_lines(date)")
+            }
+        }
+
+        private val MIGRATION_22_21 = object : Migration(22, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                downgradeSchemaToV21(db)
+            }
+        }
+
+        private val MIGRATION_23_21 = object : Migration(23, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                downgradeSchemaToV21(db)
+            }
+        }
+
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -813,6 +1089,28 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_19_20,
             MIGRATION_20_21,
             MIGRATION_21_22,
+            MIGRATION_22_23,
+            MIGRATION_23_24,
+            MIGRATION_24_25,
+            MIGRATION_25_26,
+            MIGRATION_26_27,
+            MIGRATION_27_28,
+            MIGRATION_28_29,
+            MIGRATION_29_30,
+            MIGRATION_30_31,
+            MIGRATION_31_32,
+            MIGRATION_32_31,
+            MIGRATION_31_30,
+            MIGRATION_30_29,
+            MIGRATION_29_28,
+            MIGRATION_28_27,
+            MIGRATION_27_26,
+            MIGRATION_26_25,
+            MIGRATION_25_24,
+            MIGRATION_24_23,
+            MIGRATION_22_21,
+            MIGRATION_23_22,
+            MIGRATION_23_21,
         )
 
         fun getInstance(context: Context): AppDatabase {

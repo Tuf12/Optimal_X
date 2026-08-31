@@ -45,8 +45,8 @@ class WorkshopFileAccessPolicyTest {
     @Test
     fun planMode_writesSpecMdDuringDesignReview() {
         WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.DESIGN_REVIEW)
-        assertNull(WorkshopFileAccessPolicy.writeFailure("IMPLEMENTATION_PLAN.md"))
         assertNull(WorkshopFileAccessPolicy.writeFailure("FLOW.md"))
+        assertNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
     }
 
     @Test
@@ -69,10 +69,10 @@ class WorkshopFileAccessPolicyTest {
     }
 
     @Test
-    fun editMode_readsImplementationPlanDuringUpdate() {
+    fun editMode_readsSpecMdDuringUpdate() {
         WorkshopEidosSession.begin(WorkshopEidosMode.EDIT, WorkshopProjectPhase.UPDATE)
-        assertNull(WorkshopFileAccessPolicy.markdownReadFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
-        assertNotNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
+        assertNull(WorkshopFileAccessPolicy.markdownReadFailure("README.md"))
+        assertNotNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
     }
 
     @Test
@@ -84,15 +84,7 @@ class WorkshopFileAccessPolicyTest {
     @Test
     fun planMode_writesSpecMdDuringUpdate() {
         WorkshopEidosSession.begin(WorkshopEidosMode.PLAN, WorkshopProjectPhase.UPDATE)
-        assertNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
-    }
-
-    @Test
-    fun buildPlanKickoff_allowsImplementationPlanMd_otherSpecsBlocked() {
-        WorkshopEidosSession.begin(WorkshopEidosMode.BUILD_PLAN, WorkshopProjectPhase.UPDATE)
-        assertNull(WorkshopFileAccessPolicy.writeFailure(PanelPlatformSpec.IMPLEMENTATION_PLAN_MD))
-        assertNotNull(WorkshopFileAccessPolicy.writeFailure("README.md"))
-        assertNull(WorkshopFileAccessPolicy.writeFailure("script.js"))
+        assertNull(WorkshopFileAccessPolicy.writeFailure("FLOW.md"))
     }
 
     @Test

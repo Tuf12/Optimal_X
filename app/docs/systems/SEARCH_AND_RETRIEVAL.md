@@ -4,7 +4,7 @@
 
 How **users** and **Eidos** find information in OptimalX: UI keyword search, **chunk-level semantic search** (`search_semantic`), journal/log reads, and chat keyword fallback.
 
-Memory continuity (Daily Memory, LTM, rollover) lives in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md). **Eidos Index (Tag & Hint) is on hold** — see [TAG_HINT_SYSTEM.md](../agent_loops/TAG_HINT_SYSTEM.md).
+Memory continuity (Daily Memory, LTM, rollover) lives in [MEMORY_SYSTEM.md](../memory/MEMORY_SYSTEM.md) and [ROLLOVER.md](ROLLOVER.md). Per-note folder memory and body digest: [NOTE_SUMMARY.md](NOTE_SUMMARY.md).
 
 Tool names: [EidosToolCatalog.kt](../../src/main/java/com/example/optimalx/data/eidos/EidosToolCatalog.kt).
 
@@ -14,7 +14,7 @@ Tool names: [EidosToolCatalog.kt](../../src/main/java/com/example/optimalx/data/
 
 The app **chunks** saved content, **embeds** each chunk on-device (MediaPipe Text Embedder), **stores** vectors + chunk text, and **`search_semantic` returns the best chunks** (`chunk_text`) for the LLM to answer from. Full notes, files, or chats are **not** dumped into every prompt.
 
-`read_note` / `read_file` / `workshop_read_file` are for **expanding a line range** or **before edits** — not a required second hop for Q&A.
+`read_file` / `workshop_read_file` are for **expanding a file region** or **before file edits** — not a required second hop for note Q&A. Notes use inject tiers (`NotePromptContext`) plus `search_semantic` `chunk_text`; patch with `note_replace_string` using text from a search hit.
 
 ---
 
@@ -36,7 +36,7 @@ Bootstrap: full rebuild on first startup ([startup_seed]) and **Settings → Reb
 
 | Object | object_type | object_id | Notes |
 |--------|-------------|-----------|--------|
-| Notes (incl. journal, daily, LTM, quick notes) | `note` | subfolderId | Skips `aiBlind`; includes summary chunk + body segments |
+| Notes (incl. journal, daily, LTM, quick notes) | `note` | subfolderId | Skips `aiBlind`; body segments + `summary_memory` / `summary_content` from [NOTE_SUMMARY.md](NOTE_SUMMARY.md) |
 | Files | `file` | fileReferenceId | Text extractable types only |
 | Conversations (all scopes incl. web) | `conversation` | conversationId | Thread batched into chunks |
 
@@ -70,15 +70,54 @@ Implementation: [SemanticScopeSearch.kt](../../src/main/java/com/example/optimal
 
 ---
 
-## Read tools (expand / edit only)
+## Read tools (files / notes / conversations)
 
 | Tool | When |
 |------|------|
-| `read_note` | Expand lines around a hit; load full small note; edit prep |
 | `read_file` / `workshop_read_file` | Expand file region; edit prep |
+| `read_note` / `read_note_section` | Current subfolder note (full/query or a line range) when body is not inlined |
 | `read_conversation` | Optional scoped excerpt when not using search |
 
-Large reads without params return JSON with `truncated: true`, `content` (preview), and a `hint` to use `search_semantic` or line ranges. Small reads return `{ "content": "...", "truncated": false, "totalLines": N }`.
+Note bodies: small notes are inlined in the subfolder prompt; large notes inject `[Memory]` only. Use prefetch, `search_semantic`, `read_note`, and `read_note_section` for body text; copy `oldString` for `edit_note_section` from a search or read hit.
+
+---
+
+## Prefetch vs `search_semantic`
+
+**Prefetch** runs automatically in `EidosPromptComposer` before the first provider hop when the profile has `prefetchPolicy.profileEnabled` and the user message passes the substantive-message gate ([EidosRetrievalQuery.kt](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosRetrievalQuery.kt)).
+
+| Mechanism | When | Query source | Output |
+|-----------|------|--------------|--------|
+| **Prefetch** | Turn 1, before API call | User message + optional thread-summary tail (~500 chars) — **never** system prompt | `## Retrieved context` in system prompt (volatile) |
+| **`search_semantic` tool** | Model chooses during tool loop | Model-supplied `query` + optional scope | Tool result JSON with `chunk_text` hits |
+
+### What prefetch searches (by profile)
+
+| Profile group | Planner passes |
+|---------------|----------------|
+| Main chat (`general.app`, `parent`, `subfolder`) | Global Daily/LTM/Journal; parent or `local_first` scope notes; global user notes; past chats (`chat_history`, excludes active thread) |
+| Widget (`widget.ask`, `widget.chat`) | Memory corpora + global user notes + chats (tighter caps) |
+| Workshop | `local_first` on workshop `subfolderId` — files, notes, indexed `project_summary` |
+
+### Gating and caps
+
+- **Skip:** empty message, greetings (“hi”, “thanks”), messages &lt; ~12 chars ([EidosRetrievalQuery.shouldPrefetch](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosRetrievalQuery.kt))
+- **Score gate:** top hit must meet `WEAK_SCORE_THRESHOLD` (0.55) — same as `expand_if_weak`
+- **Budget:** per-profile `maxChunks` / `maxChars` ([EidosPrefetchPolicy.kt](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosPrefetchPolicy.kt))
+- **Reserved slots:** main chat/widget may reserve note and chat slots in the merged block ([EidosPrefetchChunkSelector.kt](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosPrefetchChunkSelector.kt))
+
+### When to use which
+
+| Need | Use |
+|------|-----|
+| Answer from memory / notes / past chat on turn 1 | Prefetch (automatic) |
+| More hits, different query, or after prefetch | `search_semantic` |
+| Expand file region before edit | `read_file` / `workshop_read_file` with query or line range |
+| Patch note or file | Copy `chunk_text` from prefetch or search hit into `oldString` |
+
+Prefetch does **not** replace the tool loop — it reduces turn-1 tool hops for orientation. Workshop edits still require `workshop_read_file` before `workshop_replace_string` for exact text.
+
+Implementation: [EidosPrefetchService.kt](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosPrefetchService.kt), [EidosRetrievalPlanner.kt](../../src/main/java/com/example/optimalx/data/eidos/prefetch/EidosRetrievalPlanner.kt). Plan: [EIDOS_PREFETCH_RAG_PLAN.md](../implementation/EIDOS_PREFETCH_RAG_PLAN.md).
 
 ---
 

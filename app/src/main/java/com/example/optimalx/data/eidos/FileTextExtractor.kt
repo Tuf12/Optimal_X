@@ -15,9 +15,15 @@ class FileTextExtractor(context: Context) {
         PDFBoxResourceLoader.init(context)
     }
 
+    fun isExtractable(file: File): Boolean {
+        if (!file.exists()) return false
+        return file.extension.lowercase(Locale.US) in EXTRACTABLE_EXTENSIONS
+    }
+
     fun extractText(file: File): String? {
         if (!file.exists()) return null
         val ext = file.extension.lowercase(Locale.US)
+        if (ext !in EXTRACTABLE_EXTENSIONS) return null
         return when (ext) {
             "txt", "md", "json", "xml", "js", "py", "kt", "ts", "html", "css", "csv", "log" -> file.readText()
             "docx" -> extractDocxText(file)
@@ -116,5 +122,12 @@ class FileTextExtractor(context: Context) {
             val stripper = PDFTextStripper()
             return stripper.getText(document).trim()
         }
+    }
+
+    private companion object {
+        val EXTRACTABLE_EXTENSIONS = setOf(
+            "txt", "md", "json", "xml", "js", "py", "kt", "ts", "html", "css", "csv", "log",
+            "docx", "xlsx", "ods", "odt", "pdf",
+        )
     }
 }

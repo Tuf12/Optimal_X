@@ -73,7 +73,7 @@ Shipped. The parent folder grid shows **user folders only**. System destinations
 | Panel state — editor tab | `scopeKey = subfolder:{targetSubfolderId}` — isolated per job/subfolder |
 | DumpEdit buffer | DataStore — survives app restart until user **Clear** |
 | DumpEdit undo Clear | **Session-only (in-memory)** — does not persist across app restart |
-| DumpEdit backup | Include buffer (+ flags) in `OptimalXBackupManager` export/import |
+| DumpEdit backup | Include buffer (+ flags) in zip / Auto Backup restore paths |
 | DumpEdit Eidos — large text | Under char threshold → full context; over threshold → semantic retrieval, not full paste |
 | DumpEdit Eidos privacy | Same **Lock from Eidos** / **Blind from Eidos** as notes (DataStore flags) |
 | DumpEdit editor UX | Reuse note editor chrome: formatting toolbar + dropdown (see DumpEdit menu table below) |
@@ -162,7 +162,7 @@ Editor custom panel tab
 DumpEditScreen
         ├── DataStore: content, aiLocked, aiBlind
         ├── Session memory: undoClearSnapshot (not persisted)
-        ├── Backup: OptimalXBackupManager includes dump_edit keys
+        ├── Backup: DumpEdit buffer included in backup/restore paths
         └── Eidos: dump_edit scope; semantic retrieval when content > threshold
 ```
 
@@ -258,10 +258,10 @@ DumpEditScreen
 | 5a | DataStore: `dump_edit_content`, `dump_edit_ai_locked`, `dump_edit_ai_blind` | ✅ |
 | 5b | Reuse note editor toolbar + dropdown (per menu table above) | ✅ |
 | 5c | **Clear** + confirm; **Undo clear** in-memory only (lost on process death — intentional) | ✅ |
-| 5d | Include DumpEdit keys in `OptimalXBackupManager` | ✅ |
+| 5d | Include DumpEdit keys in backup/restore | ✅ |
 | 5e | Distinct screen title/copy vs Quick Notes | ✅ |
 
-**Files:** `DumpEditPreferences.kt`, `DumpEditViewModel.kt`, `DumpEditScreen.kt`, `DumpEditPanel.kt`, `DumpEditDropdownMenu.kt`, `DumpEditBackupPayload.kt`, `BackupArchive.kt`, `OptimalXBackupManager.kt`, `AppNavigation.kt`
+**Files:** `DumpEditPreferences.kt`, `DumpEditViewModel.kt`, `DumpEditScreen.kt`, `DumpEditPanel.kt`, `DumpEditDropdownMenu.kt`, `AppNavigation.kt`
 
 ---
 

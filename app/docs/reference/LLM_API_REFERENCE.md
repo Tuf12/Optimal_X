@@ -3,7 +3,8 @@
 Reference for every component sent to and received from the LLM on each call.
 Source files: `EidosApiClient.kt`, `EidosChatViewModel.kt`, `EidosToolCatalog.kt`, `RoomToolExecutor.kt`, provider files.
 
-**Primary model:** Kimi K2.6 — product and Moonshot transport detail in [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md). Overview: [API.md](./API.md).
+**Primary model:** Kimi K2.6 — product and Moonshot transport detail in [KIMI_K26_MOONSHOT_SPEC.md](../implementation/KIMI_K26_MOONSHOT_SPEC.md). Overview: [API.md](./API.md).  
+**Transport fix (active):** [PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md](../implementation/PROMPT_TRANSPORT_AND_CONTEXT_FIX_PLAN.md).
 
 ---
 
@@ -15,23 +16,27 @@ Source files: `EidosApiClient.kt`, `EidosChatViewModel.kt`, `EidosToolCatalog.kt
 | `xai` | `XAIProvider` | `https://api.x.ai/v1/responses` | `Authorization: Bearer <key>` |
 | `openai` | `OpenAIProvider` | `https://api.openai.com/v1/responses` | `Authorization: Bearer <key>` |
 | `anthropic` | `AnthropicProvider` | `https://api.anthropic.com/v1/messages` | `x-api-key: <key>` |
+| `local` | `LitertLmProvider` | On-device LiteRT-LM (`litertlm-android`) | None — model file on storage |
 
-`SettingsDefaults.ACTIVE_PROVIDER` is `xai` on fresh install; select **Kimi** in Settings for the primary path.
+`SettingsDefaults.ACTIVE_PROVIDER` is `xai` on fresh install; select **Kimi** or **Local Gemma 4** in Settings as needed.
 
-### Model IDs
+### Model IDs / artifacts
 
 | Provider | Model |
 |---|---|
 | **Kimi (Moonshot)** | `kimi-k2.6` |
 | xAI | `grok-4.3` (Settings) |
-| OpenAI | `gpt-5.4-mini-2026-03-17` |
+| OpenAI | `gpt-5.6-luna` |
 | Anthropic | `claude-sonnet-4-6` |
+| **Local (LiteRT-LM)** | `gemma-4-E4B-it.litertlm` (user path; default candidates in `LitertLmDefaults`) |
 
 ### Provider-specific options
 
+**Local (LiteRT-LM)** — `LitertLmProvider` + shared `LitertLmEngineHolder`. `Conversation.sendMessageAsync` streaming; `OpenApiTool` adapters with `automaticToolCalling = false` (tool loop via `EidosApiClient` + `RoomToolExecutor`). Vision: `Content.ImageFile`; scribe: `Content.AudioBytes` via `GemmaLocalScribeEngine`. GPU/CPU backend in Settings. Warm pool while local provider **or** local scribe toggle is on; stays loaded across minimize / widget hops for the process lifetime. No hosted web search — local tools + `search_semantic` only. Full detail: [LITERT_LM.md](../LITERT_LM.md).
+
 **xAI** — Responses API. Sends hosted `web_search` plus local Eidos function tools.
 
-**OpenAI** — Responses API (not Chat Completions). Hosted `web_search`, local tools, `reasoning.effort = "medium"`, `text.verbosity = "low"`. `previous_response_id` + incremental `input` on tool continuations (`EidosRequestPhase.TOOL_CONTINUATION`).
+**OpenAI** — Responses API (not Chat Completions). Hosted `web_search`, local tools, `reasoning.effort = "medium"`, `text.verbosity = "low"`. GPT-5.6 Luna: `prompt_cache_key` per conversation, `prompt_cache_options` (`explicit`, `30m`), explicit breakpoint on [ComposedPrompt.stableSystemPrefix](../../src/main/java/com/example/optimalx/data/eidos/prompt/EidosScopeProfile.kt) (identity + ontology + static location prose); volatile location/note/prefetch in [volatileSystemSuffix](../../src/main/java/com/example/optimalx/data/eidos/prompt/EidosScopeProfile.kt); `previous_response_id` + incremental `input` on tool continuations (`EidosRequestPhase.TOOL_CONTINUATION`).
 
 **Anthropic** — Messages API. Hosted `web_search`/`web_fetch` + local tools. System + last tool + history breakpoint use `cache_control: { type: "ephemeral" }`. Usage reports `cache_read_input_tokens` / `cache_creation_input_tokens`.
 
@@ -41,25 +46,39 @@ Source files: `EidosApiClient.kt`, `EidosChatViewModel.kt`, `EidosToolCatalog.kt
 
 ### Provider families (`EidosProviderFamily`)
 
-| Family | Providers | Tool-loop transport |
+| Family | Providers | Tool-loop transport (target) |
 |---|---|---|
-| `RESPONSES_CHAINED` | xAI, OpenAI | `previous_response_id`; optional incremental `input` (no full system replay) |
-| `MESSAGES_CACHED` | Anthropic, Kimi | Full messages each round; stable cached prefix |
+| `RESPONSES_CHAINED` | xAI, OpenAI | Hop 1: full system + history + user. Hop 2+: `previous_response_id`, **empty system**, incremental `input` (last assistant + tool round only). **All scopes including workshop.** |
+| `MESSAGES_CACHED` | Anthropic, Kimi | Hop 1: cached system + history + user. Hop 2+: **omit system**; `prompt_cache_key` + hop-1 cache; append messages + stub bulk tools. |
+| `LOCAL_CONVERSATION` | Local Gemma | Hop 1: system (if configured) + full history + user (text and/or `Content.ImageFile`). Hop 2+: **omit system**; rebuild conversation from growing history; tools via `OpenApiTool` + manual loop. |
+
+**Legacy:** Workshop currently opts out of Responses incremental mode (`useIncremental = !isPanelWorkshop`) — see transport fix plan Phase 1.
 
 ---
 
-## Request structure (per call)
+## Request structure
 
-Every call to `EidosApiClient.send()` assembles four components before sending:
+### Per user turn (Kotlin)
+
+One UI **Send** → one `EidosApiClient.send()`. Inside that call:
 
 ```
-1. System prompt     (assembled each call; tool-first rules + optional note/workshop summaries)
-2. Tool definitions  (local Eidos tools plus provider-hosted web tools)
-3. Conversation history (trimmed by memory tier: Low / Medium / High)
-4. User message
+1. assembleSystemPrompt() once  →  turn context (stable for this send)
+2. Tool definitions             →  resent each HTTP round (provider requirement)
+3. Conversation history       →  grows with tool results inside the loop
+4. User message               →  hop 1 only; hop 2+ uses "" (seeded in history)
 ```
 
-**Context policy (Phases 2–4):** Full notes, file lists, and workshop runtime code are **not** inlined. Use tools (`read_note`, `list_folder_contents`, `workshop_read_file`, etc.). User-generated **note/project summaries** and bounded workshop spec `.md` may appear in the stable system prefix for prompt caching.
+### Per HTTP round (wire)
+
+| Phase | When | RESPONSES_CHAINED payload | MESSAGES_CACHED payload |
+|-------|------|----------------------------|-------------------------|
+| `FULL` | First round of a send | system + full history + user | system (cached) + history + user |
+| `TOOL_CONTINUATION` | After tool_calls | **no system** + incremental slice + `previous_response_id` | **no system** + full messages[] (`prompt_cache_key` carries hop-1 prefix) |
+
+**Accounting note:** Total input bytes over N tool hops grow **quadratically** when each hop resends full system + full history (legacy workshop behavior). Target: hop 1 carries turn context; hops 2+ add only new assistant/tool traffic (+ required Kimi tool-row `reasoning_content`).
+
+**Context policy:** Full notes, file lists, and workshop runtime code are **not** inlined in the system prompt. Workshop manifest is metadata (names + ids). Bounded spec `.md` and open-file excerpt are **hop-1-only** orientation.
 
 ---
 
@@ -89,12 +108,11 @@ Use tools when needed and explain actions briefly.
 Current subfolder:
 Name: <name>
 subfolderId: <id>
-Note: present — summary below; use read_note(subfolderId=…) for full text.
-<user-generated note summary when set>
+Note: <NotePromptContext tier — inline small body, or memory-only for large notes>
 Attachments: use list_folder_contents / read_file — not listed inline.
 ```
 
-Blind/lock states still apply. Summaries are generated in the note editor (**Generate Eidos summary**).
+Blind/lock states still apply. `[Memory]` bullets are co-maintained via `write_note_summary`.
 
 ---
 
@@ -129,10 +147,8 @@ Loads up to **3 journal subfolders** updated within the last **3 days**, sorted 
 | `rename_folder` | Rename a parent folder or subfolder | `folderId`, `newName` | No | Yes |
 | `move_to_trash` | Move a folder to trash | `folderId` | **Yes** | Yes |
 | `list_folder_contents` | List folder contents | `folderId` | No | No |
-| `read_note` | Read a note by subfolder ID | `subfolderId` | No | No |
-| `write_note` | Create, add or update a note (full overwrite) | `subfolderId`, `content` | No | Yes |
-| `append_note` | Append content to a note | `subfolderId`, `content` | No | Yes |
-| `edit_note_section` | Replace or delete a section inside a note | `subfolderId`, `targetText`, `newContent` | **Yes** | Yes |
+| `write_note` | Set markdown on empty note or append when content exists | `subfolderId`, `content` | No | Yes |
+| `note_replace_string` | Find-and-replace patch in a note (unique oldString) | `subfolderId`, `oldString`, `newString` | No | Yes |
 | `list_files` | List attached files in a subfolder | `subfolderId` | No | No |
 | `read_file` | Extract and return text from a file | `fileReferenceId` | No | No |
 | `describe_image` | Describe an image file via vision API | `fileReferenceId` | No | No |
@@ -143,12 +159,15 @@ Loads up to **3 journal subfolders** updated within the last **3 days**, sorted 
 | `read_journal` | Read journal entries by keyword/date | `query`, `dateFrom`, `dateTo` | No | No |
 | `write_log_entry` | Write a log entry | `action`, `timestamp` | No | Yes |
 | `read_log` | Read log entries by keyword/date | `query`, `dateFrom`, `dateTo` | No | No |
-| `voice_handoff` | Update voice handoff state | `conversationId`, `state`, `timestamp`, `metadata` | No | Yes |
 
 All input parameters are typed as `string` in the schema (including numeric IDs — the executor parses them).
 
+`describe_image` is for **Files** rows. Desktop **chat composer attach** is a different path (pixels on that user message, local `models.vision`). Mobile chat attach: [CHAT_VISION_ATTACH_PLAN.md](../implementation/CHAT_VISION_ATTACH_PLAN.md).
+
 ### Tool confirmation gate
-Tools marked `requiresConfirmation = true` (`move_to_trash`, `edit_note_section`) pause execution and call `ConfirmationHandler.confirm()`. If the user declines, a `"User declined confirmation"` tool result is inserted and the API returns an early response.
+Tools marked `requiresConfirmation = true` (`move_to_trash`, `prune_long_term_memory`) pause execution and call `ConfirmationHandler.confirm()`. If the user declines, a `"User declined confirmation"` tool result is inserted and the API returns an early response.
+
+**Note writes** (`write_note`, `note_replace_string`) use **Diff Review** instead of the confirmation handler when the note body is non-empty: proposals queue under `SCOPE_SUBFOLDER` until the user accepts on `DiffReviewScreen`. Empty notes auto-apply on first `write_note`. Uncommitted user edits are **auto-committed** before Eidos note tools when working copy ≠ HEAD. See [NOTE_PERSISTENCE_MODEL.md](../architecture/NOTE_PERSISTENCE_MODEL.md).
 
 ### Auto-log on modify
 Every tool where `isModifying = true` OR where `ToolExecutionResult.Success.modifiedSystem = true` triggers an automatic `write_log_entry` call after execution. This is an extra API round-trip for every modifying action.
@@ -157,17 +176,15 @@ Every tool where `isModifying = true` OR where `ToolExecutionResult.Success.modi
 
 ## 3. Conversation history
 
-**Source:** `trimHistoryIfNeeded()` + `EidosContextLimits.historyBudget()`
+**Source:** [`ConversationOutboundHistory.build()`](../../src/main/java/com/example/optimalx/data/eidos/ConversationOutboundHistory.kt) — called before each send from chat UI, background worker, and widget.
 
-Per-thread depth from `Conversation.memoryDepth` (null → Settings default). App Settings: **Eidos chat → In-conversation memory**. Tap the memory chip in the Eidos header to cycle override for the active thread.
+Long-thread context is a **verbatim tail** plus **active-conversation prefetch** (exact chunks in Retrieved context). Full rows remain in `chat_messages` for semantic search.
 
-| Tier | Max messages | Max chars |
-|------|--------------|-----------|
-| Low (default) | 8 | 12,000 |
-| Medium | 16 | 30,000 |
-| High | 40 | 80,000 |
+| Constant | Value |
+|----------|-------|
+| `ConversationOutboundHistory.OUTBOUND_HARD_CAP_CHARS` | 30,000 |
 
-Oldest messages drop first when over budget.
+Outbound shape: recent user/assistant/tool turns only. Oldest exchanges drop when the hard cap is exceeded.
 
 Message roles:
 - `USER` → user turn
@@ -196,10 +213,8 @@ These are returned as `TOOL` role messages in the next request after a tool call
 | `rename_folder` | Plain string: `"Renamed ... to ..."` | ~50 chars |
 | `move_to_trash` | Plain string describing what was trashed | ~60 chars |
 | `list_folder_contents` | JSON array of `{id, name, updatedAt}` objects | Proportional to subfolder count |
-| `read_note` | Full note content string | **Unbounded** |
-| `write_note` | `"Note overwritten"` | ~15 chars |
-| `append_note` | `"Content appended"` | ~16 chars |
-| `edit_note_section` | `"Section updated"` | ~15 chars |
+| `write_note` | `"Note created"` / `"Content appended"` (auto-apply) or `"Note change proposal queued for review…"` | ~80–200 chars |
+| `note_replace_string` | Queued-review message or patch outcome; `not_found` / `ambiguous` errors include line-numbered snippet | ~80–500 chars |
 | `list_files` | JSON array of `{id, name, type, path}` | Proportional to file count |
 | `read_file` | Full extracted text (txt/md/pdf/docx/xlsx/ods/odt) | **Unbounded** |
 | `describe_image` | Metadata block + vision model description | ~200–800 chars |
@@ -210,7 +225,6 @@ These are returned as `TOOL` role messages in the next request after a tool call
 | `read_journal` | Concatenated journal entry content | **Unbounded** |
 | `write_log_entry` | `"Log entry written"` | ~18 chars |
 | `read_log` | Concatenated log entry content | **Unbounded** |
-| `voice_handoff` | `"Voice handoff recorded"` | ~22 chars |
 
 ---
 
@@ -258,13 +272,22 @@ provider=xAI phase=TOOL_CONTINUATION round=2 tools=1 resp=resp_abc… input=1200
 Fields omitted when the provider does not report them. Filter Logcat with `OptimalX.Eidos.Usage` to compare cache hits across turns.
 
 ### Tool call loop
-If `toolCalls` is non-empty, the client:
-1. Executes all tools
-2. Appends `ASSISTANT` + `TOOL` messages to history
-3. Sends another request (with `userMessage = ""`)
-4. Repeats until `toolCalls` is empty
 
-There is no max iteration cap — a chain of tool calls will loop until the model stops returning tool calls or a network error occurs.
+If `toolCalls` is non-empty, the client:
+
+1. Executes all tools
+2. Appends `ASSISTANT` (+ optional `reasoning_content` on Kimi) + `TOOL` messages to `mutableHistory`
+3. Builds the next `EidosRequest` with `phase = TOOL_CONTINUATION` and `userMessage = ""`
+4. Sends another HTTP request
+5. Repeats until `toolCalls` is empty, a cap fires, or an error occurs
+
+**Caps:** Profile-owned via `EidosScopeProfile.loopPolicy` (`ToolLoopPolicy`), enforced in `EidosApiClient.send()`; on exceed the loop returns an `EidosToolLoopPause` message. Workshop Chat — 2; workshop build/plan/edit/intake — 12 (`WORKSHOP_BUILD_MAX_TOOL_ROUNDS`); all other scopes — 13 global backstop (`GLOBAL_MAX_TOOL_ROUNDS`).
+
+**Incremental (Responses):** Hop 2+ sends `conversationHistory = lastToolRoundMessages(mutableHistory)` and `systemPrompt = ""` when `useIncremental` is true. `useIncremental = transportHints.incrementalContinuation && providerFamilyUsesIncrementalToolContinuation(family) && previousResponseId != null` — workshop uses the same path (no `!isPanelWorkshop` opt-out).
+
+**Kimi reasoning:** `prepareKimiOutboundHistory` strips text-only reasoning on old turns; keeps `reasoning_content` on assistant rows with `tool_calls` in the current turn. Required by Moonshot — separate from system-prompt resend policy.
+
+**Bulk tool trim:** `prepareOutboundHistory` (all providers, via `buildTracedRequest`) stubs `search_semantic` / `read_*` / `workshop_read_file` results older than the last 3 tool rounds in the current user exchange (and all bulky results in prior exchanges). Full bodies remain in DB and in-memory loop state.
 
 ---
 
@@ -277,7 +300,7 @@ There is no max iteration cap — a chain of tool calls will loop until the mode
 | Workshop context (file manifest + open excerpt ≤6k + summary/spec) | ~200 | ~400–2,500 | ~8,500 |
 | Journal context (3 days) | 0 | ~300 | ~1,875 |
 | **Local tools + hosted web tools** | **~1,300** | **~1,500** | **~1,700** |
-| Conversation history | 0 | ~200 | Tier: 12k–80k chars |
+| Conversation history | 0 | ~200 | Summary + verbatim tail; hard cap ~30k chars |
 | User message | ~5 | ~30 | Unbounded |
 
 Full note/workshop bodies are loaded via tools on demand, not inlined every turn.

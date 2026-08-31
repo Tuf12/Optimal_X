@@ -31,21 +31,30 @@ object SettingsKeys {
     val WIDGET_VOICE_HANDS_FREE = booleanPreferencesKey("widget_voice_hands_free")
     /** When true and an OpenAI key is saved, chat/notes mics use Whisper API. */
     val MIC_USE_WHISPER_API = booleanPreferencesKey("mic_use_whisper_api")
+    /** When true, chat/notes mics use buffered PCM + local Gemma scribe. */
+    val MIC_USE_LOCAL_GEMMA_SCRIBE = booleanPreferencesKey("mic_use_local_gemma_scribe")
     val FOLDER_LAYOUT = stringPreferencesKey("folder_layout")
     /** Legacy key — migrated to [SettingsDefaults.STT_BACKEND] on startup. */
     val STT_BACKEND = stringPreferencesKey("stt_backend")
     /** Legacy key — removed on startup after Whisper uninstall. */
     val WHISPER_MODEL_FILE_NAME = stringPreferencesKey("whisper_model_file_name")
-    /** Eidos in-chat memory: low | medium | high (see EidosContextLimits). */
-    val CONVERSATION_MEMORY_DEPTH = stringPreferencesKey("conversation_memory_depth")
     /** True after the user has seen and dismissed the Read Aloud info dialog. */
     val READ_ALOUD_INFO_DISMISSED = booleanPreferencesKey("read_aloud_info_dismissed")
     /** Developer: capture outbound LLM API payloads for the API Trace inspector. */
     val EIDOS_API_TRACE_ENABLED = booleanPreferencesKey("eidos_api_trace_enabled")
-    /** Panel Workshop Auto-Continue — chain LLM handoffs during build kickoffs. */
-    val WORKSHOP_AUTO_CONTINUE_ENABLED = booleanPreferencesKey("workshop_auto_continue_enabled")
-    /** When true, pause after each chunk instead of immediate synthetic resend. */
-    val WORKSHOP_PAUSE_BETWEEN_CHUNKS = booleanPreferencesKey("workshop_pause_between_chunks")
+    /** Eidos chat reasoning depth: low | medium | high. */
+    val EIDOS_THINKING_LEVEL = stringPreferencesKey("eidos_thinking_level")
+    val LITERT_MODEL_PATH = stringPreferencesKey("litert_model_path")
+    val LITERT_BACKEND = stringPreferencesKey("litert_backend")
+    /**
+     * Local Gemma only: when true, register the local tool allowlist + tool system prompt.
+     * When false, chat-only (empty tools). Cloud providers ignore this.
+     */
+    val LOCAL_GEMMA_TOOLS_ENABLED = booleanPreferencesKey("local_gemma_tools_enabled")
+    /** Image Studio default model tier wire value (`draft` | `quality`). */
+    val IMAGE_STUDIO_DEFAULT_TIER = stringPreferencesKey("image_studio_default_tier")
+    /** Image Studio default aspect ratio wire value (e.g. `1:1`). */
+    val IMAGE_STUDIO_DEFAULT_ASPECT = stringPreferencesKey("image_studio_default_aspect")
 }
 
 object SettingsDefaults {
@@ -57,13 +66,17 @@ object SettingsDefaults {
     const val READ_ALOUD_MIC_PASSBACK = true
     const val WIDGET_VOICE_HANDS_FREE = false
     const val MIC_USE_WHISPER_API = false
+    const val MIC_USE_LOCAL_GEMMA_SCRIBE = false
     const val FOLDER_LAYOUT = "grid2"
     const val STT_BACKEND = "google_recognizer"
-    const val CONVERSATION_MEMORY_DEPTH = "low"
     const val READ_ALOUD_INFO_DISMISSED = false
     const val EIDOS_API_TRACE_ENABLED = false
-    const val WORKSHOP_AUTO_CONTINUE_ENABLED = true
-    const val WORKSHOP_PAUSE_BETWEEN_CHUNKS = false
+    const val EIDOS_THINKING_LEVEL = "medium"
+    const val LITERT_BACKEND = "gpu"
+    /** Local Gemma tools mode default — on (search / folders / write_note). */
+    const val LOCAL_GEMMA_TOOLS_ENABLED = true
+    const val IMAGE_STUDIO_DEFAULT_TIER = "draft"
+    const val IMAGE_STUDIO_DEFAULT_ASPECT = "1:1"
 }
 
 object ApiKeyNames {

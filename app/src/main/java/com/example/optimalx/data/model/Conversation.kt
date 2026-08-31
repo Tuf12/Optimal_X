@@ -3,6 +3,7 @@ package com.example.optimalx.data.model
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 @Entity(
     tableName = "conversations",
@@ -17,6 +18,7 @@ import androidx.room.PrimaryKey
             unique = true,
             name = "index_conversations_web_widget_search",
         ),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class Conversation(
@@ -36,9 +38,14 @@ data class Conversation(
     val title: String,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    /**
-     * In-chat memory tier for this thread: `low` | `medium` | `high`.
-     * Null = use app Settings default (Eidos chat memory in Settings).
-     */
+    /** Legacy per-thread memory tier. Unused; kept for Room/sync schema. */
+    @Deprecated("Unused — long-thread context is prefetch + verbatim tail")
     val memoryDepth: String? = null,
+    /** Unused conversation fold field; kept for Room/sync schema. */
+    val threadSummary: String? = null,
+    /** Unused; kept for Room/sync schema. */
+    val threadSummaryCoversMessageId: Long? = null,
+    val threadSummaryUpdatedAt: Long? = null,
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

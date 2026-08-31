@@ -1,34 +1,31 @@
 package com.example.optimalx.ui.gallery
 
 import android.app.Application
-import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.optimalx.OptimalXApplication
-import com.example.optimalx.data.preferences.SettingsDefaults
-import com.example.optimalx.data.preferences.SettingsKeys
 import com.example.optimalx.data.panel.PanelReleaseStore
+import com.example.optimalx.data.preferences.FolderListDisplayPreferences
+import com.example.optimalx.data.preferences.FolderListScope
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
-import com.example.optimalx.data.preferences.settingsDataStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import com.example.optimalx.data.repository.FolderRepository
 import com.example.optimalx.data.repository.HomePinRepository
 import com.example.optimalx.ui.folders.FolderLayoutMode
 import com.example.optimalx.ui.folders.HomePinType
 import com.example.optimalx.ui.folders.PinnedRowItem
 import com.example.optimalx.ui.folders.SortOrder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PanelGalleryViewModel(app: Application) : AndroidViewModel(app) {
@@ -38,11 +35,14 @@ class PanelGalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val homePinRepo: HomePinRepository = appRef.homePinRepository
     private val ctx = app.applicationContext
 
-    private val _sortOrder = MutableStateFlow(SortOrder.NAME_ASC)
-    val sortOrder: StateFlow<SortOrder> = _sortOrder.asStateFlow()
+    private val listScope = FolderListScope.PanelGallery
 
-    val layoutMode: StateFlow<FolderLayoutMode> = ctx.settingsDataStore.data
-        .map { prefs -> FolderLayoutMode.fromKey(prefs[SettingsKeys.FOLDER_LAYOUT] ?: SettingsDefaults.FOLDER_LAYOUT) }
+    val sortOrder: StateFlow<SortOrder> = FolderListDisplayPreferences
+        .sortOrderFlow(ctx, listScope)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SortOrder.NAME_ASC)
+
+    val layoutMode: StateFlow<FolderLayoutMode> = FolderListDisplayPreferences
+        .layoutModeFlow(ctx, listScope)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), FolderLayoutMode.GRID_2)
 
     private val _workshopParentId = MutableStateFlow<Long?>(null)
@@ -50,7 +50,7 @@ class PanelGalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     val panels: StateFlow<List<PanelGalleryItem>> = combine(
         _workshopParentId,
-        _sortOrder,
+        sortOrder,
         _galleryRefresh,
     ) { parentId, sort, _ -> parentId to sort }
         .flatMapLatest { (parentId, sort) ->
@@ -97,9 +97,10 @@ class PanelGalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun backfillPublishedReleases() {
-        val parentId = _workshopParentId.value ?: return
         withContext(Dispatchers.IO) {
             val db = appRef.database
+            PanelReleaseStore.ensureAllWorkshopReleasesFromSources(ctx, db)
+            val parentId = _workshopParentId.value ?: return@withContext
             db.subfolderDao().getAllByParentOnce(parentId)
                 .filter { it.deletedAt == null && !it.isSystemSubfolder }
                 .forEach { subfolder ->
@@ -110,13 +111,14 @@ class PanelGalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSortOrder(order: SortOrder) {
-        _sortOrder.value = order
+        viewModelScope.launch {
+            FolderListDisplayPreferences.setSortOrder(ctx, listScope, order)
+        }
     }
 
     fun toggleGrid() {
         viewModelScope.launch {
-            val next = layoutMode.value.next()
-            ctx.settingsDataStore.edit { it[SettingsKeys.FOLDER_LAYOUT] = next.key }
+            FolderListDisplayPreferences.setLayoutMode(ctx, listScope, layoutMode.value.next())
         }
     }
 

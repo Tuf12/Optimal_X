@@ -1,8 +1,6 @@
 package com.example.optimalx.ui.settings
 
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,6 +48,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -62,16 +62,26 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.optimalx.ui.theme.DmMonoFamily
 import com.example.optimalx.ui.theme.DmSansFamily
-import com.example.optimalx.data.backup.OptimalXBackupManager
+import com.example.optimalx.data.eidos.EidosSystemFeatureFlags
+import com.example.optimalx.data.litert.LitertLmBackend
+import com.example.optimalx.data.litert.LitertLmDefaults
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.optimalx.data.litert.LitertLmDiscoveredModel
+import com.example.optimalx.data.litert.LitertLmModelDownloadState
+import com.example.optimalx.data.litert.LitertLmWarmState
 import com.example.optimalx.data.eidos.provider.XAI_MODEL_CHOICES
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.SyneFamily
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
-    onOpenOptimalXLink: () -> Unit = {},
+    onOpenSyncWithDesktop: () -> Unit = {},
+    onOpenLitertLmSmoke: () -> Unit = {},
 ) {
     BackHandler { onBack() }
 
@@ -86,6 +96,7 @@ fun SettingsScreen(
 
     val colors = LocalOptimalXColors.current
     val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
     val themePreference by viewModel.themePreference.collectAsState()
     val xaiKey by viewModel.xaiKey.collectAsState()
     val xaiModel by viewModel.xaiModel.collectAsState()
@@ -95,76 +106,26 @@ fun SettingsScreen(
     val activeProvider by viewModel.activeProvider.collectAsState()
     val memoryRollover by viewModel.memoryRollover.collectAsState()
     val semanticIndex by viewModel.semanticIndex.collectAsState()
-    val dataBackup by viewModel.dataBackup.collectAsState()
     val wakeWord by viewModel.wakeWord.collectAsState()
     val readAloud by viewModel.readAloud.collectAsState()
     val readAloudMicPassback by viewModel.readAloudMicPassback.collectAsState()
     val widgetVoiceHandsFree by viewModel.widgetVoiceHandsFree.collectAsState()
     val micUseWhisperApi by viewModel.micUseWhisperApi.collectAsState()
+    val micUseLocalGemmaScribe by viewModel.micUseLocalGemmaScribe.collectAsState()
+    val imageStudioDefaultTier by viewModel.imageStudioDefaultTier.collectAsState()
+    val imageStudioDefaultAspect by viewModel.imageStudioDefaultAspect.collectAsState()
     var showApiKeys by rememberSaveable { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<String?>(null) }
-    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshApiKeysFromStorage()
+        viewModel.scanLitertModels()
     }
 
     val hasOpenAiKey = openAiKey.isNotBlank()
-
-    val exportBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument(OptimalXBackupManager.BACKUP_MIME_TYPE),
-    ) { uri ->
-        if (uri != null) {
-            viewModel.exportBackup(uri)
-            feedback = "Export started"
-        }
-    }
-
-    val importBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            pendingImportUri = uri
-        }
-    }
-
-    if (pendingImportUri != null) {
-        AlertDialog(
-            onDismissRequest = { pendingImportUri = null },
-            title = {
-                Text(
-                    text = "Import backup?",
-                    color = colors.textPrimary,
-                    fontFamily = DmSansFamily,
-                )
-            },
-            text = {
-                Text(
-                    text = "This replaces all notes, chats, folders, attached files, and workshop projects on this device. A raw .db import replaces the database only. API keys are not included.",
-                    color = colors.textDim,
-                    fontFamily = DmMonoFamily,
-                    fontSize = 12.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingImportUri?.let { viewModel.importBackup(it) }
-                        pendingImportUri = null
-                        feedback = "Import started"
-                    },
-                ) {
-                    Text("Replace data", color = colors.accent, fontFamily = DmSansFamily)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingImportUri = null }) {
-                    Text("Cancel", color = colors.textMid, fontFamily = DmSansFamily)
-                }
-            },
-            containerColor = colors.surface,
-        )
-    }
+    val hasXaiKey = xaiKey.isNotBlank()
+    val scrollState = rememberScrollState()
+    val apiKeysSectionOffset = remember { mutableStateOf(0) }
 
     LaunchedEffect(feedback) {
         if (feedback != null) {
@@ -206,7 +167,7 @@ fun SettingsScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -230,7 +191,9 @@ fun SettingsScreen(
                 )
             }
 
-            SettingsSection(title = "API Keys") {
+            SettingsSection(title = "API Keys", modifier = Modifier.onGloballyPositioned { coords ->
+                apiKeysSectionOffset.value = coords.positionInParent().y.toInt()
+            }) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
@@ -261,6 +224,13 @@ fun SettingsScreen(
                     onClick = { uriHandler.openUri("https://console.x.ai/") },
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Also used for Image Studio cloud image generation.",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
                 Text(
                     text = "Uses the same xAI key; pick which Grok model receives chat requests.",
                     color = colors.textDim,
@@ -362,89 +332,229 @@ fun SettingsScreen(
                         feedback = "Provider saved: Kimi"
                     },
                 )
+                ProviderOption(
+                    label = "Local Gemma 4 (on-device)",
+                    selected = activeProvider == LitertLmDefaults.PROVIDER_ID,
+                    onClick = {
+                        viewModel.setActiveProvider(LitertLmDefaults.PROVIDER_ID)
+                        feedback = "Provider saved: Local Gemma"
+                    },
+                )
             }
 
-            SettingsSection(title = "Eidos chat") {
-                val conversationMemory by viewModel.conversationMemoryDepth.collectAsState()
-                Text(
-                    text = "In-conversation memory",
-                    color = colors.textPrimary,
-                    fontFamily = DmSansFamily,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
+            SettingsSection(title = "Image Studio") {
+                ImageStudioSettingsSection(
+                    xaiKeyConfigured = hasXaiKey,
+                    defaultTier = imageStudioDefaultTier,
+                    defaultAspectRatio = imageStudioDefaultAspect,
+                    onDefaultTierChange = {
+                        viewModel.setImageStudioDefaultTier(it)
+                        feedback = "Image Studio defaults saved"
+                    },
+                    onDefaultAspectRatioChange = {
+                        viewModel.setImageStudioDefaultAspect(it)
+                        feedback = "Image Studio defaults saved"
+                    },
+                    onFocusApiKeys = {
+                        scope.launch {
+                            scrollState.animateScrollTo(apiKeysSectionOffset.value)
+                            showApiKeys = true
+                        }
+                    },
                 )
+            }
+
+            val litertModelPath by viewModel.litertModelPath.collectAsState()
+            val litertBackend by viewModel.litertBackend.collectAsState()
+            val litertModelAvailability by viewModel.litertModelAvailability.collectAsState()
+            val litertWarmState by viewModel.litertWarmState.collectAsState()
+            val litertEngineError by viewModel.litertEngineError.collectAsState()
+            val litertDownloadState by viewModel.litertModelDownloadState.collectAsState()
+            val litertDiscoveredModels by viewModel.litertDiscoveredModels.collectAsState()
+            val litertModelPicker = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                uri?.let {
+                    viewModel.importLitertModelFromUri(it)
+                    feedback = "Importing Gemma model…"
+                }
+            }
+
+            SettingsSection(title = "Local Gemma (LiteRT-LM)") {
                 Text(
-                    text = "How much prior chat Eidos resends each turn. Low saves tokens; raise to Medium/High if Eidos forgets thread details. Notes and folders are loaded via tools, not bulk-inlined.",
+                    text = "On-device Gemma 4 E4B (${LitertLmDefaults.MODEL_FILE_NAME}, ~3.7 GB). Same LiteRT-LM package as Google AI Edge Gallery — not the raw Hugging Face weight repo.",
                     color = colors.textDim,
                     fontFamily = DmMonoFamily,
                     fontSize = 11.sp,
-                    modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+                    modifier = Modifier.padding(bottom = 8.dp),
                 )
-                listOf(
-                    "low" to "Low (~8 messages)",
-                    "medium" to "Medium (~16 messages)",
-                    "high" to "High (~40 messages)",
-                ).forEach { (id, label) ->
-                    ProviderOption(
-                        label = label,
-                        selected = conversationMemory == id,
+                Text(
+                    text = litertModelAvailability.statusLabel,
+                    color = if (litertModelAvailability.exists) colors.accent else colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+                Text(
+                    text = "Install location: ${litertModelAvailability.canonicalPath}",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                when (val dl = litertDownloadState) {
+                    is LitertLmModelDownloadState.Downloading -> {
+                        val progress = dl.percent?.let { "$it%" } ?: "…"
+                        Text(
+                            text = "Downloading / copying model… $progress",
+                            color = colors.accent,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
+                    is LitertLmModelDownloadState.Complete -> {
+                        Text(
+                            text = "Model installed.",
+                            color = colors.accent,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
+                    is LitertLmModelDownloadState.Failed -> {
+                        Text(
+                            text = dl.message,
+                            color = colors.textDim,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
+                    LitertLmModelDownloadState.Idle -> Unit
+                }
+                if (!litertModelAvailability.exists) {
+                    KeyHelpLink(
+                        text = "Download Gemma 4 model (~3.7 GB, Wi‑Fi recommended)",
                         onClick = {
-                            viewModel.setConversationMemoryDepth(id)
-                            feedback = "Chat memory: $label"
+                            viewModel.startLitertModelDownload()
+                            feedback = "Downloading Gemma 4 model…"
+                        },
+                    )
+                    KeyHelpLink(
+                        text = "Choose .litertlm file on device",
+                        onClick = {
+                            litertModelPicker.launch(arrayOf("*/*"))
+                        },
+                    )
+                    KeyHelpLink(
+                        text = "Scan for Gallery / Downloads copy",
+                        onClick = {
+                            viewModel.scanLitertModels()
+                            feedback = "Scanning for installed model…"
+                        },
+                    )
+                } else {
+                    KeyHelpLink(
+                        text = "Scan for other copies on device",
+                        onClick = {
+                            viewModel.scanLitertModels()
+                            feedback = "Scanning for installed model…"
                         },
                     )
                 }
+                litertDiscoveredModels.forEach { discovered ->
+                    val sizeGb = discovered.sizeBytes / (1024f * 1024f * 1024f)
+                    val isCanonical = discovered.absolutePath == litertModelAvailability.canonicalPath
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = discovered.label,
+                                color = colors.textPrimary,
+                                fontFamily = DmSansFamily,
+                                fontSize = 12.sp,
+                            )
+                            Text(
+                                text = "${discovered.absolutePath} (${"%.1f".format(sizeGb)} GB)",
+                                color = colors.textDim,
+                                fontFamily = DmMonoFamily,
+                                fontSize = 10.sp,
+                            )
+                        }
+                        if (!isCanonical) {
+                            KeyHelpLink(
+                                text = if (litertModelAvailability.exists) "Use" else "Install here",
+                                onClick = {
+                                    if (discovered.absolutePath == litertModelAvailability.canonicalPath) {
+                                        viewModel.useLitertModelPath(discovered.absolutePath)
+                                    } else if (litertModelAvailability.exists) {
+                                        viewModel.useLitertModelPath(discovered.absolutePath)
+                                        feedback = "Using discovered model path"
+                                    } else {
+                                        viewModel.installLitertModelToAppStorage(discovered.absolutePath)
+                                        feedback = "Copying model into OptimalX storage…"
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+                val warmLabel = when (litertWarmState) {
+                    LitertLmWarmState.Idle -> "Engine: not loaded"
+                    LitertLmWarmState.Loading -> "Engine: loading local model…"
+                    LitertLmWarmState.Ready -> litertEngineError?.let { "Engine: ready — $it" } ?: "Engine: ready"
+                    LitertLmWarmState.Error -> litertEngineError?.let { "Engine: load failed — $it" }
+                        ?: "Engine: load failed — check model path"
+                }
+                Text(
+                    text = warmLabel,
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                SettingsTextField(
+                    label = "Model path",
+                    value = litertModelPath,
+                    onValueChange = {
+                        viewModel.setLitertModelPath(it)
+                        feedback = "Local model path saved"
+                    },
+                    isSecure = false,
+                    reveal = true,
+                )
+                ProviderOption(
+                    label = "GPU backend",
+                    selected = litertBackend == LitertLmBackend.GPU,
+                    onClick = {
+                        viewModel.setLitertBackend(LitertLmBackend.GPU)
+                        feedback = "Local backend: GPU"
+                    },
+                )
+                ProviderOption(
+                    label = "CPU backend",
+                    selected = litertBackend == LitertLmBackend.CPU,
+                    onClick = {
+                        viewModel.setLitertBackend(LitertLmBackend.CPU)
+                        feedback = "Local backend: CPU"
+                    },
+                )
             }
 
-            SettingsSection(title = "Data backup") {
+            SettingsSection(title = "Eidos chat") {
                 Text(
-                    text = "Export or import your OptimalX database for development backups. Saves to Google Drive, Downloads, or any folder you pick.",
+                    text = "Long threads keep recent messages verbatim in chat history. Older turns are retrieved as exact conversation chunks in Retrieved context (semantic prefetch).",
                     color = colors.textDim,
                     fontFamily = DmMonoFamily,
                     fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 6.dp),
+                    modifier = Modifier.padding(bottom = 8.dp),
                 )
-                Text(
-                    text = "Includes: Room database (notes, chats, folders, semantic chunks), attached files, and workshop projects. Excludes: API keys and theme preferences.",
-                    color = colors.textDim,
-                    fontFamily = DmMonoFamily,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-                Text(
-                    text = "Import accepts full .zip backups or a raw optimalx.db pulled from Android Studio Device Explorer (database only — no attached files).",
-                    color = colors.textDim,
-                    fontFamily = DmMonoFamily,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-                KeyHelpLink(
-                    text = if (dataBackup.isWorking) "Exporting..." else "Export backup (.zip)",
-                    onClick = {
-                        exportBackupLauncher.launch(OptimalXBackupManager.suggestedExportFileName())
-                    },
-                )
-                KeyHelpLink(
-                    text = if (dataBackup.isWorking) "Importing..." else "Import backup (.zip or .db)",
-                    onClick = {
-                        importBackupLauncher.launch(
-                            arrayOf(
-                                OptimalXBackupManager.BACKUP_MIME_TYPE,
-                                "application/x-sqlite3",
-                                "application/octet-stream",
-                            ),
-                        )
-                    },
-                )
-                if (!dataBackup.message.isNullOrBlank()) {
-                    Text(
-                        text = dataBackup.message.orEmpty(),
-                        color = colors.accent,
-                        fontFamily = DmMonoFamily,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 6.dp, start = 4.dp),
-                    )
-                }
             }
 
             SettingsSection(title = "Developer") {
@@ -478,84 +588,38 @@ fun SettingsScreen(
                         },
                     )
                 }
-                val workshopAutoContinue by viewModel.workshopAutoContinueEnabled.collectAsState()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Workshop Auto-Continue",
-                            color = colors.textPrimary,
-                            fontFamily = DmSansFamily,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            text = "During build kickoffs, chain Eidos chunks using LLM handoff messages (synthetic user resend).",
-                            color = colors.textDim,
-                            fontFamily = DmMonoFamily,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 2.dp, end = 8.dp),
-                        )
-                    }
-                    Switch(
-                        checked = workshopAutoContinue,
-                        onCheckedChange = {
-                            viewModel.setWorkshopAutoContinueEnabled(it)
-                            feedback = if (it) "Auto-Continue enabled" else "Auto-Continue disabled"
-                        },
-                    )
-                }
-                val pauseBetweenChunks by viewModel.workshopPauseBetweenChunks.collectAsState()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Pause between workshop chunks",
-                            color = colors.textPrimary,
-                            fontFamily = DmSansFamily,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            text = "When on, tool-cap pauses wait for you to reply continue instead of auto-resending the handoff.",
-                            color = colors.textDim,
-                            fontFamily = DmMonoFamily,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 2.dp, end = 8.dp),
-                        )
-                    }
-                    Switch(
-                        checked = pauseBetweenChunks,
-                        enabled = workshopAutoContinue,
-                        onCheckedChange = {
-                            viewModel.setWorkshopPauseBetweenChunks(it)
-                            feedback = if (it) "Pause between chunks on" else "Pause between chunks off"
-                        },
-                    )
-                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "LiteRT-LM smoke test",
+                    color = colors.textPrimary,
+                    fontFamily = DmSansFamily,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "Load gemma-4-E4B-it.litertlm from device storage and run one GPU prompt. Phase 1 dependency check.",
+                    color = colors.textDim,
+                    fontFamily = DmMonoFamily,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
+                )
+                KeyHelpLink(
+                    text = "Open LiteRT-LM smoke test",
+                    onClick = onOpenLitertLmSmoke,
+                )
             }
 
-            SettingsSection(title = "OptimalX Link") {
+            SettingsSection(title = "Sync with Desktop") {
                 Text(
-                    text = "Pair OptimalX with the desktop app on your PC to pull, push, or restore the full app state over your local network. The server runs only while this screen is open.",
+                    text = "Manual Tier 1 sync with OptimalX Desktop over your LAN (folders, notes, pins, DumpEdit). Push and pull when you choose — no background sync.",
                     color = colors.textDim,
                     fontFamily = DmMonoFamily,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
                 KeyHelpLink(
-                    text = "Open OptimalX Link",
-                    onClick = onOpenOptimalXLink,
+                    text = "Open Sync with Desktop",
+                    onClick = onOpenSyncWithDesktop,
                 )
             }
 
@@ -598,24 +662,30 @@ fun SettingsScreen(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = "Automatic: WorkManager queues rollover for the next local midnight (needs network; OS may defer slightly). Logcat: OptimalX.MemoryRollover. Force uses “now” for Daily Memory; the overnight run targets the calendar day that just ended.",
+                    text = if (EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+                        "Automatic: WorkManager queues rollover for the next local midnight (needs network; OS may defer slightly). Logcat: OptimalX.MemoryRollover. Force uses “now” for Daily Memory; the overnight run targets the calendar day that just ended."
+                    } else {
+                        "Nightly memory rollover is paused. Force rollover is disabled until journal write quality is fixed."
+                    },
                     color = colors.textDim,
                     fontFamily = DmMonoFamily,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
                 )
-                KeyHelpLink(
-                    text = if (memoryRollover.isRunning) "Rollover running..." else "Run Force rollover now",
-                    onClick = { viewModel.forceMemoryRollover() },
-                )
-                if (!memoryRollover.message.isNullOrBlank()) {
-                    Text(
-                        text = memoryRollover.message.orEmpty(),
-                        color = colors.accent,
-                        fontFamily = DmMonoFamily,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 6.dp, start = 4.dp),
+                if (EidosSystemFeatureFlags.MEMORY_ROLLOVER_ENABLED) {
+                    KeyHelpLink(
+                        text = if (memoryRollover.isRunning) "Rollover running..." else "Run Force rollover now",
+                        onClick = { viewModel.forceMemoryRollover() },
                     )
+                    if (!memoryRollover.message.isNullOrBlank()) {
+                        Text(
+                            text = memoryRollover.message.orEmpty(),
+                            color = colors.accent,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 6.dp, start = 4.dp),
+                        )
+                    }
                 }
             }
 
@@ -781,6 +851,44 @@ fun SettingsScreen(
                         },
                     )
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface2)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Use local Gemma scribe for mic",
+                            color = colors.textPrimary,
+                            fontFamily = DmSansFamily,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "Chat and notes mics. Record locally, transcribe on-device with Gemma 4 E4B.",
+                            color = colors.textDim,
+                            fontFamily = DmMonoFamily,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Switch(
+                        checked = micUseLocalGemmaScribe,
+                        onCheckedChange = { enabled ->
+                            viewModel.setMicUseLocalGemmaScribe(enabled)
+                            feedback = if (enabled) {
+                                "Local Gemma scribe enabled — warming model"
+                            } else {
+                                "Google mic fallback enabled"
+                            }
+                        },
+                    )
+                }
                 if (!hasOpenAiKey) {
                     Text(
                         text = if (micUseWhisperApi) {
@@ -803,7 +911,7 @@ fun SettingsScreen(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = "Chat and notes use Whisper when enabled above, otherwise Google speech recognition. Widget Quick Ask, Quick Notes, and web search always use Google. Keyboard voice (Gboard) works without API calls.",
+                    text = "Chat and notes use local Gemma scribe or Whisper when enabled above, otherwise Google speech recognition. Widget Quick Ask, Quick Notes, and web search always use Google. Keyboard voice (Gboard) works without API calls.",
                     color = colors.textDim,
                     fontFamily = DmMonoFamily,
                     fontSize = 11.sp,
@@ -836,11 +944,12 @@ private fun KeyHelpLink(
 @Composable
 private fun SettingsSection(
     title: String,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     val colors = LocalOptimalXColors.current
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)

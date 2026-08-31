@@ -67,6 +67,7 @@ import com.example.optimalx.data.preferences.settingsDataStore
 import com.example.optimalx.ui.theme.DmSansFamily
 import com.example.optimalx.ui.theme.LocalOptimalXColors
 import com.example.optimalx.ui.theme.OptimalXTheme
+import com.example.optimalx.ui.web.WebPanelScope
 import com.example.optimalx.ui.web.decodeWebRecentSearchEntriesPermissive
 import com.example.optimalx.ui.web.encodeWebRecentSearchEntries
 import com.example.optimalx.ui.web.mergeRecentSearchesNewestFirst
@@ -77,7 +78,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-private const val WIDGET_WEB_SCOPE = "widget_quick_web"
+private const val WIDGET_WEB_SCOPE = WebPanelScope.WIDGET
 
 /**
  * Lightweight entry from the home-screen widget: type or dictate a query/URL, then open
@@ -307,7 +308,7 @@ private fun WidgetWebSearchScreen(
             .map { prefs ->
                 mergeRecentSearchesNewestFirst(
                     decodeWebRecentSearchEntriesPermissive(prefs[webPanelRecentSearchesKey])
-                        .filter { it.scopeKey == WIDGET_WEB_SCOPE },
+                        .filter { WebPanelScope.matches(WIDGET_WEB_SCOPE, it.scopeKey) },
                     max = 50,
                 )
             }
@@ -396,7 +397,7 @@ private fun WidgetWebSearchScreen(
                                                     prefs[webPanelRecentSearchesKey],
                                                 )
                                                 val updated = existing.filterNot { entry ->
-                                                    entry.scopeKey == WIDGET_WEB_SCOPE &&
+                                                    WebPanelScope.matches(WIDGET_WEB_SCOPE, entry.scopeKey) &&
                                                         normalizeWebSearchKey(entry.query) == deleteKey
                                                 }
                                                 prefs[webPanelRecentSearchesKey] =

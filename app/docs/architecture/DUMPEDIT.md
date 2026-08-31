@@ -16,7 +16,7 @@ The name comes from an earlier desktop utility built for the same purpose: getti
 
 | Key (DataStore `dump_edit`) | Purpose |
 |-----------------------------|---------|
-| `dump_edit_content` | Rich-text HTML buffer |
+| `dump_edit_content` | Markdown scratch buffer (legacy HTML migrates on load) |
 | `dump_edit_ai_locked` | Lock from Eidos |
 | `dump_edit_ai_blind` | Blind from Eidos |
 
@@ -28,7 +28,7 @@ The name comes from an earlier desktop utility built for the same purpose: getti
 
 ## Editor UX
 
-Reuses the note editor chrome:
+Reuses the note editor chrome via [`RichTextNotePanel.kt`](../../src/main/java/com/example/optimalx/ui/editor/components/RichTextNotePanel.kt) — same WYSIWYG surface and markdown persistence as folder notes.
 
 - Formatting toolbar (no read-aloud in v1)
 - Dropdown: strikethrough, view/edit, lock/blind, export/share, **Clear**, **Undo clear**, **Promote to folder**

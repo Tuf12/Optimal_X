@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.optimalx.data.sync.SyncGlobalIds
 
 /**
  * A single proposed change inside a [PendingChangeSet] — one file or one note.
@@ -24,6 +25,7 @@ import androidx.room.PrimaryKey
         Index(value = ["changeSetId"]),
         Index(value = ["sourceType", "sourceId"]),
         Index(value = ["status"]),
+        Index(value = ["globalId"], unique = true),
     ],
 )
 data class PendingChangeItem(
@@ -57,4 +59,6 @@ data class PendingChangeItem(
     val isNewFile: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val globalId: String = SyncGlobalIds.newGlobalId(),
+    val originDeviceId: String? = null,
 )

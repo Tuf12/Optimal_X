@@ -22,15 +22,19 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.optimalx.data.db.SystemFolderNames
 import com.example.optimalx.data.eidos.EidosApiTraceFeature
-import com.example.optimalx.data.eidos.ImplementationPlanGate
 import com.example.optimalx.data.eidos.WorkshopProjectPhase
+import com.example.optimalx.data.revision.SCOPE_SUBFOLDER
+import com.example.optimalx.data.revision.SCOPE_WORKSHOP_PROJECT
 import com.example.optimalx.data.preferences.WorkshopProjectPreferences
 import com.example.optimalx.data.repository.FolderRepository
 import com.example.optimalx.ui.dumpedit.DumpEditScreen
 import com.example.optimalx.ui.editor.EditorScreen
 import com.example.optimalx.ui.eidos.ConversationListScreen
+import com.example.optimalx.OptimalXApplication
+import com.example.optimalx.data.eidos.EidosNavigationCodec
 import com.example.optimalx.ui.eidos.EidosChatScreen
 import com.example.optimalx.ui.eidos.EidosChatViewModel
+import com.example.optimalx.ui.eidos.EidosNavigation
 import com.example.optimalx.ui.eidos.EidosApiTraceDirectoriesScreen
 import com.example.optimalx.ui.eidos.EidosApiTraceRunDetailScreen
 import com.example.optimalx.ui.eidos.EidosApiTraceRoutes
@@ -47,10 +51,12 @@ import com.example.optimalx.ui.folders.PinnedRowItem
 import com.example.optimalx.ui.folders.SubfolderScreen
 import com.example.optimalx.ui.folders.TrashScreen
 import com.example.optimalx.ui.gallery.PanelGalleryScreen
+import com.example.optimalx.ui.imagestudio.ImageStudioHubScreen
 import com.example.optimalx.ui.gallery.PanelRunnerScreen
-import com.example.optimalx.ui.memorycache.MemoryCacheInboxScreen
 import com.example.optimalx.ui.quicknotes.QuickNotesInboxScreen
+import com.example.optimalx.ui.settings.LitertLmSmokeScreen
 import com.example.optimalx.ui.settings.SettingsScreen
+import com.example.optimalx.ui.settings.SyncWithDesktopScreen
 import com.example.optimalx.ui.workshop.WorkshopEditorScreen
 import com.example.optimalx.ui.workshop.review.DiffReviewScreen
 import kotlinx.coroutines.launch
@@ -58,20 +64,22 @@ import kotlinx.coroutines.launch
 object Routes {
     const val PARENT_FOLDERS = "parent_folders"
     const val PANEL_GALLERY = "panel_gallery"
+    const val IMAGE_STUDIO_HUB = "image_studio_hub"
     const val DUMP_EDIT = "dump_edit"
     const val SUBFOLDERS = "subfolders/{parentFolderId}"
     const val EDITOR = "editor/{subfolderId}"
     const val QUICK_NOTES_INBOX = "quick_notes/{subfolderId}"
-    const val MEMORY_CACHE_INBOX = "memory_cache/{subfolderId}"
     const val TRASH = "trash"
     const val SETTINGS = "settings"
-    const val OPTIMALX_LINK = "optimalx_link"
+    const val SYNC_WITH_DESKTOP = "sync_with_desktop"
+    const val LITERT_LM_SMOKE = "litert_lm_smoke"
     const val EIDOS_SECTION = "eidos_section/{scopeType}/{scopeId}"
     const val EIDOS_FOLDER = "eidos_folder/{kind}"
     const val EIDOS_NOTE = "eidos_note/{kind}/{subfolderId}"
     const val EIDOS_LINKED_NOTE = "eidos_linked_note/{subfolderId}?anchor={anchor}"
     const val WORKSHOP_EDITOR = "workshop_editor/{subfolderId}"
     const val WORKSHOP_DIFF_REVIEW = "workshop_diff_review/{subfolderId}"
+    const val NOTE_DIFF_REVIEW = "note_diff_review/{subfolderId}"
     const val PANEL_RUNNER = "panel_runner/{subfolderId}"
     const val CONVERSATION_LIST = "conversation_list/{scopeType}/{scopeId}/{title}"
     const val EIDOS_CHAT = "eidos_chat"
@@ -82,7 +90,6 @@ object Routes {
     fun subfolders(parentFolderId: Long) = "subfolders/$parentFolderId"
     fun editor(subfolderId: Long) = "editor/$subfolderId"
     fun quickNotesInbox(subfolderId: Long) = "quick_notes/$subfolderId"
-    fun memoryCacheInbox(subfolderId: Long) = "memory_cache/$subfolderId"
     fun eidosSection(scopeType: String, scopeId: Long) = "eidos_section/$scopeType/$scopeId"
     fun eidosFolder(kind: EidosSystemKind) = "eidos_folder/${kind.routeValue}"
     fun eidosNote(kind: EidosSystemKind, subfolderId: Long) = "eidos_note/${kind.routeValue}/$subfolderId"
@@ -90,6 +97,7 @@ object Routes {
         "eidos_linked_note/$subfolderId?anchor=${Uri.encode(anchor.orEmpty())}"
     fun workshopEditor(subfolderId: Long) = "workshop_editor/$subfolderId"
     fun workshopDiffReview(subfolderId: Long) = "workshop_diff_review/$subfolderId"
+    fun noteDiffReview(subfolderId: Long) = "note_diff_review/$subfolderId"
     fun panelRunner(subfolderId: Long) = "panel_runner/$subfolderId"
     fun conversationList(scopeType: String, scopeId: Long, title: String) =
         "conversation_list/$scopeType/$scopeId/${Uri.encode(title)}"
@@ -98,7 +106,14 @@ object Routes {
 }
 
 @Composable
-fun AppNavigation(folderRepository: FolderRepository) {
+fun AppNavigation(
+    folderRepository: FolderRepository,
+    pendingOpenConversationId: Long? = null,
+    onPendingOpenConversationConsumed: () -> Unit = {},
+    pendingOpenNavigationTargetsJson: String? = null,
+    pendingOpenNavigationUri: String? = null,
+    onPendingOpenNavigationConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -119,6 +134,50 @@ fun AppNavigation(folderRepository: FolderRepository) {
         }
     }
 
+    LaunchedEffect(pendingOpenConversationId) {
+        val conversationId = pendingOpenConversationId ?: return@LaunchedEffect
+        eidosViewModel.loadConversation(conversationId)
+        openEidosChat()
+        onPendingOpenConversationConsumed()
+    }
+
+    LaunchedEffect(pendingOpenNavigationTargetsJson, pendingOpenNavigationUri) {
+        val targetsJson = pendingOpenNavigationTargetsJson
+        val uri = pendingOpenNavigationUri
+        if (targetsJson.isNullOrBlank() && uri.isNullOrBlank()) return@LaunchedEffect
+        val app = appContext as OptimalXApplication
+        val onChat = currentRoute == Routes.EIDOS_CHAT
+        when {
+            !targetsJson.isNullOrBlank() -> {
+                val target = EidosNavigationCodec.parseTargetsJson(targetsJson).firstOrNull()
+                if (target != null) {
+                    EidosNavigation.navigateFromTarget(
+                        target = target,
+                        db = app.database,
+                        navController = navController,
+                        appContext = appContext,
+                        eidosViewModel = eidosViewModel,
+                        onUnavailable = eidosViewModel::postToast,
+                        fromChat = onChat,
+                    )
+                }
+            }
+            !uri.isNullOrBlank() -> {
+                EidosNavigation.navigateFromOptimalxUri(
+                    uri = uri,
+                    linkLabel = null,
+                    db = app.database,
+                    navController = navController,
+                    appContext = appContext,
+                    eidosViewModel = eidosViewModel,
+                    onUnavailable = eidosViewModel::postToast,
+                    fromChat = onChat,
+                )
+            }
+        }
+        onPendingOpenNavigationConsumed()
+    }
+
     // Keep Eidos scope aligned with the visible route. Do not reset while [Routes.EIDOS_CHAT] is
     // showing — the underlying screen is disposed when chat opens (see Panel Runner / Gallery).
     LaunchedEffect(currentRoute, navBackStackEntry) {
@@ -126,6 +185,12 @@ fun AppNavigation(folderRepository: FolderRepository) {
             Routes.EIDOS_CHAT -> return@LaunchedEffect
             Routes.PARENT_FOLDERS -> eidosViewModel.setGeneralScope()
             Routes.PANEL_GALLERY -> eidosViewModel.setPanelGalleryScope()
+            Routes.IMAGE_STUDIO_HUB -> {
+                val generalId = folderRepository.getImageStudioGeneralSubfolderId()
+                if (generalId != null) {
+                    eidosViewModel.setImageStudioScope(hub = true, saveSubfolderId = generalId)
+                }
+            }
             Routes.DUMP_EDIT -> eidosViewModel.setDumpEditScope()
             else -> {
                 if (currentRoute?.startsWith("panel_runner/") == true) {
@@ -159,6 +224,10 @@ fun AppNavigation(folderRepository: FolderRepository) {
         }
     }
 
+    val navigatePinnedImageStudio: () -> Unit = {
+        navController.navigate(Routes.IMAGE_STUDIO_HUB)
+    }
+
     BackHandler(
         enabled = currentRoute != null &&
             currentRoute != Routes.PARENT_FOLDERS &&
@@ -182,6 +251,7 @@ fun AppNavigation(folderRepository: FolderRepository) {
                 onPinnedPanelsClick = { navController.navigate(Routes.PANEL_GALLERY) },
                 onPinnedDumpEditClick = { navController.navigate(Routes.DUMP_EDIT) },
                 onPinnedWorkshopClick = navigatePinnedWorkshop,
+                onPinnedImageStudioClick = navigatePinnedImageStudio,
                 onPinnedQuickNotesClick = navigatePinnedQuickNotes,
                 onPinnedUserPinClick = navigatePinnedUserPin,
                 onTrashClick = { navController.navigate(Routes.TRASH) },
@@ -212,6 +282,7 @@ fun AppNavigation(folderRepository: FolderRepository) {
                 onPinnedPanelsClick = { /* already on gallery */ },
                 onPinnedDumpEditClick = { navController.navigate(Routes.DUMP_EDIT) },
                 onPinnedWorkshopClick = navigatePinnedWorkshop,
+                onPinnedImageStudioClick = navigatePinnedImageStudio,
                 onPinnedQuickNotesClick = navigatePinnedQuickNotes,
                 onPinnedUserPinClick = navigatePinnedUserPin,
             )
@@ -230,6 +301,25 @@ fun AppNavigation(folderRepository: FolderRepository) {
                     eidosViewModel.setPanelRunnerScope(subfolderId)
                     openEidosChat()
                 },
+            )
+        }
+
+        composable(Routes.IMAGE_STUDIO_HUB) {
+            ImageStudioHubScreen(
+                folderRepository = folderRepository,
+                eidosViewModel = eidosViewModel,
+                onBack = { navController.popBackStack() },
+                onEidosClick = openEidosChat,
+                onSettingsClick = { navController.navigate(Routes.SETTINGS) },
+                onOpenGeneralFiles = { subfolderId ->
+                    navController.navigate(Routes.editor(subfolderId))
+                },
+                onPinnedPanelsClick = { navController.navigate(Routes.PANEL_GALLERY) },
+                onPinnedDumpEditClick = { navController.navigate(Routes.DUMP_EDIT) },
+                onPinnedWorkshopClick = navigatePinnedWorkshop,
+                onPinnedImageStudioClick = { /* already on hub */ },
+                onPinnedQuickNotesClick = navigatePinnedQuickNotes,
+                onPinnedUserPinClick = navigatePinnedUserPin,
             )
         }
 
@@ -265,14 +355,7 @@ fun AppNavigation(folderRepository: FolderRepository) {
                 onWorkshopSubfolderClick = { subfolderId ->
                     navController.navigate(Routes.workshopEditor(subfolderId))
                 },
-                onSystemSubfolderClick = { subfolderId, name ->
-                    when (name) {
-                        SystemFolderNames.PARENT_MEMORY_CACHE_SUBFOLDER, "__memory_cache__" -> {
-                            navController.navigate(Routes.memoryCacheInbox(subfolderId))
-                        }
-                        else -> Unit
-                    }
-                },
+                onSystemSubfolderClick = { _, _ -> },
                 onBack = { navController.popBackStack() },
                 onEidosClick = {
                     eidosViewModel.setParentFolderScope(parentFolderId)
@@ -298,6 +381,9 @@ fun AppNavigation(folderRepository: FolderRepository) {
                 },
                 onEidosSectionClick = { navController.navigate(Routes.eidosSection("subfolder", subfolderId)) },
                 onSettingsClick = { navController.navigate(Routes.SETTINGS) },
+                onOpenDiffReview = { id ->
+                    navController.navigate(Routes.noteDiffReview(id))
+                },
             )
         }
 
@@ -328,19 +414,24 @@ fun AppNavigation(folderRepository: FolderRepository) {
             val subfolderId = backStackEntry.arguments?.getLong("subfolderId") ?: 0L
             val context = LocalContext.current
             DiffReviewScreen(
+                scopeType = SCOPE_WORKSHOP_PROJECT,
                 subfolderId = subfolderId,
                 onBack = { navController.popBackStack() },
                 onAllPendingResolved = {
                     navController.popBackStack()
-                    if (ImplementationPlanGate.needsAcceptance(context, subfolderId) &&
-                        navController.currentDestination?.route == Routes.EIDOS_CHAT
-                    ) {
-                        eidosViewModel.setWorkshopScope(subfolderId)
-                        navController.navigate(Routes.workshopEditor(subfolderId)) {
-                            launchSingleTop = true
-                        }
-                    }
                 },
+            )
+        }
+
+        composable(
+            route = Routes.NOTE_DIFF_REVIEW,
+            arguments = listOf(navArgument("subfolderId") { type = NavType.LongType }),
+        ) { backStackEntry ->
+            val subfolderId = backStackEntry.arguments?.getLong("subfolderId") ?: 0L
+            DiffReviewScreen(
+                scopeType = SCOPE_SUBFOLDER,
+                subfolderId = subfolderId,
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -362,23 +453,6 @@ fun AppNavigation(folderRepository: FolderRepository) {
             )
         }
 
-        composable(
-            route = Routes.MEMORY_CACHE_INBOX,
-            arguments = listOf(navArgument("subfolderId") { type = NavType.LongType }),
-        ) { backStackEntry ->
-            val subfolderId = backStackEntry.arguments?.getLong("subfolderId") ?: 0L
-            MemoryCacheInboxScreen(
-                subfolderId = subfolderId,
-                onBack = { navController.popBackStack() },
-                onEidosClick = {
-                    eidosViewModel.setSubfolderScope(subfolderId)
-                    openEidosChat()
-                },
-                onEidosSectionClick = { navController.navigate(Routes.eidosSection("subfolder", subfolderId)) },
-                onSettingsClick = { navController.navigate(Routes.SETTINGS) },
-            )
-        }
-
         composable(Routes.TRASH) {
             TrashScreen(
                 repository = folderRepository,
@@ -392,12 +466,17 @@ fun AppNavigation(folderRepository: FolderRepository) {
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
-                onOpenOptimalXLink = { navController.navigate(Routes.OPTIMALX_LINK) },
+                onOpenSyncWithDesktop = { navController.navigate(Routes.SYNC_WITH_DESKTOP) },
+                onOpenLitertLmSmoke = { navController.navigate(Routes.LITERT_LM_SMOKE) },
             )
         }
 
-        composable(Routes.OPTIMALX_LINK) {
-            com.example.optimalx.ui.link.LinkScreen(
+        composable(Routes.LITERT_LM_SMOKE) {
+            LitertLmSmokeScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SYNC_WITH_DESKTOP) {
+            SyncWithDesktopScreen(
                 onBack = { navController.popBackStack() },
             )
         }
@@ -548,11 +627,47 @@ fun AppNavigation(folderRepository: FolderRepository) {
             )
         }
         composable(Routes.EIDOS_CHAT) {
+            val app = appContext as OptimalXApplication
+            // Editors under chat are disposed; drop any stale unsaved-leave handler so chip
+            // clicks cannot hang awaiting a dialog that is no longer composed.
+            LaunchedEffect(Unit) { NavigationLeaveGuard.clear() }
             EidosChatScreen(
                 viewModel = eidosViewModel,
                 onBack = { navController.popBackStack() },
-                onOpenDiffReview = { subId ->
-                    navController.navigate(Routes.workshopDiffReview(subId))
+                onOpenDiffReview = { subId, scopeType ->
+                    when (scopeType) {
+                        SCOPE_WORKSHOP_PROJECT -> navController.navigate(Routes.workshopDiffReview(subId))
+                        SCOPE_SUBFOLDER -> navController.navigate(Routes.noteDiffReview(subId))
+                    }
+                },
+                onNavigateFromChat = { target ->
+                    scope.launch {
+                        EidosNavigation.navigateFromTarget(
+                            target = target,
+                            db = app.database,
+                            navController = navController,
+                            appContext = appContext,
+                            eidosViewModel = eidosViewModel,
+                            onUnavailable = eidosViewModel::postToast,
+                            fromChat = true,
+                        )
+                    }
+                },
+                onChatLinkClick = { uri ->
+                    if (!uri.startsWith("optimalx://")) return@EidosChatScreen false
+                    scope.launch {
+                        EidosNavigation.navigateFromOptimalxUri(
+                            uri = uri,
+                            linkLabel = null,
+                            db = app.database,
+                            navController = navController,
+                            appContext = appContext,
+                            eidosViewModel = eidosViewModel,
+                            onUnavailable = eidosViewModel::postToast,
+                            fromChat = true,
+                        )
+                    }
+                    true
                 },
             )
         }
